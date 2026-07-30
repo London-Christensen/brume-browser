@@ -77,8 +77,9 @@ pub struct SettingsState {
 impl SettingsState {
     /// Loads settings from disk, creating them on first run.
     ///
-    /// Never fails: a missing, unreadable or corrupt file falls back to
-    /// defaults. Settings are not important enough to refuse to start over.
+    /// Never fails to produce a usable state: settings are not important enough
+    /// to refuse to start over. It does, however, refuse to *destroy* anything -
+    /// see the corrupt-file branch.
     pub fn load(app: &AppHandle) -> Self {
         let dir = app
             .path()
@@ -86,33 +87,58 @@ impl SettingsState {
             .unwrap_or_else(|_| PathBuf::from("."));
         let path = dir.join("settings.json");
 
-        let existing = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Settings>(&raw).ok());
+        let raw = fs::read_to_string(&path).ok();
 
-        let settings = match existing {
-            Some(loaded) => loaded,
-            None => {
-                // First run. Inherit the installer's answer if there is one.
-                let seeded = Settings {
-                    auto_update: installer_preference().unwrap_or(true),
-                    ..Settings::default()
-                };
-                let state = Self {
-                    path: path.clone(),
-                    current: Mutex::new(seeded.clone()),
-                };
-                // Best effort: if this fails the app still works, it just
-                // re-seeds from the registry next launch.
-                let _ = state.persist(&seeded);
-                return state;
-            }
-        };
+        let parsed = raw.as_deref().and_then(|text| {
+            // Strip a UTF-8 byte-order mark before parsing.
+            //
+            // serde_json rejects a leading BOM, and on Windows a BOM is easy to
+            // acquire by accident: Notepad adds one, and PowerShell's
+            // `Set-Content -Encoding utf8` adds one on 5.1. Without this, a
+            // hand-edited settings file parses as corrupt and every setting
+            // silently reverts - which is exactly how this was found.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+            serde_json::from_str::<Settings>(text).ok()
+        });
 
-        Self {
-            path,
-            current: Mutex::new(settings),
+        if let Some(settings) = parsed {
+            return Self {
+                path,
+                current: Mutex::new(settings),
+            };
         }
+
+        // A file that exists but will not parse is kept, not overwritten.
+        //
+        // This file is meant to be hand-editable, so an unparseable one is
+        // usually a typo - a trailing comma, a smart quote pasted from a
+        // document. Silently replacing it means the user loses every setting and
+        // has nothing left to look at to work out why.
+        if raw.is_some() {
+            let backup = path.with_extension("json.bak");
+            match fs::rename(&path, &backup) {
+                Ok(()) => eprintln!(
+                    "[settings] {} could not be parsed; the original was kept at {}",
+                    path.display(),
+                    backup.display()
+                ),
+                Err(e) => eprintln!("[settings] could not parse or preserve {}: {e}", path.display()),
+            }
+        }
+
+        // First run, or recovery. Inherit the installer's answer if there is one.
+        let seeded = Settings {
+            auto_update: installer_preference().unwrap_or(true),
+            ..Settings::default()
+        };
+        let state = Self {
+            path,
+            current: Mutex::new(seeded.clone()),
+        };
+        // Best effort: if this fails the app still works, it just re-seeds next
+        // launch.
+        let _ = state.persist(&seeded);
+        state
     }
 
     fn persist(&self, settings: &Settings) -> Result<(), String> {

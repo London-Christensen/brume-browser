@@ -38,8 +38,12 @@ pub const WINDOW_LABEL: &str = "main";
 pub const CHROME_LABEL: &str = "chrome";
 pub const CONTENT_LABEL: &str = "content";
 
-/// Where a new window starts. Configurable in step 8.
-const HOME_URL: &str = "https://duckduckgo.com/";
+/// Where a new window starts. Becomes a setting in step 8.
+///
+/// Carries the same promo-suppression parameters as the search template in
+/// `search.rs`, so the landing page is as free of house advertising as the
+/// results page is.
+const HOME_URL: &str = "https://duckduckgo.com/?kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1&kae=d";
 
 /// Session history for the content webview.
 ///

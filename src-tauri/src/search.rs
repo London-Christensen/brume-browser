@@ -27,16 +27,54 @@ pub struct SearchEngine {
 /// reliable coverage because it blends its own crawler with partner results.
 /// Mojeek and Brave are offered because both run genuinely independent indexes -
 /// most "alternative" engines are Bing or Google with a different logo.
+///
+/// # About the DuckDuckGo query string
+///
+/// Out of the box DuckDuckGo results carry third-party ads and a rotating set of
+/// house promotions for their own browser. Both are switchable off through
+/// documented URL parameters, which is better than a content blocker here: the
+/// page never renders the clutter at all, and the setting travels in the URL
+/// rather than depending on a cookie that a privacy-focused browser is likely to
+/// clear.
+///
+/// The two families do different jobs, verified rather than assumed:
+///
+/// | Parameter        | Effect                                              |
+/// |------------------|-----------------------------------------------------|
+/// | `k1=-1`          | Third-party ads off. Does **not** touch house promos |
+/// | `kak kax kaq kap kao` | DuckDuckGo's own promo and newsletter messages, including the "Download Browser" panel |
+/// | `kae=d`          | Dark theme, so results match Brume's chrome          |
+///
+/// `k1=-1` alone still leaves the browser advert on the page - that was measured,
+/// not guessed, so please do not "simplify" this back to a single parameter.
 pub const ENGINES: &[SearchEngine] = &[
     SearchEngine {
         id: "duckduckgo",
         name: "DuckDuckGo",
-        template: "https://duckduckgo.com/?q={query}",
+        template: "https://duckduckgo.com/?q={query}&k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1&kae=d",
+    },
+    SearchEngine {
+        id: "duckduckgo-lite",
+        name: "DuckDuckGo Lite",
+        // DuckDuckGo's own no-JavaScript endpoint. Plain numbered results, no
+        // ads, no promos, no instant answers, and a fraction of the payload.
+        // Nothing to switch off because nothing is there in the first place.
+        //
+        // Caveat: it renders light, and no parameter changes that. The page
+        // ships literally zero stylesheets, so there is nothing to theme and
+        // nothing to respond to prefers-color-scheme either - it simply inherits
+        // the engine's default black-on-white. Restyling it would mean injecting
+        // a stylesheet into the content webview, which is a user-styles feature
+        // rather than a search setting.
+        template: "https://lite.duckduckgo.com/lite/?q={query}",
     },
     SearchEngine {
         id: "mojeek",
         name: "Mojeek",
-        template: "https://www.mojeek.com/search?q={query}",
+        // Independent crawler, no ads, no house promotions, and roughly half the
+        // page weight of a DuckDuckGo result page. `theme=dark` is honoured, so
+        // unlike Lite this one matches Brume's chrome.
+        template: "https://www.mojeek.com/search?q={query}&theme=dark",
     },
     SearchEngine {
         id: "brave",
@@ -211,6 +249,32 @@ mod tests {
     #[test]
     fn unknown_engine_falls_back_rather_than_failing() {
         assert!(resolve("test", "not-a-real-engine").starts_with("https://duckduckgo.com/"));
+    }
+
+    #[test]
+    fn duckduckgo_default_suppresses_ads_and_house_promos() {
+        let url = ddg("test");
+
+        // Third-party ads.
+        assert!(url.contains("k1=-1"), "ads not disabled: {url}");
+
+        // DuckDuckGo's own promotions are a separate family. Measured: k1=-1 on
+        // its own still renders the "Download Browser" panel, so dropping these
+        // would quietly bring the advert back.
+        for param in ["kak=-1", "kax=-1", "kaq=-1", "kap=-1", "kao=-1"] {
+            assert!(url.contains(param), "missing {param}: {url}");
+        }
+    }
+
+    #[test]
+    fn lite_endpoint_needs_no_suppression() {
+        let url = resolve("test", "duckduckgo-lite");
+        assert!(
+            url.starts_with("https://lite.duckduckgo.com/lite/?q="),
+            "got {url}"
+        );
+        // Nothing to switch off, so nothing should have been bolted on.
+        assert!(!url.contains("k1="), "lite should need no ad parameter: {url}");
     }
 
     #[test]
