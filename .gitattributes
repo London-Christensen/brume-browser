@@ -1,0 +1,27 @@
+# Normalize line endings. Files are stored LF in the repository and checked out
+# native on Windows, so diffs stay clean no matter which editor touched a file.
+* text=auto
+
+# Windows tooling that is happiest with CRLF on disk.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.nsi  text eol=crlf
+*.nsh  text eol=crlf
+
+# Shell scripts must stay LF even when checked out on Windows.
+*.sh   text eol=lf
+
+# Binary assets - never diff, never convert.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.bmp   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.exe   binary
+*.dll   binary
