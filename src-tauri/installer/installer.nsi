@@ -159,6 +159,29 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
   !define MUI_UNICON "${UNINSTALLERICON}"
 !endif
 
+; Dark theme - BRUME ADDITION
+;
+; Values are Ink and Paper from brand/assets/css/tokens.css. NSIS wants RRGGBB
+; with no leading hash. These must stay in step with tools/make-installer-art.ps1,
+; which paints the header and sidebar bitmaps on the same Ink field so the images
+; sit seamlessly against the page rather than floating on a pale rectangle.
+;
+; Not everything here can be themed - see the Theming section of docs/INSTALLER.md
+; for what stays light and why.
+!define MUI_BGCOLOR   "101418"
+!define MUI_TEXTCOLOR "F3F4F5"
+
+; Put the mark on the right of the header strip, which is where the bitmap is
+; composed to sit.
+!define MUI_HEADERIMAGE_RIGHT
+
+; The install log. Order is "text background", so this is Haar on Ink - the log
+; is secondary information and does not need full Paper contrast.
+!define MUI_INSTFILESPAGE_COLORS "9DB2C0 101418"
+; The default progress bar is a segmented Windows Classic control; smooth reads
+; far better against a dark field.
+!define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
+
 ; Define registry key to store installer language
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
@@ -275,16 +298,22 @@ Function PageReinstall
     nsDialogs::Create 1018
     Pop $R4
     ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+    ; Dark theme - BRUME ADDITION. Same reasoning as the Options page: nsDialogs
+    ; custom pages ignore MUI_BGCOLOR, so each control is coloured by hand.
+    SetCtlColors $R4 F3F4F5 101418
 
     ${NSD_CreateLabel} 0 0 100% 24u $R1
     Pop $R1
+    SetCtlColors $R1 F3F4F5 101418
 
     ${NSD_CreateRadioButton} 30u 50u -30u 8u $R2
     Pop $R2
+    SetCtlColors $R2 F3F4F5 101418
     ${NSD_OnClick} $R2 PageReinstallUpdateSelection
 
     ${NSD_CreateRadioButton} 30u 70u -30u 8u $R3
     Pop $R3
+    SetCtlColors $R3 F3F4F5 101418
     ; Disable this radio button if downgrading and downgrades are disabled
     !if "${ALLOWDOWNGRADES}" == "false"
       ${IfThen} $R0 = -1 ${|} EnableWindow $R3 0 ${|}
@@ -390,8 +419,43 @@ Function PageLeaveReinstall
 FunctionEnd
 
 ; 5. Choose install directory page
+;
+; MUI_BGCOLOR only reaches the header strip, not the body of a standard MUI page -
+; the body is a plain Windows dialog that paints itself with the system colours.
+; Darkening it means walking its controls by ID in a SHOW callback. - BRUME
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW DirectoryPageShow
 !insertmacro MUI_PAGE_DIRECTORY
+
+; Strips the visual style from a control so that the colour returned from
+; WM_CTLCOLORSTATIC is actually honoured.
+;
+; Windows paints themed BUTTON controls - group boxes, checkboxes, radios -
+; through the theme engine, which ignores SetCtlColors and always draws their
+; caption in the system text colour. On a dark field that renders near-black on
+; near-black. Removing the theme costs the modern widget look for that one
+; control but makes its caption legible, which is the better trade.
+!macro BrumeUnthemeAndColor hwnd fg bg
+  System::Call 'uxtheme::SetWindowTheme(p ${hwnd}, w "", w "")'
+  SetCtlColors ${hwnd} ${fg} ${bg}
+!macroend
+
+Function DirectoryPageShow
+  FindWindow $R0 "#32770" "" $HWNDPARENT
+  SetCtlColors $R0 F3F4F5 101418
+
+  ; IDs are fixed by NSIS's built-in directory dialog (Source/exehead/resource.h).
+  GetDlgItem $R1 $R0 1000   ; intro paragraph
+  SetCtlColors $R1 F3F4F5 101418
+  GetDlgItem $R1 $R0 1006   ; "Destination Folder" group box - themed BUTTON
+  !insertmacro BrumeUnthemeAndColor $R1 F3F4F5 101418
+  GetDlgItem $R1 $R0 1019   ; the path field, lifted slightly off Ink
+  SetCtlColors $R1 F3F4F5 181D24
+  GetDlgItem $R1 $R0 1023   ; space required
+  SetCtlColors $R1 9DB2C0 101418
+  GetDlgItem $R1 $R0 1024   ; space available
+  SetCtlColors $R1 9DB2C0 101418
+FunctionEnd
 
 ; 5b. Options page - BRUME ADDITION
 ;
@@ -409,6 +473,7 @@ FunctionEnd
 ;     is why .onInit seeds the variable from the existing registry value and this
 ;     page only overrides it when a human is actually present to see the box.
 Var AutoUpdateCheckbox
+Var AutoUpdateLabel
 Var AutoUpdateEnabled
 
 Page custom PageOptions PageOptionsLeave
@@ -427,16 +492,50 @@ Function PageOptions
     Abort
   ${EndIf}
 
-  ${NSD_CreateCheckbox} 0 0 100% 12u "Enable Automatic Updates"
+  ; MUI_BGCOLOR does not reach nsDialogs custom pages, so the dialog and every
+  ; control on it must be coloured explicitly or they render as white islands.
+  SetCtlColors $0 F3F4F5 101418
+
+  ; The checkbox is created with an empty caption on purpose.
+  ;
+  ; Windows draws checkbox text through the theme engine, which ignores the
+  ; colour handed back from WM_CTLCOLORSTATIC - so a native caption renders
+  ; near-black on Ink and is effectively invisible. Drawing the caption as a
+  ; separate static gives us a colour we control while keeping the modern themed
+  ; tick box, which stripping the control's theme would have cost us.
+  ;
+  ; SS_NOTIFY (0x100) keeps the caption clickable, so clicking the words still
+  ; toggles the box the way a native checkbox does.
+  ${NSD_CreateCheckbox} 0 0 12u 12u ""
   Pop $AutoUpdateCheckbox
+  SetCtlColors $AutoUpdateCheckbox F3F4F5 101418
   ${NSD_SetState} $AutoUpdateCheckbox $AutoUpdateEnabled
+
+  nsDialogs::CreateControl STATIC ${DEFAULT_STYLES}|0x00000100 0 15u 1u 80% 11u "Enable Automatic Updates"
+  Pop $AutoUpdateLabel
+  SetCtlColors $AutoUpdateLabel F3F4F5 101418
+  ${NSD_OnClick} $AutoUpdateLabel PageOptionsToggle
 
   ; Height is generous on purpose: NSIS clips rather than wraps past the given
   ; height, so a label that is too short silently truncates mid-sentence.
   ${NSD_CreateLabel} 0 18u 100% 50u "When enabled, $(^Name) checks for a new version on launch and asks before installing it. Updates are never installed silently.$\r$\n$\r$\nYou can change this later in Settings, where a manual check is always available."
-  Pop $0
+  Pop $1
+  ; Supporting copy sits at Haar rather than Paper so the checkbox stays primary.
+  SetCtlColors $1 9DB2C0 101418
 
   nsDialogs::Show
+FunctionEnd
+
+; Clicking the caption toggles the box, restoring the affordance a native
+; checkbox caption would have given us for free.
+Function PageOptionsToggle
+  Pop $0 ; hwnd of the clicked control, pushed by the nsDialogs click handler
+  ${NSD_GetState} $AutoUpdateCheckbox $1
+  ${If} $1 = ${BST_CHECKED}
+    ${NSD_SetState} $AutoUpdateCheckbox ${BST_UNCHECKED}
+  ${Else}
+    ${NSD_SetState} $AutoUpdateCheckbox ${BST_CHECKED}
+  ${EndIf}
 FunctionEnd
 
 Function PageOptionsLeave
@@ -454,22 +553,50 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
 ; 7. Installation page
+; Same story as the directory page: the body is a stock Windows dialog and needs
+; colouring by hand. - BRUME
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW InstfilesPageShow
 !insertmacro MUI_PAGE_INSTFILES
 
-; 8. Finish page
+Function InstfilesPageShow
+  FindWindow $R0 "#32770" "" $HWNDPARENT
+  SetCtlColors $R0 F3F4F5 101418
+  GetDlgItem $R1 $R0 1000   ; status line above the progress bar
+  SetCtlColors $R1 F3F4F5 101418
+FunctionEnd
+
+; 8. Finish page - REMOVED FOR BRUME
 ;
-; Don't auto jump to finish page after installation page,
-; because the installation page has useful info that can be used debug any issues with the installer.
-!define MUI_FINISHPAGE_NOAUTOCLOSE
-; Use show readme button in the finish page as a button create a desktop shortcut
-!define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
-; Show run app after installation.
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_FINISH
+; Two reasons, and the second is the one that settled it.
+;
+; First, the brief is a two-decision installer. The finish page adds a third
+; screen that asks nothing the user has not already answered.
+;
+; Second, its two checkboxes cannot be themed. Windows paints themed BUTTON
+; captions through the theme engine, which ignores SetCtlColors, so both read as
+; near-black on the Ink background - "Create desktop shortcut" was effectively
+; invisible. The usual escape hatch is to strip the control's visual style first,
+; which is what BrumeUnthemeAndColor does elsewhere, but that needs the control's
+; window handle and MUI does not hand it over: $MUI_HWND is not declared for this
+; page, ioSpecial.ini carries no HWND entries, and probing ids 1200-1214 against
+; the inner dialog returns nothing. Wherever MUI builds these controls, they are
+; not reachable from a page callback.
+;
+; So the page went. The two things it offered are preserved:
+;   - the desktop shortcut is now created unconditionally in Section Install
+;   - the app is reachable from the Start menu and desktop immediately after
+;
+; Without this page, MUI_PAGE_INSTFILES becomes the last page and its button
+; becomes Close, which ends the installer cleanly.
+;
+; !define MUI_FINISHPAGE_NOAUTOCLOSE
+; !define MUI_FINISHPAGE_SHOWREADME
+; !define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
+; !define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
+; !define MUI_FINISHPAGE_RUN
+; !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
+; !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
@@ -804,12 +931,17 @@ Section Install
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
 
-  ; Create desktop shortcut for silent and passive installers
-  ; because finish page will be skipped
-  ${If} $PassiveMode = 1
-  ${OrIf} ${Silent}
-    Call CreateOrUpdateDesktopShortcut
-  ${EndIf}
+  ; Create the desktop shortcut on every install - BRUME
+  ;
+  ; Upstream only did this for silent and passive installs, because those skip
+  ; the finish page where the shortcut was offered as a checkbox. Brume has no
+  ; finish page at all now, so there is nothing left to ask and every install
+  ; behaves the way passive installs always did.
+  ;
+  ; The guards that matter still apply: CreateOrUpdateDesktopShortcut returns
+  ; early in update mode and when /NS was passed, so updates do not resurrect a
+  ; shortcut the user deleted.
+  Call CreateOrUpdateDesktopShortcut
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL

@@ -46,8 +46,7 @@ Deliberately minimal — two decisions, then install:
 |---|---|---|
 | 1 | **Choose Install Location** | Defaults to `%LOCALAPPDATA%\Brume` |
 | 2 | **Options** | One checkbox: *Enable Automatic Updates*, ticked by default |
-| — | Installing | Progress bar. NSIS cannot install without this page. |
-| — | Finished | Completion, with a "run Brume now" button. |
+| — | Installing | Progress, ending in a **Close** button. NSIS cannot install without this page. |
 
 ### What was removed
 
@@ -56,12 +55,16 @@ Deliberately minimal — two decisions, then install:
 - **License page.** Never configured, so it was already absent.
 - **Install-mode page.** Avoided by pinning `installMode: "currentUser"`.
 - **Start menu folder page.** Skipped automatically because no `startMenuFolder` is set.
+- **Finish page.** Removed for two reasons — it was a third screen asking nothing new, and its
+  two checkboxes could not be themed (see Theming). What it offered is preserved: the desktop
+  shortcut is now created unconditionally in `Section Install`, and the app appears in the
+  Start menu, so it is one click away the moment the installer closes.
 
 ### What was kept, and why
 
-- **Installing / Finished.** NSIS has no install step without `INSTFILES`, and removing the
-  finish page makes the installer appear to vanish mid-action rather than complete.
-- **The reinstall/maintenance page.** This one only appears when a previous Brume install is
+- **Installing.** NSIS has no install step without `INSTFILES`. With the finish page gone this
+  is the last page, and its button becomes *Close*, which ends the installer cleanly.
+- **The reinstall/maintenance page.** This only appears when a previous Brume install is
   detected, so a first install never sees it. It is what makes upgrades and repairs work, and
   removing it to satisfy a literal two-screen count would break the update path.
 
@@ -117,8 +120,51 @@ the correct hive until the install mode is known.
 
 ## Theming
 
-Filled in when the dark reskin lands. Anything that could not be fully themed will be listed
-here explicitly rather than left to be discovered.
+The installer is dark to match the browser. Colours come from
+`brand/assets/css/tokens.css` — Ink `#101418`, Paper `#F3F4F5`, Haar `#9DB2C0` — and are
+declared near the top of `installer.nsi` as `MUI_BGCOLOR` / `MUI_TEXTCOLOR`.
+
+The header strip and finish sidebar are BMP files, because NSIS accepts nothing else and
+fixes their dimensions (150x57 and 164x314). They are generated from the real brand rasters by
+`tools/make-installer-art.ps1`, composited onto the same Ink field as `MUI_BGCOLOR` so they sit
+flush against the page instead of floating on a pale rectangle. **If you change `MUI_BGCOLOR`,
+re-run that script** or the images will show a visible seam.
+
+### Two things that make this harder than it looks
+
+**`MUI_BGCOLOR` only reaches the header.** The body of a standard MUI page is a stock Windows
+dialog that paints itself with system colours. Darkening it means walking its child controls by
+ID in a `MUI_PAGE_CUSTOMFUNCTION_SHOW` callback and calling `SetCtlColors` on each — which is
+what `DirectoryPageShow` and `InstfilesPageShow` do. The IDs are fixed by NSIS's own dialog
+resources.
+
+**Themed `BUTTON` controls ignore `SetCtlColors` for their caption.** Windows paints group
+boxes, checkboxes and radio buttons through the theme engine, which never asks for the colour
+returned by `WM_CTLCOLORSTATIC`. The caption is therefore drawn in the system text colour —
+near-black on Ink, i.e. invisible. Two different workarounds are used:
+
+- `BrumeUnthemeAndColor` calls `uxtheme::SetWindowTheme(hwnd, "", "")` to strip the visual
+  style from one control, after which `SetCtlColors` is honoured. Used for the "Destination
+  Folder" group box. The cost is that the widget renders in the classic style.
+- The Options page checkbox keeps its modern themed tick box and instead carries an **empty
+  caption**, with the text drawn beside it as a separate static that we colour freely. The
+  static is created with `SS_NOTIFY` so clicking the words still toggles the box.
+
+### What could not be themed
+
+Listed explicitly rather than left to be discovered:
+
+| Element | Why |
+|---|---|
+| **Back / Next / Close / Cancel buttons** | Windows common controls painted by the theme engine. Recolouring needs owner-draw or a subclassing plugin — real complexity, and unthemed buttons are what every Windows installer looks like anyway. |
+| **Browse… and Show details buttons** | Same. |
+| **Progress bar** | A native `msctls_progress32`. It renders green regardless; `MUI_INSTFILESPAGE_PROGRESSBAR "smooth"` at least avoids the segmented Classic look. |
+| **Window title bar** | Drawn by the OS, not the application. NSIS does not opt into the Windows 11 dark title bar. |
+| **Details-log scrollbars** | Native scrollbars follow the system theme. |
+| **The finish page's checkboxes** | Not themable *and* not reachable — `$MUI_HWND` is not declared for that page, `ioSpecial.ini` carries no `HWND` entries, and probing IDs 1200–1214 against the inner dialog returns nothing. This is why the page was removed rather than left with invisible text. |
+
+Everything else — page backgrounds, all body text, the install-path field, the group box, the
+Options checkbox and its caption, the install log — is on the Brume palette.
 
 ## Verification performed
 
@@ -131,8 +177,14 @@ registry key:
 | Installed payload | `brume.exe` 2.92 MB + `uninstall.exe` 0.08 MB |
 | Registry after default install | `AutoUpdate = 1` |
 | Registry after unticking the box in the GUI | `AutoUpdate = 0` |
+| Desktop + Start menu shortcuts | Created on every install |
 | Installed app runs standalone | Yes — window opens, WebView2 renders a live page |
-| Uninstall | Removes install directory and registry key |
+| Uninstall | Removes install directory, registry key and shortcuts |
+
+One trap worth recording, since it cost a wrong conclusion once already: on a machine with
+OneDrive folder redirection, `$DESKTOP` resolves to `%USERPROFILE%\OneDrive\Desktop`, not
+`%USERPROFILE%\Desktop`. Checking the latter reports the shortcut as missing when it was
+created correctly. Use `[Environment]::GetFolderPath('Desktop')` when verifying.
 
 ## Testing it yourself
 
