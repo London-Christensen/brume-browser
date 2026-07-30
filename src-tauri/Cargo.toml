@@ -1,0 +1,31 @@
+[package]
+name = "brume"
+version = "0.1.0"
+description = "A lightweight Windows web browser built with Tauri and the native WebView2 runtime"
+authors = ["london-christensen"]
+edition = "2021"
+# Tauri 2 requires at least this compiler.
+rust-version = "1.77.2"
+
+# The binary is named `brume`, which is what ends up installed as brume.exe.
+[[bin]]
+name = "brume"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Deliberately minimal. Every dependency added here shows up in the shipped
+# binary, and staying small is the entire premise of this project.
+tauri = { version = "2", features = [] }
+
+[profile.release]
+# Tuned for a small binary rather than raw throughput. A browser shell spends
+# almost all of its time inside WebView2, not inside our Rust code, so trading
+# some compile time and a little speed for size is the right call here.
+codegen-units = 1   # Whole-program view for the optimizer; slower builds, smaller output.
+lto = true          # Link-time optimization across crate boundaries.
+opt-level = "s"     # Optimize for size over speed.
+panic = "abort"     # Drop unwinding tables; we do not catch panics.
+strip = true        # Strip debug symbols from the release binary.

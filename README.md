@@ -62,9 +62,28 @@ this development environment.
 
 ```
 src/          Frontend — the browser chrome (tabs, toolbar, address bar). Plain HTML/CSS/JS.
+  assets/brand/   Runtime brand assets. Generated — see below, do not hand-edit.
 src-tauri/    Rust backend — window and tab management, persistence, OS integration.
+brand/        The Brume brand kit: mark, wordmark, icon set, design tokens, spec.
+tools/        Repository maintenance scripts.
 docs/         Build notes, release process, and extension guides.
 ```
+
+## Brand assets
+
+`brand/` holds the complete brand kit and is the source of truth. Because Tauri only bundles
+the `src/` directory, the subset the running app needs (design tokens, the 44-icon UI set and
+the logo SVGs) is copied into `src/assets/brand/` by:
+
+```bash
+pwsh tools/sync-brand-assets.ps1
+```
+
+Re-run that after changing anything under `brand/assets/`. Never hand-edit files in
+`src/assets/brand/` — the script wipes and recreates that directory.
+
+All colour, type and geometry values come from `brand/assets/css/tokens.css`. A hard-coded
+hex value anywhere in the UI is a bug.
 
 ## Documentation
 

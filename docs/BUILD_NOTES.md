@@ -34,6 +34,27 @@ the broader `*.key` rule.
 
 ## Step 1 — Environment
 
+### Verified working set
+
+These are the versions the project was first built against. Nothing here is a hard floor
+except the Rust version, which Tauri 2 enforces.
+
+| Component | Version |
+|---|---|
+| rustc / cargo | 1.97.1, `stable-x86_64-pc-windows-msvc` |
+| Visual Studio 2022 Build Tools | 17.14.37516.0, Desktop development with C++ |
+| Windows SDK | 10.0.26100.0 |
+| Node / npm | 25.8.1 / 11.11.0 |
+| Tauri CLI | 2.11.4 |
+| WebView2 Runtime | 150.0.4078.105 |
+
+### `cargo` may not be on PATH in an already-open terminal
+
+Installing Rust writes `%USERPROFILE%\.cargo\bin` to the persistent user PATH, but processes
+that were already running keep the environment block they started with. Any shell opened
+before the install will report `cargo` as not found even though it is installed correctly.
+Opening a new terminal fixes it; there is nothing to reinstall.
+
 ### Target toolchain: MSVC, not GNU
 
 Rust on Windows offers `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu`. Brume uses MSVC:
@@ -68,6 +89,31 @@ Because Brume renders with WebView2, page rendering behaviour matches Edge/Chrom
 whatever version is installed on the machine. Brume does not control the engine version, and
 cannot ship engine patches independently of Windows Update. This is the accepted cost of not
 bundling a browser engine.
+
+---
+
+## Brand assets: one source, one derived copy
+
+The brand kit lives at `brand/` exactly as delivered, because it ships its own generators that
+rewrite `brand/assets/` in place. Pointing the app at those files directly is not possible:
+Tauri bundles a single directory (`frontendDist`, i.e. `src/`), so anything the running app
+loads has to physically sit underneath it.
+
+Rather than hand-copy files and let the two versions drift apart silently, the runtime subset
+is derived by `tools/sync-brand-assets.ps1`, which wipes and recreates `src/assets/brand/`.
+`brand/` is authoritative; `src/assets/brand/` is build output that happens to be committed.
+
+Two details from the kit worth not rediscovering the hard way:
+
+- **The small mark is a different drawing, not a downscale.** `mark-sm.svg` widens the cut from
+  3 units to 4 so it survives antialiasing at 16 and 24px. The crossover to `mark.svg` is at
+  32px, and both bundled `.ico` files already encode this internally.
+- **The mark must never be rotated.** Its two halves are congruent under a 180-degree rotation,
+  so a rotated Cleave is pixel-identical to an unrotated one. Rotating it communicates nothing
+  and reads as a rendering bug.
+
+Icons are drawn on a 24px grid with a 2px stroke and use `currentColor`, so they theme by
+inheritance with no per-theme asset variants.
 
 ---
 

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="theme">
+  <path d="M12 3A9 9 0 1 1 12 21A9 9 0 1 1 12 3Z"/>
+  <path fill="currentColor" stroke="none" d="M12 3A9 9 0 0 0 12 21Z"/>
+</svg>

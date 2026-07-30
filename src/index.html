@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Brume</title>
+
+    <!--
+      Design tokens. Every colour, type size and geometry value in the frontend
+      comes from here - a raw hex code anywhere else in the UI is a bug.
+      Synced from brand/ by tools/sync-brand-assets.ps1; do not hand-edit.
+    -->
+    <link rel="stylesheet" href="assets/brand/css/tokens.css" />
+    <link rel="icon" href="assets/brand/svg/mark.svg" />
+
+    <style>
+      /* Brume's chrome is dark-first, so pin the dark values rather than
+         inheriting whatever the OS happens to prefer. The light theme arrives
+         in the polish step as an explicit user choice. */
+      :root {
+        color-scheme: dark;
+        --bg: var(--brume-ink);
+        --fg: var(--brume-paper);
+        --fg-muted: var(--brume-haar-dark);
+        --hairline: #232a30;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: var(--text-ui);
+        line-height: var(--lh-ui);
+        /* The chrome is an app surface, not a document: no text selection or
+           right-click menu on it. Page content is unaffected. */
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .plate {
+        display: grid;
+        justify-items: center;
+        /* Clear space is 3 modules = 0.375 x the mark height, per the kit. */
+        gap: calc(40px * 0.375);
+      }
+
+      .mark {
+        width: 40px;
+        height: 40px;
+        color: var(--fg);
+      }
+
+      p {
+        margin: 0;
+        color: var(--fg-muted);
+        font-size: var(--text-ui-sm);
+        line-height: var(--lh-ui-sm);
+        letter-spacing: 0.02em;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Placeholder frontend.
+
+      The window currently points at a remote URL (see tauri.conf.json), so this
+      is not what you see when the app runs. It exists because Tauri needs a
+      frontendDist to bundle. From the browser-chrome step onward this file
+      becomes the real UI: tab strip, toolbar and address bar, with page content
+      rendered in a child webview beneath it.
+    -->
+    <div class="plate">
+      <!--
+        The Cleave mark, inline so it inherits currentColor from .mark.
+        Geometry copied verbatim from brand/assets/svg/mark.svg - the two halves
+        are congruent under 180-degree rotation, so the path is not symmetrical
+        in any way you can eyeball. Do not redraw it by hand.
+      -->
+      <svg class="mark" viewBox="0 0 32 32" fill="currentColor" role="img" aria-label="Brume">
+        <path d="M4 4H8.5V17.5H20.5V28H4Z M11.5 4H28V28H23.5V14.5H11.5Z" />
+      </svg>
+      <p>Browser chrome not built yet</p>
+    </div>
+  </body>
+</html>
