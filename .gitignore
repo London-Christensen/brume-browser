@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Rust / Cargo
+# ---------------------------------------------------------------------------
+# Build output. This is the big one - `target/` routinely hits several GB.
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS committed for this project: Brume is a binary application, not
+# a library, so pinning exact dependency versions makes builds reproducible.
+
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+
+# ---------------------------------------------------------------------------
+# Tauri generated / build artifacts
+# ---------------------------------------------------------------------------
+src-tauri/gen/
+src-tauri/WixTools/
+src-tauri/.tauri/
+
+# Bundled installers and updater artifacts are release outputs, not source.
+# They are published to GitHub Releases instead of being committed.
+src-tauri/target/release/bundle/
+
+# ---------------------------------------------------------------------------
+# Signing keys & secrets - MUST NEVER BE COMMITTED
+# ---------------------------------------------------------------------------
+# The updater private key signs every release. If it leaks, anyone can push a
+# malicious "update" to every Brume install. It lives outside the repo (see
+# docs/RELEASING.md) and these patterns are a second line of defence.
+*.key
+!*.key.pub
+*.pem
+*.pfx
+*.p12
+*.tauri-key
+tauri-private.key*
+secrets/
+
+# Environment files may hold TAURI_SIGNING_PRIVATE_KEY / _PASSWORD.
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Editors / OS cruft
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
