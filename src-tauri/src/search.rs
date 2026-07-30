@@ -1,4 +1,4 @@
-//! Turning what the user typed into somewhere to go.
+﻿//! Turning what the user typed into somewhere to go.
 //!
 //! The address bar is one field doing two jobs - navigation and search - and the
 //! guessing between them is the entire content of this module. Deliberately
@@ -43,15 +43,45 @@ pub struct SearchEngine {
 /// |------------------|-----------------------------------------------------|
 /// | `k1=-1`          | Third-party ads off. Does **not** touch house promos |
 /// | `kak kax kaq kap kao` | DuckDuckGo's own promo and newsletter messages, including the "Download Browser" panel |
-/// | `kae=d`          | Dark theme, so results match Brume's chrome          |
 ///
 /// `k1=-1` alone still leaves the browser advert on the page - that was measured,
 /// not guessed, so please do not "simplify" this back to a single parameter.
+///
+/// # Custom theming
+///
+/// `kae=-1` selects a *custom* theme rather than one of the presets, which
+/// unlocks explicit colours. Brume uses this to paint results in its own palette
+/// instead of settling for a generic dark mode:
+///
+/// | Parameter | Colours                    | Brume token        |
+/// |-----------|----------------------------|--------------------|
+/// | `k7`      | Page background            | Ink `#101418`      |
+/// | `kj`      | Header background          | Ink `#101418`      |
+/// | `k21`     | Card / module background   | Surface `#171D24`  |
+/// | `k9`      | Result titles              | Paper `#F3F4F5`    |
+/// | `k8`      | Result body text           | Haar `#9DB2C0`     |
+/// | `kaa`     | Result URLs                | Haar `#9DB2C0`     |
+/// | `kx`      | Visited result titles      | Dimmed Haar        |
+///
+/// Titles get Paper and body text gets Haar, which is the same primary/secondary
+/// split the chrome uses. Lamplight is deliberately absent: the brand allows it
+/// once per screen, and a results page has too many links for that to hold.
+///
+/// This only works on the full site. `lite.duckduckgo.com` ships no stylesheets
+/// at all, so it has nothing to colour - see that entry below.
 pub const ENGINES: &[SearchEngine] = &[
     SearchEngine {
         id: "duckduckgo",
         name: "DuckDuckGo",
-        template: "https://duckduckgo.com/?q={query}&k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1&kae=d",
+        // Painted in Brume's own palette, not merely "dark". See the
+        // custom-theme table above for what each parameter colours.
+        //
+        // The hex values are the brand tokens, and a test asserts they still
+        // match brand/assets/css/tokens.css - so retheming Brume and forgetting
+        // the search page is a build failure rather than a visual surprise.
+        template: "https://duckduckgo.com/?q={query}\
+                   &kae=-1&k7=101418&k8=9db2c0&k9=f3f4f5&kx=6e7f8c&kaa=9db2c0&k21=171d24&kj=101418\
+                   &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
     },
     SearchEngine {
         id: "duckduckgo-lite",
@@ -249,6 +279,68 @@ mod tests {
     #[test]
     fn unknown_engine_falls_back_rather_than_failing() {
         assert!(resolve("test", "not-a-real-engine").starts_with("https://duckduckgo.com/"));
+    }
+
+    /// The brand kit itself, read at compile time.
+    ///
+    /// This is what makes the theme test meaningful rather than a restatement of
+    /// the same hex codes in two places.
+    const TOKENS_CSS: &str = include_str!("../../brand/assets/css/tokens.css");
+
+    /// Pulls a `--brume-*` hex value out of tokens.css, lowercased and without
+    /// the leading `#`, ready to compare against a URL parameter.
+    fn token_hex(name: &str) -> String {
+        TOKENS_CSS
+            .lines()
+            .find_map(|line| {
+                let rest = line.trim().strip_prefix(name)?;
+                // Guard against `--brume-haar` matching `--brume-haar-dark`:
+                // the very next character has to be the colon.
+                let rest = rest.strip_prefix(':')?;
+                // Values are often followed by a comment, so stop at the
+                // semicolon before doing anything else.
+                let value = rest.split(';').next()?.trim();
+                value.strip_prefix('#').map(str::to_ascii_lowercase)
+            })
+            .unwrap_or_else(|| panic!("{name} not found in tokens.css"))
+    }
+
+    #[test]
+    fn duckduckgo_theme_tracks_the_brand_tokens() {
+        let url = ddg("test");
+
+        // Parameter -> the token it is supposed to be painted with.
+        let bindings = [
+            ("k7", "--brume-ink"),     // page background
+            ("kj", "--brume-ink"),     // header background
+            ("k9", "--brume-paper"),   // result titles
+            ("k8", "--brume-haar-dark"), // result body text
+            ("kaa", "--brume-haar-dark"), // result URLs
+        ];
+
+        for (param, token) in bindings {
+            let expected = token_hex(token);
+            assert!(
+                url.to_ascii_lowercase().contains(&format!("{param}={expected}")),
+                "search theme has drifted from the brand: expected {param}={expected} \
+                 (from {token} in tokens.css)\nURL: {url}"
+            );
+        }
+
+        // Custom theme mode, without which none of the colours above apply.
+        assert!(url.contains("kae=-1"), "custom theme not selected: {url}");
+    }
+
+    #[test]
+    fn lamplight_is_not_used_for_search_results() {
+        // The brand allows the accent once per screen at most. A results page
+        // has far too many links for that to survive contact with reality.
+        let lamplight = token_hex("--brume-lamplight");
+        let url = ddg("test").to_ascii_lowercase();
+        assert!(
+            !url.contains(&lamplight),
+            "Lamplight should not colour search results: {url}"
+        );
     }
 
     #[test]
