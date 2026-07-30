@@ -36,9 +36,17 @@
       "../brand/assets/ico/brume.ico",
       "../brand/assets/png/icon-512.png"
     ],
+    "copyright": "Copyright (c) London Christensen",
+    "publisher": "London Christensen",
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "template": "installer/installer.nsi",
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["English"]
       }
     }
   }
