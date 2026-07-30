@@ -9,21 +9,10 @@
   },
 
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Brume",
-        "url": "https://www.google.com",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 480,
-        "minHeight": 360,
-        "center": true,
-        "resizable": true,
-        "theme": "Dark",
-        "backgroundColor": "#101418"
-      }
-    ],
+    "withGlobalTauri": true,
+
+    "windows": [],
+
     "security": {
       "csp": null
     }

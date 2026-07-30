@@ -1,93 +1,329 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Brume</title>
 
     <!--
-      Design tokens. Every colour, type size and geometry value in the frontend
-      comes from here - a raw hex code anywhere else in the UI is a bug.
-      Synced from brand/ by tools/sync-brand-assets.ps1; do not hand-edit.
+      This document is the browser chrome, not a page. It occupies a fixed 48px
+      strip at the top of the window; the page the user is actually looking at
+      is a separate sibling webview underneath. See src-tauri/src/browser.rs.
     -->
     <link rel="stylesheet" href="assets/brand/css/tokens.css" />
-    <link rel="icon" href="assets/brand/svg/mark.svg" />
 
     <style>
-      /* Brume's chrome is dark-first, so pin the dark values rather than
-         inheriting whatever the OS happens to prefer. The light theme arrives
-         in the polish step as an explicit user choice. */
+      @font-face {
+        font-family: "Archivo";
+        src: url("assets/brand/fonts/archivo-latin-var.woff2") format("woff2-variations");
+        font-weight: 300 700;
+        font-display: block;
+      }
+
       :root {
         color-scheme: dark;
         --bg: var(--brume-ink);
         --fg: var(--brume-paper);
         --fg-muted: var(--brume-haar-dark);
         --hairline: #232a30;
+        --surface: #171d24;
+        --surface-hover: #1e252d;
+      }
+
+      * {
+        box-sizing: border-box;
       }
 
       html,
       body {
         height: 100%;
+        margin: 0;
+        overflow: hidden; /* the strip is exactly 48px; nothing may scroll it */
       }
 
       body {
-        margin: 0;
-        display: grid;
-        place-items: center;
+        display: flex;
+        flex-direction: column;
         background: var(--bg);
         color: var(--fg);
         font-family: var(--font-ui);
         font-size: var(--text-ui);
         line-height: var(--lh-ui);
-        /* The chrome is an app surface, not a document: no text selection or
-           right-click menu on it. Page content is unaffected. */
         user-select: none;
         -webkit-user-select: none;
+        cursor: default;
       }
 
-      .plate {
+      /* --- toolbar ------------------------------------------------------- */
+      .toolbar {
+        flex: 1 1 auto;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 8px;
+        border-bottom: 1px solid var(--hairline);
+        min-height: 0;
+      }
+
+      .btn {
+        flex: 0 0 auto;
         display: grid;
-        justify-items: center;
-        /* Clear space is 3 modules = 0.375 x the mark height, per the kit. */
-        gap: calc(40px * 0.375);
-      }
-
-      .mark {
-        width: 40px;
-        height: 40px;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius);
+        background: transparent;
         color: var(--fg);
+        cursor: pointer;
+        transition: background 110ms ease, opacity 110ms ease;
+      }
+      .btn:hover:not(:disabled) {
+        background: var(--surface-hover);
+      }
+      .btn:active:not(:disabled) {
+        background: #252d36;
+      }
+      .btn:disabled {
+        /* Dimmed rather than hidden: a button that disappears makes the toolbar
+           shift under the pointer, which is worse than one that is visibly
+           unavailable. */
+        opacity: 0.28;
+        cursor: default;
+      }
+      .btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
       }
 
-      p {
-        margin: 0;
+      /* Icons are painted as masks so they inherit currentColor. The brand set
+         is drawn on a 24px grid with a 2px stroke and uses currentColor already,
+         but a mask also survives the disabled state's opacity cleanly. */
+      .ico {
+        width: 16px;
+        height: 16px;
+        background: currentColor;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+      }
+      .ico-back { -webkit-mask-image: url("assets/brand/icons/back.svg"); mask-image: url("assets/brand/icons/back.svg"); }
+      .ico-forward { -webkit-mask-image: url("assets/brand/icons/forward.svg"); mask-image: url("assets/brand/icons/forward.svg"); }
+      .ico-reload { -webkit-mask-image: url("assets/brand/icons/reload.svg"); mask-image: url("assets/brand/icons/reload.svg"); }
+      .ico-stop { -webkit-mask-image: url("assets/brand/icons/close.svg"); mask-image: url("assets/brand/icons/close.svg"); }
+      .ico-lock { -webkit-mask-image: url("assets/brand/icons/lock.svg"); mask-image: url("assets/brand/icons/lock.svg"); }
+      .ico-search { -webkit-mask-image: url("assets/brand/icons/search.svg"); mask-image: url("assets/brand/icons/search.svg"); }
+
+      /* --- address bar --------------------------------------------------- */
+      .address {
+        position: relative;
+        flex: 1 1 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 30px;
+        margin: 0 6px;
+        padding: 0 11px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        background: var(--surface);
+        min-width: 0;
+        transition: border-color 110ms ease, background 110ms ease;
+      }
+      .address:hover {
+        border-color: #2d363f;
+      }
+      .address:focus-within {
+        background: #10161c;
+        border-color: transparent;
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+      }
+
+      .scheme {
+        flex: 0 0 auto;
+        width: 13px;
+        height: 13px;
         color: var(--fg-muted);
-        font-size: var(--text-ui-sm);
-        line-height: var(--lh-ui-sm);
-        letter-spacing: 0.02em;
+      }
+
+      #url {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 13px;
+        letter-spacing: 0.005em;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+      #url:focus {
+        outline: none;
+      }
+      #url::placeholder {
+        color: var(--fg-muted);
+        opacity: 0.75;
+      }
+
+      /* --- loading indicator --------------------------------------------- */
+      /* A 2px rule along the bottom edge of the chrome. Indeterminate, because
+         WebView2 reports load start and finish but no progress fraction - a bar
+         that claimed a percentage would be inventing it. */
+      .progress {
+        flex: 0 0 auto;
+        position: relative;
+        height: 2px;
+        background: transparent;
+        overflow: hidden;
+      }
+      .progress[data-loading="true"]::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 32%;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--brume-haar-dark),
+          transparent
+        );
+        animation: sweep 1.05s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        from { transform: translateX(-110%); }
+        to { transform: translateX(420%); }
       }
     </style>
   </head>
-  <body>
-    <!--
-      Placeholder frontend.
 
-      The window currently points at a remote URL (see tauri.conf.json), so this
-      is not what you see when the app runs. It exists because Tauri needs a
-      frontendDist to bundle. From the browser-chrome step onward this file
-      becomes the real UI: tab strip, toolbar and address bar, with page content
-      rendered in a child webview beneath it.
-    -->
-    <div class="plate">
-      <!--
-        The Cleave mark, inline so it inherits currentColor from .mark.
-        Geometry copied verbatim from brand/assets/svg/mark.svg - the two halves
-        are congruent under 180-degree rotation, so the path is not symmetrical
-        in any way you can eyeball. Do not redraw it by hand.
-      -->
-      <svg class="mark" viewBox="0 0 32 32" fill="currentColor" role="img" aria-label="Brume">
-        <path d="M4 4H8.5V17.5H20.5V28H4Z M11.5 4H28V28H23.5V14.5H11.5Z" />
-      </svg>
-      <p>Browser chrome not built yet</p>
+  <body>
+    <div class="toolbar">
+      <button class="btn" id="back" title="Back" aria-label="Back" disabled>
+        <span class="ico ico-back"></span>
+      </button>
+      <button class="btn" id="forward" title="Forward" aria-label="Forward" disabled>
+        <span class="ico ico-forward"></span>
+      </button>
+      <button class="btn" id="reload" title="Reload" aria-label="Reload">
+        <span class="ico ico-reload" id="reload-icon"></span>
+      </button>
+
+      <div class="address">
+        <span class="ico scheme ico-search" id="scheme-icon"></span>
+        <input
+          type="text"
+          id="url"
+          placeholder="Search, or enter an address"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+        />
+      </div>
     </div>
+
+    <div class="progress" id="progress" data-loading="false"></div>
+
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
+      const { message } = window.__TAURI__.dialog;
+
+      const el = (id) => document.getElementById(id);
+      const urlInput = el("url");
+
+      /**
+       * Invoke a command, surfacing any failure.
+       *
+       * Every call goes through here rather than being fired and forgotten. A
+       * rejected promise with no handler is invisible - the button appears to
+       * do nothing at all, which is indistinguishable from a dead button and
+       * impossible to report usefully.
+       */
+      function call(command, args) {
+        return invoke(command, args).catch((err) => {
+          console.error(`[brume] ${command} failed:`, err);
+          message(String(err), { title: "Brume", kind: "error" });
+        });
+      }
+
+      let loading = false;
+
+      /**
+       * True while the user is typing in the address bar.
+       *
+       * Navigation events keep arriving during a page load, and overwriting the
+       * field mid-keystroke is the single most infuriating thing an address bar
+       * can do. Every real browser suppresses this; so does Brume.
+       */
+      let editing = false;
+
+      function render(state) {
+        el("back").disabled = !state.canGoBack;
+        el("forward").disabled = !state.canGoForward;
+
+        loading = state.loading;
+        el("progress").dataset.loading = String(state.loading);
+
+        const reloadIcon = el("reload-icon");
+        reloadIcon.className = state.loading ? "ico ico-stop" : "ico ico-reload";
+        el("reload").title = state.loading ? "Stop" : "Reload";
+        el("reload").setAttribute("aria-label", state.loading ? "Stop" : "Reload");
+
+        if (!editing) {
+          urlInput.value = state.url || "";
+          // A padlock only when the transport is actually encrypted. Showing one
+          // for anything else would be a lie of exactly the kind padlocks exist
+          // to prevent.
+          const secure = (state.url || "").startsWith("https://");
+          el("scheme-icon").className = secure
+            ? "ico scheme ico-lock"
+            : "ico scheme ico-search";
+        }
+      }
+
+      // --- events ---------------------------------------------------------
+      listen("brume://nav", (event) => render(event.payload));
+
+      el("back").addEventListener("click", () => call("go_back"));
+      el("forward").addEventListener("click", () => call("go_forward"));
+      el("reload").addEventListener("click", () =>
+        call(loading ? "stop_loading" : "reload")
+      );
+
+      urlInput.addEventListener("focus", () => {
+        editing = true;
+        // Select everything, so typing replaces rather than appends.
+        urlInput.select();
+      });
+
+      urlInput.addEventListener("blur", () => {
+        editing = false;
+        // Put back whatever is actually loaded, discarding an abandoned edit.
+        call("nav_status").then((s) => s && render(s));
+      });
+
+      urlInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          editing = false;
+          urlInput.blur();
+          call("navigate", { input: urlInput.value });
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          editing = false;
+          urlInput.blur();
+        }
+      });
+
+      // --- boot -----------------------------------------------------------
+      call("nav_status").then((s) => s && render(s));
+    </script>
   </body>
 </html>

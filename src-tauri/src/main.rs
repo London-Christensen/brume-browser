@@ -1,12 +1,9 @@
 // Brume - application entry point.
 //
-// At this stage Brume is a bare shell: a single window pointed at a hardcoded
-// page, which exists to prove the WebView2 rendering path works end to end
-// before any browser chrome is built on top of it.
-//
-// The window URL is configured declaratively in `tauri.conf.json` rather than
-// here, so that this file stays the place where *behaviour* lives and the
-// config stays the place where *shape* lives.
+// The window is built in Rust rather than declared in tauri.conf.json, because
+// it is not one webview but two: the chrome on top and the page beneath it.
+// Config can only describe a window with a single webview, so `browser::build`
+// owns the window's shape and this file owns the wiring.
 
 // Suppress the console window that Windows would otherwise open behind the app.
 //
@@ -16,6 +13,8 @@
 // launching a browser should not get a stray black terminal window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser;
+mod search;
 mod settings;
 mod updater;
 
@@ -33,6 +32,9 @@ fn main() {
             let store = settings::SettingsState::load(app.handle());
             let auto_update = store.get().auto_update;
             app.manage(store);
+            app.manage(browser::Browser::default());
+
+            browser::build(app.handle())?;
 
             if auto_update {
                 // Spawned rather than awaited: setup runs before the window is
@@ -46,12 +48,19 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            browser::navigate,
+            browser::go_back,
+            browser::go_forward,
+            browser::reload,
+            browser::stop_loading,
+            browser::nav_status,
+            search::search_engines,
             settings::get_settings,
             settings::set_auto_update,
             updater::check_for_updates,
         ])
         // `generate_context!` reads tauri.conf.json at compile time and bakes the
-        // window definitions, bundle identifier and asset manifest into the binary.
+        // bundle identifier and asset manifest into the binary.
         .run(tauri::generate_context!())
         .expect("failed to start Brume");
 }

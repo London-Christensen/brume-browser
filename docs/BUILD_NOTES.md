@@ -151,6 +151,61 @@ for that warning first.
 
 ---
 
+## Browser chrome: two webviews, not one
+
+Brume's window holds **two sibling webviews** — the chrome strip on top, the page beneath it.
+
+The tempting alternative is one webview showing our HTML, with pages in an `<iframe>`. It does
+not work. `X-Frame-Options` and CSP `frame-ancestors` let any site refuse to be embedded, and
+most large ones do — including Google and DuckDuckGo. A browser that cannot open a search
+engine is not a browser.
+
+This requires Tauri's **`unstable` feature**, which is what gates multiple webviews per window.
+That is a real dependency on an API Tauri may change in a minor release, so all of it is
+confined to `browser.rs` — a breaking change upstream has exactly one file to be repaired in.
+
+Child webviews take no part in any layout system. They are rectangles positioned by hand, in
+*logical* pixels, which is why `relayout` runs on every resize and scale-factor change: on a
+150% display the chrome must still be 48 CSS pixels, or the toolbar and the space reserved for
+it disagree.
+
+### Brume owns the session history
+
+`browser.rs` keeps its own `Vec<String>` of visited URLs plus an index, rather than deferring
+to the webview's own history.
+
+The reason is that **nothing exposes whether a webview can go back**. There is no DOM API for
+it, and Tauri does not surface WebView2's `CanGoBack`. Without that, the back button would
+either always be enabled or need guessing — and a back button that lies is worse than none.
+
+The cost is real and worth stating: going back **re-navigates** rather than restoring from the
+back-forward cache, so scroll position is lost and the page is refetched. A mainstream browser
+does not behave this way. The obvious improvement is reaching into WebView2 through
+`webview2-com` for the real `CanGoBack`/`GoBack`, at which point the local stack becomes
+redundant.
+
+A second known wrinkle: redirects create history entries, because `on_navigation` cannot
+distinguish a redirect from a click. Going back from a redirected page can therefore land on
+the URL that redirected you, and bounce forward again.
+
+### The content webview has no permissions
+
+`capabilities/default.json` is scoped to `webviews: ["chrome"]`. This is the single most
+important line in that file. The content webview renders arbitrary websites, and any capability
+granted to it is granted to every page the user visits. Tauri 2 denies by default, so the
+protection is simply never listing it — but it would be easy to "fix" a permissions error by
+widening the scope, and that would hand every site on the internet an IPC bridge.
+
+### The address bar guesses, and one guess is a security decision
+
+`search.rs` decides whether typed text is an address or a search. Most of it is heuristics with
+unit tests. One rule is not a heuristic: **schemes are an allowlist**. `javascript:` URLs are
+never navigated to, because pasting one into the address bar of a page you are logged into is a
+classic self-XSS delivery mechanism, which is why every mainstream browser strips them. Unknown
+schemes fall through to a search rather than being handed to the webview.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

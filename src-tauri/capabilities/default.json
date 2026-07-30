@@ -1,8 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Baseline permissions granted to the Brume browser chrome window. Tauri 2 denies everything that is not explicitly listed here, so this file grows deliberately as features are added rather than being opened up broadly up front.",
+  "description": "Permissions for Brume's chrome. Scoped to the chrome webview only - see below.",
+
   "windows": ["main"],
+
+  "//": "SECURITY: this must never include the content webview. That webview renders arbitrary websites, and any capability granted to it is granted to every page the user visits. Tauri 2 denies by default, so the protection is simply never listing it here.",
+  "webviews": ["chrome"],
+
   "permissions": [
     "core:default",
 

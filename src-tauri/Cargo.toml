@@ -18,7 +18,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Deliberately minimal. Every dependency added here shows up in the shipped
 # binary, and staying small is the entire premise of this project.
-tauri = { version = "2", features = [] }
+# The "unstable" feature is what unlocks multiple webviews inside one window.
+#
+# It is not optional for a browser: the chrome and the page have to be separate
+# webviews. The obvious alternative - rendering pages in an <iframe> inside the
+# chrome - does not work, because X-Frame-Options and frame-ancestors let any
+# site refuse to be framed, and most large ones do. Google, the default new-tab
+# destination, is among them.
+#
+# The cost is that Tauri may change these APIs in a minor release. They are
+# confined to browser.rs so that a breaking change has one place to be fixed.
+tauri = { version = "2", features = ["unstable"] }
 
 # Auto-update. The three plugins are one feature between them: updater fetches
 # and verifies, dialog asks the user first, process performs the relaunch.

@@ -36,11 +36,21 @@ pub struct Settings {
     /// Check for a new version on launch. Never affects the manual check, which
     /// stays available regardless.
     pub auto_update: bool,
+
+    /// Id of the active search engine, from `search::ENGINES`.
+    ///
+    /// Stored as the id rather than the URL template so that fixing a template
+    /// in a later version reaches everyone, instead of leaving users pinned to
+    /// whatever string was copied into their settings file the day they chose it.
+    pub search_engine: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto_update: true }
+        Self {
+            auto_update: true,
+            search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
+        }
     }
 }
 
