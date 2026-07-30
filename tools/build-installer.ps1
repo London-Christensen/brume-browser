@@ -40,6 +40,64 @@ function Invoke-Native {
     if ($code -ne 0) { throw "$What failed with exit code $code" }
 }
 
+# --- updater signing key ----------------------------------------------------
+#
+# With createUpdaterArtifacts enabled, `tauri build` produces a signed .nsis.zip
+# alongside the installer. Signing needs the private key, and the lookup order
+# matters: an explicitly set environment variable always wins, so CI can inject
+# a secret without touching this file.
+#
+# The key deliberately lives outside the repository. Losing it means no existing
+# install can ever be updated again - a new key would be rejected by every
+# client already carrying the old public key. See docs/RELEASING.md.
+$keyFile  = Join-Path $env:USERPROFILE '.tauri\brume-updater.key'
+$passFile = Join-Path $env:USERPROFILE '.tauri\brume-updater.pass'
+
+if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+    Write-Output '      signing with TAURI_SIGNING_PRIVATE_KEY from the environment'
+} elseif (Test-Path $keyFile) {
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyFile -Raw).Trim()
+    if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+        if (-not (Test-Path $passFile)) {
+            # Fail here rather than let the build reach the signing step.
+            #
+            # Without the password Tauri prompts on stdin, and an unattended
+            # build has no stdin to answer with - it hangs indefinitely, long
+            # after compiling and bundling have apparently succeeded. That looks
+            # exactly like a stalled build. Better to stop now and say why.
+            #
+            # Setting the variable to an empty string is not a workaround:
+            # Windows cannot represent an empty environment variable, so both
+            # `$env:X = ''` and SetEnvironmentVariable(X, '') delete it outright
+            # and the child process sees nothing. A key with no password simply
+            # cannot be used non-interactively on Windows.
+            throw @"
+Updater signing key found, but no password.
+
+  key:      $keyFile
+  password: $passFile  (missing)
+
+Tauri will prompt for the password on stdin, which an unattended build cannot
+answer - the build hangs rather than fails. Set
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD, or restore the password file.
+See docs/RELEASING.md.
+"@
+        }
+        $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content $passFile -Raw).Trim()
+    }
+    Write-Output "      signing with $keyFile"
+} else {
+    Write-Warning @"
+No updater signing key found.
+
+  Looked for: `$env:TAURI_SIGNING_PRIVATE_KEY  (not set)
+              $keyFile  (missing)
+
+The build will still produce an installer, but no signed update artifact, and
+existing installs would refuse an unsigned one. See docs/RELEASING.md.
+"@
+}
+
 Write-Output ''
 Write-Output '=== Stage 1/2  browser + NSIS installer ==='
 

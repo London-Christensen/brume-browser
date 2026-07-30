@@ -16,8 +16,40 @@
 // launching a browser should not get a stray black terminal window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod settings;
+mod updater;
+
+use tauri::Manager;
+
 fn main() {
     tauri::Builder::default()
+        // Three plugins, one feature between them: updater fetches and verifies
+        // the release, dialog asks the user before anything is installed, and
+        // process performs the relaunch afterwards.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            let store = settings::SettingsState::load(app.handle());
+            let auto_update = store.get().auto_update;
+            app.manage(store);
+
+            if auto_update {
+                // Spawned rather than awaited: setup runs before the window is
+                // shown, and a browser should never wait on a network round
+                // trip to open. If an update is found the prompt simply appears
+                // a moment later, over a window that is already usable.
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(updater::run_launch_check(handle));
+            }
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            settings::get_settings,
+            settings::set_auto_update,
+            updater::check_for_updates,
+        ])
         // `generate_context!` reads tauri.conf.json at compile time and bakes the
         // window definitions, bundle identifier and asset manifest into the binary.
         .run(tauri::generate_context!())
