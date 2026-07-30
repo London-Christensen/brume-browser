@@ -1,0 +1,60 @@
+/* Brume design tokens.
+   Single source of truth. Imported by the Tauri webview, the landing page and
+   the docs. If a hex code appears anywhere else in the codebase, it is a bug. */
+
+:root {
+  /* --- brand palette: four colours, no more ------------------------------ */
+  --brume-haar:      #4A5C6B;  /* primary */
+  --brume-ink:       #101418;  /* neutral */
+  --brume-paper:     #F3F4F5;  /* neutral */
+  --brume-lamplight: #C6A87C;  /* accent, once per screen at most */
+
+  /* Reversed value of the primary. Same hue, lifted for dark surfaces.
+     Not a fifth brand colour: never name it, never use it in marketing. */
+  --brume-haar-dark: #9DB2C0;
+
+  /* --- semantic, light theme -------------------------------------------- */
+  --bg:       var(--brume-paper);
+  --fg:       var(--brume-ink);
+  --fg-muted: var(--brume-haar);
+  --accent:   var(--brume-lamplight);
+  --hairline: #DEE1E4;
+
+  /* --- type ------------------------------------------------------------- */
+  /* Archivo variable does display, UI and body. Plex Mono does code. */
+  --font-ui:   "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --text-display: 40px;  --lh-display: 44px;  --tr-display: -0.03em;   /* wght 300 */
+  --text-h1:      28px;  --lh-h1:      34px;  --tr-h1:      -0.025em;  /* wght 400 */
+  --text-h2:      20px;  --lh-h2:      28px;  --tr-h2:      -0.02em;   /* wght 500 */
+  --text-body:    16px;  --lh-body:    26px;  --tr-body:    -0.005em;  /* wght 400 */
+  --text-micro:   13px;  --lh-micro:   20px;  --tr-micro:    0.005em;  /* wght 400 */
+
+  /* product UI only: browser chrome runs tighter than marketing */
+  --text-ui:      13px;  --lh-ui:      18px;
+  --text-ui-sm:   12px;  --lh-ui-sm:   16px;
+
+  /* --- geometry --------------------------------------------------------- */
+  /* The mark's module is 3 units on a 24-unit live area, i.e. 1/8 of the mark.
+     Clear space is 3 modules. Both scale with whatever size the mark is drawn. */
+  --logo-clearspace: 0.375;  /* multiply by the rendered mark height */
+  --radius:        3px;      /* buttons, inputs */
+  --icon-grid:    24px;
+  --icon-stroke:   2px;      /* butt caps, miter joins, square corners */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:       var(--brume-ink);
+    --fg:       var(--brume-paper);
+    --fg-muted: var(--brume-haar-dark);
+    --hairline: #232A30;
+  }
+}
+
+/* Focus is the one place Lamplight appears above the fold. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

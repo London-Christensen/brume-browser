@@ -117,6 +117,40 @@ inheritance with no per-theme asset variants.
 
 ---
 
+## A build trap worth remembering: the bundle-type marker
+
+`tauri build` records which kind of package a binary was shipped in by **overwriting a
+placeholder variable compiled into the executable**. The updater reads that marker later to
+work out how to apply an update.
+
+The placeholder is consumed the first time it is written. So bundling a binary that was already
+bundled — which happens whenever only the NSIS template or `tauri.conf.json` changed and cargo
+therefore saw no reason to relink — fails with:
+
+```
+Warn Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable not found in binary.
+     Updater plugin may not be able to update this package.
+```
+
+**It is only a warning.** The build succeeds, the installer is produced, everything looks fine,
+and the resulting package may simply refuse to update itself later. That combination — silent,
+non-fatal, and only observable much later during an update — is what makes it worth writing
+down.
+
+`tools/build-installer.ps1` runs `cargo clean -p brume --release` before bundling, which forces
+a genuine relink and a fresh placeholder while leaving the dependency tree cached.
+
+**Deleting `target/release/brume.exe` is not enough**, which is worth knowing because it is the
+obvious thing to try and it silently does not work. Cargo links into
+`target/release/deps/brume-<hash>.exe` and hardlinks that to `brume.exe`. The two names are one
+file, so patching one patches both — and deleting the copy merely restores the already-patched
+original. The giveaway is `Finished \`release\` profile in 1.12s`: no relink happened.
+
+If you ever run `npm run tauri build` by hand and intend to ship the result, check the output
+for that warning first.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

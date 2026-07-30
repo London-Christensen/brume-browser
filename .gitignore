@@ -29,6 +29,11 @@ pnpm-debug.log*
 src-tauri/gen/
 src-tauri/WixTools/
 src-tauri/.tauri/
+installer-shell/gen/
+
+# The shippable installer, assembled by tools/build-installer.ps1. A release
+# artifact, published to GitHub Releases rather than committed.
+dist/
 
 # Bundled installers and updater artifacts are release outputs, not source.
 # They are published to GitHub Releases instead of being committed.

@@ -683,13 +683,24 @@ Function .onInit
   ; This must run after SetContext, because SHCTX only resolves to the right
   ; hive once the install mode is known.
   ;
-  ; An existing value always wins. A reinstall, a repair, or an updater-driven
-  ; passive install all inherit whatever the user last chose; only a genuinely
-  ; fresh install falls through to the default of enabled.
+  ; Precedence, highest first:
+  ;   1. /NOAUTOUPDATE on the command line - how the custom installer shell
+  ;      forwards the user's choice when it drives this installer silently.
+  ;   2. An existing registry value - so a reinstall, a repair, or an
+  ;      updater-driven passive install inherits whatever the user last chose.
+  ;   3. Enabled, for a genuinely fresh install.
   ClearErrors
   ReadRegDWORD $AutoUpdateEnabled SHCTX "${MANUPRODUCTKEY}" "AutoUpdate"
   ${If} ${Errors}
     StrCpy $AutoUpdateEnabled 1
+  ${EndIf}
+
+  ; Checked last so it overrides the stored value. Silent installs have no
+  ; Options page, so this flag is the only way a caller can opt out.
+  ClearErrors
+  ${GetOptions} $CMDLINE "/NOAUTOUPDATE" $0
+  ${IfNot} ${Errors}
+    StrCpy $AutoUpdateEnabled 0
   ${EndIf}
 
   ${If} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"

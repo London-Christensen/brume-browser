@@ -1,7 +1,79 @@
 # The Brume installer
 
-Brume ships a **custom NSIS template** at `src-tauri/installer/installer.nsi`, wired up via
-`bundle.windows.nsis.template` in `tauri.conf.json`.
+Brume's installer is two pieces:
+
+| Piece | What it is | Who sees it |
+|---|---|---|
+| **`Brume-Setup.exe`** | A Tauri app in `installer-shell/` with a fully custom HTML/CSS UI | Humans, on a first install |
+| **`Brume_<ver>_x64-setup.exe`** | A custom NSIS template at `src-tauri/installer/installer.nsi` | Nobody, normally — it runs silently underneath |
+
+**`dist/Brume-Setup.exe` is the file to publish.** It is self-contained: the NSIS installer is
+embedded inside it.
+
+## Why a shell over NSIS, rather than replacing it
+
+MUI2 is a thin skin over Win32 dialog resources. Every widget is a native control that paints
+itself, which is why the reskin below hits a hard ceiling — buttons and checkbox captions are
+drawn by the Windows theme engine and ignore the colours they are handed.
+
+The shell sidesteps that entirely by drawing its own UI in a webview, so it gets real
+typography, real animation, a rounded borderless window and the Brume palette exactly.
+
+What it does *not* do is reimplement installation. The NSIS installer still places files,
+registers with Add/Remove Programs, writes the uninstaller and creates shortcuts. The shell
+collects two decisions and then runs it:
+
+```
+Brume_setup.exe /S [/NOAUTOUPDATE] /D=<install dir>
+```
+
+**The reason this split matters is updates.** Tauri's updater applies an update by running the
+NSIS installer with `/P /UPDATE` and no UI at all. The pretty shell is never involved. Had NSIS
+been replaced outright, the uninstaller, the Add/Remove Programs entry and the entire
+update-apply path would all have had to be rebuilt — and the updater would need a custom
+artifact type it does not support.
+
+### Three things about that command line
+
+- **`/D` must be last, must not be quoted, and swallows the rest of the line verbatim.** That
+  last rule is what lets an unquoted path containing spaces work. Rust's normal argument
+  quoting corrupts it, so the shell uses `raw_arg` throughout.
+- **`/NOAUTOUPDATE` is a Brume addition**, checked in `.onInit` after the stored registry value
+  so it takes precedence. Silent installs have no Options page, so this flag is the only way a
+  caller can express the user's choice — and it keeps NSIS as the single writer of the setting
+  rather than having the shell race it.
+- **A zero exit code is not proof of success.** A bad `/D` path fails quietly, so the shell
+  checks that `brume.exe` actually exists before reporting success.
+
+### The WebView2 chicken-and-egg
+
+The shell renders its UI in WebView2 — but bootstrapping WebView2 is the NSIS installer's job.
+If the runtime is missing, `tauri::Builder::run` cannot even draw an error message.
+
+So `main()` probes the registry for the WebView2 client key **before Tauri starts**, and hands
+straight off to the NSIS installer with its own UI if the runtime is absent. The user gets the
+plain installer instead of the styled one, which is a fair trade for it working at all.
+
+### Build order is not optional
+
+The shell embeds the NSIS installer with `include_bytes!`, so the NSIS artifact must exist
+before the shell compiles. `build.rs` discovers it by pattern rather than by fixed name,
+because the filename carries the version — a hardcoded name would silently embed a stale
+payload after a version bump.
+
+```bash
+pwsh tools/build-installer.ps1
+```
+
+runs both stages in order and drops the result in `dist/`. Running `cargo build` in
+`installer-shell/` on its own fails with an explicit message rather than a confusing one.
+
+---
+
+## The NSIS layer
+
+Everything below concerns `src-tauri/installer/installer.nsi`, the installer that runs
+underneath the shell — and that runs *alone* during an auto-update.
 
 ## Why a custom template at all
 
@@ -168,8 +240,31 @@ Options checkbox and its caption, the install log — is on the Brume palette.
 
 ## Verification performed
 
-Against `Brume_0.1.0_x64-setup.exe` (1.02 MB), from a clean state — no install directory, no
-registry key:
+### The shell — `dist/Brume-Setup.exe` (4.27 MB)
+
+| Check | Result |
+|---|---|
+| Window renders | Rounded, borderless, genuinely transparent corners |
+| Install path pre-filled | `%LOCALAPPDATA%\Brume` from `default_install_dir` |
+| **Install path containing spaces** | Installed correctly to `…\Brume Space Test` |
+| Auto-update toggle off → registry | `AutoUpdate = 0` |
+| Done state | Shows the real install path |
+| Launch Brume | Started `brume.exe` from the spaced path, closed the installer |
+| **WebView2 missing** | No shell window; handed straight to the NSIS installer's own UI |
+
+The spaced-path case is the one that matters most, because it is where the obvious
+implementation breaks. Rust's `Command::arg` quotes any argument containing a space, and a
+quoted `/D="C:\Some Path"` makes NSIS install to the wrong place — usually the default —
+without erroring. Hence `raw_arg` throughout, and hence the post-install check that
+`brume.exe` really landed where it was asked to.
+
+The WebView2 case was tested by temporarily pointing the registry probe at an all-zero GUID so
+the runtime appeared absent, then reverting. That is worth repeating after any change to
+`webview2_available`, since the failure is invisible on a machine that has the runtime.
+
+### The NSIS layer — `Brume_0.1.0_x64-setup.exe` (1.04 MB)
+
+From a clean state — no install directory, no registry key:
 
 | Check | Result |
 |---|---|
@@ -189,10 +284,12 @@ created correctly. Use `[Environment]::GetFolderPath('Desktop')` when verifying.
 ## Testing it yourself
 
 ```bash
-npm run tauri build
+pwsh tools/build-installer.ps1
 ```
 
-Then run `src-tauri/target/release/bundle/nsis/Brume_0.1.0_x64-setup.exe`.
+Then run `dist/Brume-Setup.exe`. To exercise the NSIS layer on its own — which is what an
+auto-update actually runs — use `src-tauri/target/release/bundle/nsis/Brume_0.1.0_x64-setup.exe`
+directly.
 
 To inspect the handoff value after installing:
 

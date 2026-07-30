@@ -1,0 +1,13 @@
+{
+  "$schema": "./gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the installer shell. The window is undecorated, so dragging and closing have to be driven from the frontend rather than by a title bar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "dialog:allow-open"
+  ]
+}

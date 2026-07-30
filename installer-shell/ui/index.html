@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Install Brume</title>
+
+    <link rel="stylesheet" href="assets/brand/css/tokens.css" />
+
+    <style>
+      /* ---------------------------------------------------------------------
+         Archivo, vendored rather than fetched. The installer has to paint before
+         a CDN request would return, and reaching out to a font host to draw an
+         installer is both slow and a privacy leak.
+         --------------------------------------------------------------------- */
+      @font-face {
+        font-family: "Archivo";
+        src: url("assets/brand/fonts/archivo-latin-var.woff2") format("woff2-variations");
+        font-weight: 300 700;
+        font-display: block;
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+          U+02DC, U+2000-206F, U+20AC, U+2122, U+2212, U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: "Archivo";
+        src: url("assets/brand/fonts/archivo-latin-ext-var.woff2") format("woff2-variations");
+        font-weight: 300 700;
+        font-display: block;
+        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+1E00-1E9F, U+2020,
+          U+20A0-20AB, U+2C60-2C7F, U+A720-A7FF;
+      }
+
+      /* Dark-only. The installer does not follow the OS theme, because it is a
+         first impression of the browser and the browser is dark-first. */
+      :root {
+        color-scheme: dark;
+        --bg: var(--brume-ink);
+        --fg: var(--brume-paper);
+        --fg-muted: var(--brume-haar-dark);
+        --hairline: #232a30;
+        --surface: #161b21;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        /* The window is transparent; the card below is the only thing painted.
+           Anything opaque here would square off the rounded corners. */
+        background: transparent;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: var(--font-ui);
+        color: var(--fg);
+        /* An installer is a control surface, not a document. */
+        user-select: none;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+
+      /* --- the card ------------------------------------------------------ */
+      .shell {
+        position: relative;
+        height: 100%;
+        /* Inset leaves room for the shadow to fall into transparent space. */
+        padding: 18px 20px 22px;
+      }
+
+      .card {
+        position: relative;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        border-radius: 16px;
+        border: 1px solid var(--hairline);
+        background:
+          radial-gradient(120% 90% at 82% -20%, rgba(157, 178, 192, 0.13), transparent 62%),
+          linear-gradient(168deg, #161c23 0%, var(--brume-ink) 46%);
+        box-shadow:
+          0 24px 60px -12px rgba(0, 0, 0, 0.82),
+          0 8px 20px -8px rgba(0, 0, 0, 0.6);
+        overflow: hidden;
+      }
+
+      /* --- header -------------------------------------------------------- */
+      header {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 18px 0 20px;
+      }
+
+      .lockup {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        pointer-events: none;
+      }
+      .lockup .mark {
+        width: 19px;
+        height: 19px;
+        color: var(--fg);
+      }
+      /* The wordmark is painted as a mask rather than an <img>, so it inherits
+         currentColor. A cross-file <use> would not resolve, and an <img> cannot
+         be recoloured. Width tracks the source viewBox ratio of 264 : 73.5. */
+      .lockup .word {
+        width: 54px;
+        height: 15px;
+        background: currentColor;
+        opacity: 0.95;
+        -webkit-mask: url("assets/brand/svg/wordmark.svg") no-repeat center / contain;
+        mask: url("assets/brand/svg/wordmark.svg") no-repeat center / contain;
+      }
+
+      .close {
+        -webkit-app-region: no-drag;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--fg-muted);
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease;
+      }
+      .close:hover {
+        background: rgba(243, 244, 245, 0.08);
+        color: var(--fg);
+      }
+      .close svg {
+        width: 15px;
+        height: 15px;
+      }
+
+      /* --- body ---------------------------------------------------------- */
+      main {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        padding: 22px 30px 0;
+        min-height: 0;
+      }
+
+      h1 {
+        margin: 0 0 7px;
+        font-size: 27px;
+        line-height: 32px;
+        letter-spacing: var(--tr-h1);
+        font-weight: 400;
+      }
+
+      .lede {
+        margin: 0 0 26px;
+        max-width: 42ch;
+        color: var(--fg-muted);
+        font-size: 13.5px;
+        line-height: 21px;
+      }
+
+      .field-label {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--fg-muted);
+        font-size: 11px;
+        line-height: 14px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .path-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      input[type="text"] {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--fg);
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+        transition: border-color 120ms ease;
+      }
+      input[type="text"]:hover {
+        border-color: #2e373f;
+      }
+      input[type="text"]:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+        border-color: transparent;
+      }
+
+      /* --- buttons ------------------------------------------------------- */
+      button {
+        font-family: inherit;
+        font-size: 13px;
+        letter-spacing: 0.01em;
+      }
+
+      .btn {
+        height: 38px;
+        padding: 0 18px;
+        border-radius: var(--radius);
+        border: 1px solid var(--hairline);
+        background: var(--surface);
+        color: var(--fg);
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, transform 90ms ease;
+      }
+      .btn:hover {
+        background: #1c232b;
+        border-color: #2e373f;
+      }
+      .btn:active {
+        transform: translateY(1px);
+      }
+
+      .btn-primary {
+        border-color: transparent;
+        background: var(--brume-paper);
+        color: var(--brume-ink);
+        font-weight: 500;
+      }
+      .btn-primary:hover {
+        background: #ffffff;
+        border-color: transparent;
+      }
+      .btn-primary:disabled {
+        background: #2a323a;
+        color: #6b7780;
+        cursor: default;
+        transform: none;
+      }
+
+      /* --- toggle -------------------------------------------------------- */
+      /* Built from scratch rather than a native checkbox. This is the control
+         the NSIS installer could not theme, because Windows paints checkbox
+         captions through the theme engine and ignores the colour it is given. */
+      .toggle-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        margin-top: 24px;
+      }
+
+      .switch {
+        flex: 0 0 auto;
+        position: relative;
+        width: 38px;
+        height: 22px;
+        margin-top: 1px;
+        padding: 0;
+        border: 0;
+        border-radius: 11px;
+        background: #2a323a;
+        cursor: pointer;
+        transition: background 160ms ease;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #7d8b95;
+        transition: transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1), background 160ms ease;
+      }
+      .switch[aria-checked="true"] {
+        background: var(--brume-haar-dark);
+      }
+      .switch[aria-checked="true"]::after {
+        transform: translateX(16px);
+        background: var(--brume-ink);
+      }
+      .switch:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .toggle-text {
+        cursor: pointer;
+      }
+      .toggle-title {
+        font-size: 13.5px;
+        line-height: 20px;
+      }
+      .toggle-help {
+        margin: 2px 0 0;
+        max-width: 46ch;
+        color: var(--fg-muted);
+        font-size: 12px;
+        line-height: 17px;
+      }
+
+      /* --- footer -------------------------------------------------------- */
+      footer {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 9px;
+        padding: 20px 30px 22px;
+      }
+
+      /* --- progress ------------------------------------------------------ */
+      .track {
+        position: relative;
+        height: 3px;
+        margin-top: 26px;
+        border-radius: 2px;
+        background: #232a30;
+        overflow: hidden;
+      }
+      .track::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 38%;
+        border-radius: 2px;
+        background: linear-gradient(90deg, transparent, var(--brume-haar-dark), transparent);
+        animation: sweep 1.15s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        from {
+          transform: translateX(-110%);
+        }
+        to {
+          transform: translateX(370%);
+        }
+      }
+
+      .status {
+        margin: 0;
+        color: var(--fg-muted);
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .tick {
+        width: 34px;
+        height: 34px;
+        margin-bottom: 16px;
+        color: var(--brume-haar-dark);
+      }
+
+      .error-box {
+        margin-top: 18px;
+        padding: 12px 14px;
+        border: 1px solid #3a2a2a;
+        border-radius: var(--radius);
+        background: #1b1416;
+        color: #e8c9c9;
+        font-size: 12.5px;
+        line-height: 18px;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="shell">
+      <div class="card">
+        <!--
+          No decorative watermark here on purpose. An oversized Cleave bled off
+          the corner was tried and removed: the mark's two halves are separated
+          by a wide cut, so cropping it leaves two disconnected rectangles that
+          read as empty containers rather than as a logo. The mark only works
+          whole. Brand presence comes from the header lockup and the palette.
+        -->
+
+        <!-- The window has no title bar, so the header is the drag handle. -->
+        <header data-tauri-drag-region>
+          <div class="lockup">
+            <svg class="mark" viewBox="0 0 32 32" fill="currentColor" role="img" aria-label="Brume">
+              <path d="M4 4H8.5V17.5H20.5V28H4Z M11.5 4H28V28H23.5V14.5H11.5Z" />
+            </svg>
+            <span class="word" aria-hidden="true"></span>
+          </div>
+          <button class="close" id="close" title="Cancel" aria-label="Cancel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 5l14 14M19 5L5 19" />
+            </svg>
+          </button>
+        </header>
+
+        <!-- ============ configure ============ -->
+        <main id="view-configure">
+          <h1>Install Brume</h1>
+          <p class="lede">
+            A lightweight browser that renders through the WebView2 runtime already on your
+            PC, so there is no second copy of Chromium to download.
+          </p>
+
+          <label class="field-label" for="path">Location</label>
+          <div class="path-row">
+            <input type="text" id="path" spellcheck="false" />
+            <button class="btn" id="browse">Browse</button>
+          </div>
+
+          <div class="toggle-row">
+            <button
+              class="switch"
+              id="autoupdate"
+              role="switch"
+              aria-checked="true"
+              aria-labelledby="autoupdate-label"
+            ></button>
+            <div class="toggle-text" id="toggle-text">
+              <div class="toggle-title" id="autoupdate-label">Enable automatic updates</div>
+              <p class="toggle-help">
+                Brume checks for a new version on launch and asks before installing it. Never
+                silently. You can change this later in Settings, where a manual check is
+                always available.
+              </p>
+            </div>
+          </div>
+
+          <div class="error-box" id="error" hidden></div>
+        </main>
+        <footer id="footer-configure">
+          <button class="btn" id="cancel">Cancel</button>
+          <button class="btn btn-primary" id="install">Install</button>
+        </footer>
+
+        <!-- ============ installing ============ -->
+        <main id="view-installing" hidden>
+          <h1>Installing</h1>
+          <p class="status">Copying Brume into place.</p>
+          <div class="track"></div>
+        </main>
+        <footer id="footer-installing" hidden>
+          <button class="btn btn-primary" disabled>Installing…</button>
+        </footer>
+
+        <!-- ============ done ============ -->
+        <main id="view-done" hidden>
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+          <h1>Brume is installed</h1>
+          <p class="status" id="done-detail"></p>
+        </main>
+        <footer id="footer-done" hidden>
+          <button class="btn" id="finish">Close</button>
+          <button class="btn btn-primary" id="launch">Launch Brume</button>
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const { getCurrentWindow } = window.__TAURI__.window;
+
+      const el = (id) => document.getElementById(id);
+      const appWindow = getCurrentWindow();
+
+      let autoUpdate = true;
+
+      /** Swap which of the three view/footer pairs is visible. */
+      function show(state) {
+        for (const name of ["configure", "installing", "done"]) {
+          const on = name === state;
+          el(`view-${name}`).hidden = !on;
+          el(`footer-${name}`).hidden = !on;
+        }
+      }
+
+      function setError(message) {
+        const box = el("error");
+        box.hidden = !message;
+        box.textContent = message || "";
+      }
+
+      function setToggle(next) {
+        autoUpdate = next;
+        el("autoupdate").setAttribute("aria-checked", String(next));
+      }
+
+      // --- wiring ---------------------------------------------------------
+      el("close").addEventListener("click", () => appWindow.close());
+      el("cancel").addEventListener("click", () => appWindow.close());
+      el("finish").addEventListener("click", () => appWindow.close());
+
+      el("autoupdate").addEventListener("click", () => setToggle(!autoUpdate));
+      // Clicking the caption toggles too, matching a native checkbox.
+      el("toggle-text").addEventListener("click", () => setToggle(!autoUpdate));
+
+      el("browse").addEventListener("click", async () => {
+        const picked = await invoke("pick_folder");
+        if (picked) {
+          // The picker returns a container, so append the product folder rather
+          // than scattering brume.exe loose into whatever was chosen.
+          const sep = picked.endsWith("\\") ? "" : "\\";
+          el("path").value = picked.toLowerCase().endsWith("\\brume")
+            ? picked
+            : `${picked}${sep}Brume`;
+        }
+      });
+
+      el("install").addEventListener("click", async () => {
+        setError("");
+        const dir = el("path").value.trim();
+        if (!dir) {
+          setError("Choose a folder to install into.");
+          return;
+        }
+
+        show("installing");
+        try {
+          await invoke("install", { dir, autoUpdate });
+          el("done-detail").textContent = dir;
+          show("done");
+        } catch (err) {
+          show("configure");
+          setError(String(err));
+        }
+      });
+
+      el("launch").addEventListener("click", async () => {
+        try {
+          await invoke("launch_brume", { dir: el("path").value.trim() });
+          appWindow.close();
+        } catch (err) {
+          setError(String(err));
+        }
+      });
+
+      // --- boot -----------------------------------------------------------
+      (async () => {
+        el("path").value = await invoke("default_install_dir");
+      })();
+    </script>
+  </body>
+</html>

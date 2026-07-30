@@ -46,27 +46,39 @@ subsequent runs are incremental and fast.
 ### Produce the Windows installer
 
 ```bash
-npm run tauri build
+pwsh tools/build-installer.ps1
 ```
 
-Outputs an NSIS installer to:
+This runs both stages and drops the shippable installer at **`dist/Brume-Setup.exe`**. That
+single file is what you publish — the NSIS installer is embedded inside it.
 
-```
-src-tauri/target/release/bundle/nsis/
-```
+The two stages exist because the installer is two pieces:
 
-Running that `.exe` installs a standalone Brume application that runs independently of
-this development environment.
+1. `npm run tauri build` bundles the browser and produces an NSIS installer in
+   `src-tauri/target/release/bundle/nsis/`.
+2. `cargo build --release` in `installer-shell/` builds the custom-UI front end, embedding
+   stage 1's output.
+
+The order matters — stage 2 cannot compile without stage 1's artifact. Running
+`npm run tauri build` alone is still fine when you only want to test the browser; it just
+produces the plain NSIS installer rather than the styled one.
+
+Either installer installs a standalone Brume application that runs independently of this
+development environment. See [docs/INSTALLER.md](docs/INSTALLER.md) for why it is split this
+way.
 
 ## Project layout
 
 ```
-src/          Frontend — the browser chrome (tabs, toolbar, address bar). Plain HTML/CSS/JS.
-  assets/brand/   Runtime brand assets. Generated — see below, do not hand-edit.
-src-tauri/    Rust backend — window and tab management, persistence, OS integration.
-brand/        The Brume brand kit: mark, wordmark, icon set, design tokens, spec.
-tools/        Repository maintenance scripts.
-docs/         Build notes, release process, and extension guides.
+src/              Frontend — the browser chrome (tabs, toolbar, address bar). Plain HTML/CSS/JS.
+  assets/brand/     Runtime brand assets. Generated — see below, do not hand-edit.
+src-tauri/        Rust backend — window and tab management, persistence, OS integration.
+  installer/        Custom NSIS template, plus the header/sidebar bitmaps.
+installer-shell/  Brume-Setup.exe — the custom-UI installer that drives NSIS underneath.
+brand/            The Brume brand kit: mark, wordmark, icon set, fonts, design tokens, spec.
+tools/            Build and maintenance scripts.
+docs/             Build notes, release process, and extension guides.
+dist/             Build output. Not committed.
 ```
 
 ## Brand assets
