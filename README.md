@@ -102,6 +102,7 @@ hex value anywhere in the UI is a bug.
 - [docs/BUILD_NOTES.md](docs/BUILD_NOTES.md) — architectural decisions and known limitations
 - [docs/INSTALLER.md](docs/INSTALLER.md) — the custom NSIS installer, and its maintenance cost
 - [docs/RELEASING.md](docs/RELEASING.md) — how to cut a new release and publish an update
+- [docs/TESTING.md](docs/TESTING.md) — driving the app over a socket instead of hijacking the mouse
 
 ## Licence
 
