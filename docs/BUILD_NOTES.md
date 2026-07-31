@@ -169,6 +169,38 @@ Child webviews take no part in any layout system. They are rectangles positioned
 150% display the chrome must still be 48 CSS pixels, or the toolbar and the space reserved for
 it disagree.
 
+### Tabs are one webview each, and the commands must be `async`
+
+Every tab gets its own content webview. Reusing a single webview would mean
+switching tabs reloads the page, loses scroll position and discards form input.
+Inactive tabs are **hidden, not destroyed**, so a background tab keeps running
+and still finishes loading — which is what every real browser does.
+
+**Any command that creates, closes or reparents a webview must be declared
+`async`.** This is not a style preference, and getting it wrong produces one of
+the nastiest failure modes in the codebase.
+
+Tauri runs a *synchronous* command on the main thread. `Window::add_child` is
+implemented as dispatch-and-block:
+
+```rust
+self.run_on_main_thread(move || { ...build...; tx.send(res) })?;
+rx.recv().unwrap()          // blocks the calling thread
+```
+
+Call that from the main thread and it queues work onto the very thread it then
+blocks. The closure can never run. The result is not an error — **the entire app
+deadlocks**, with the half-built webview stranded at `about:blank` and every
+subsequent command timing out, including ones that touch no webview at all. There
+is nothing in the logs.
+
+Declaring the command `async` moves it onto the async runtime, so `add_child`
+dispatches to a main thread that is still free to run it.
+
+Worth noting that the obvious "fix" — wrapping the work in `run_on_main_thread`
+yourself — makes it *structurally identical* and deadlocks just the same. The
+requirement is to be **off** the main thread, not on it.
+
 ### Brume owns the session history
 
 `browser.rs` keeps its own `Vec<String>` of visited URLs plus an index, rather than deferring

@@ -75,7 +75,17 @@ function Get-BrumeTargets {
         # target at once, which only surfaces later as a confusing type error.
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:BrumePort)/json/list" `
                                       -UseBasicParsing -TimeoutSec 5
-        @($response.Content | ConvertFrom-Json)
+
+        # Enumerate with an explicit loop rather than wrapping in @().
+        #
+        # ConvertFrom-Json on PowerShell 5.1 emits a JSON array as a *single*
+        # pipeline object, and @() around that just wraps the blob again - it
+        # does not flatten it. foreach handles both shapes correctly: an array
+        # enumerates, a lone object yields one item.
+        $parsed = ConvertFrom-Json $response.Content
+        $out = @()
+        foreach ($item in $parsed) { $out += $item }
+        $out
     } catch {
         if (-not $Quiet) { Write-Warning "CDP not reachable on $($script:BrumePort): $($_.Exception.Message)" }
         @()

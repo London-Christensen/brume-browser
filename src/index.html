@@ -1,13 +1,16 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <title>Brume</title>
 
     <!--
-      This document is the browser chrome, not a page. It occupies a fixed 48px
-      strip at the top of the window; the page the user is actually looking at
-      is a separate sibling webview underneath. See src-tauri/src/browser.rs.
+      This document is the browser chrome, not a page. It occupies a fixed strip
+      at the top of the window - 36px of tab strip over 40px of toolbar - and the
+      page the user is looking at is a separate sibling webview underneath, one
+      per tab. See src-tauri/src/browser.rs.
+
+      The heights here and the constants in browser.rs must agree.
     -->
     <link rel="stylesheet" href="assets/brand/css/tokens.css" />
 
@@ -27,6 +30,9 @@
         --hairline: #232a30;
         --surface: #171d24;
         --surface-hover: #1e252d;
+
+        --tab-strip-h: 36px;
+        --toolbar-h: 40px;
       }
 
       * {
@@ -37,7 +43,7 @@
       body {
         height: 100%;
         margin: 0;
-        overflow: hidden; /* the strip is exactly 48px; nothing may scroll it */
+        overflow: hidden; /* the strip is a fixed height; nothing may scroll it */
       }
 
       body {
@@ -53,14 +59,132 @@
         cursor: default;
       }
 
+      /* --- tab strip ----------------------------------------------------- */
+      .tabs {
+        flex: 0 0 var(--tab-strip-h);
+        display: flex;
+        align-items: stretch;
+        gap: 1px;
+        padding: 5px 6px 0;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex: 1 1 0;
+        /* Tabs shrink as more open, but never past the point where the title is
+           gone entirely - beyond that they stop shrinking and simply clip. */
+        min-width: 44px;
+        max-width: 220px;
+        padding: 0 8px 0 10px;
+        border-radius: var(--radius) var(--radius) 0 0;
+        background: transparent;
+        color: var(--fg-muted);
+        border: 0;
+        font: inherit;
+        cursor: default;
+        transition: background 110ms ease, color 110ms ease;
+      }
+      .tab:hover {
+        background: #141a20;
+        color: var(--fg);
+      }
+      .tab[data-active="true"] {
+        background: var(--surface);
+        color: var(--fg);
+      }
+
+      .tab-favicon {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        border-radius: 2px;
+        object-fit: contain;
+      }
+      /* Shown when a site has no favicon, or it fails to load. */
+      .tab-favicon-fallback {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        background: currentColor;
+        opacity: 0.45;
+        -webkit-mask: url("assets/brand/icons/tab.svg") no-repeat center / contain;
+        mask: url("assets/brand/icons/tab.svg") no-repeat center / contain;
+      }
+
+      .tab-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        text-align: left;
+        font-size: 12px;
+      }
+
+      .tab-close {
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        width: 17px;
+        height: 17px;
+        padding: 0;
+        border: 0;
+        border-radius: 2px;
+        background: transparent;
+        color: inherit;
+        cursor: default;
+        opacity: 0;
+        transition: opacity 110ms ease, background 110ms ease;
+      }
+      /* The close button appears on hover or on the active tab. Always-visible
+         close buttons on every tab turn the strip into a row of targets to
+         misclick. */
+      .tab:hover .tab-close,
+      .tab[data-active="true"] .tab-close {
+        opacity: 0.7;
+      }
+      .tab-close:hover {
+        opacity: 1;
+        background: #2b333c;
+      }
+      .tab-close svg {
+        width: 9px;
+        height: 9px;
+      }
+
+      .new-tab {
+        flex: 0 0 auto;
+        align-self: center;
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        margin-left: 3px;
+        padding: 0;
+        border: 0;
+        border-radius: var(--radius);
+        background: transparent;
+        color: var(--fg-muted);
+        cursor: default;
+        transition: background 110ms ease, color 110ms ease;
+      }
+      .new-tab:hover {
+        background: var(--surface-hover);
+        color: var(--fg);
+      }
+
       /* --- toolbar ------------------------------------------------------- */
       .toolbar {
-        flex: 1 1 auto;
+        flex: 0 0 var(--toolbar-h);
         display: flex;
         align-items: center;
         gap: 2px;
         padding: 0 8px;
-        border-bottom: 1px solid var(--hairline);
+        background: var(--surface);
         min-height: 0;
       }
 
@@ -68,40 +192,34 @@
         flex: 0 0 auto;
         display: grid;
         place-items: center;
-        width: 30px;
-        height: 30px;
+        width: 28px;
+        height: 28px;
         padding: 0;
         border: 0;
         border-radius: var(--radius);
         background: transparent;
         color: var(--fg);
-        cursor: pointer;
+        cursor: default;
         transition: background 110ms ease, opacity 110ms ease;
       }
       .btn:hover:not(:disabled) {
-        background: var(--surface-hover);
-      }
-      .btn:active:not(:disabled) {
-        background: #252d36;
+        background: #212a33;
       }
       .btn:disabled {
         /* Dimmed rather than hidden: a button that disappears makes the toolbar
-           shift under the pointer, which is worse than one that is visibly
-           unavailable. */
+           shift under the pointer, which is worse than one visibly unavailable. */
         opacity: 0.28;
-        cursor: default;
       }
       .btn:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: -2px;
       }
 
-      /* Icons are painted as masks so they inherit currentColor. The brand set
-         is drawn on a 24px grid with a 2px stroke and uses currentColor already,
-         but a mask also survives the disabled state's opacity cleanly. */
+      /* Icons are painted as masks so they inherit currentColor and survive the
+         disabled state's opacity cleanly. */
       .ico {
-        width: 16px;
-        height: 16px;
+        width: 15px;
+        height: 15px;
         background: currentColor;
         -webkit-mask-repeat: no-repeat;
         mask-repeat: no-repeat;
@@ -116,28 +234,27 @@
       .ico-stop { -webkit-mask-image: url("assets/brand/icons/close.svg"); mask-image: url("assets/brand/icons/close.svg"); }
       .ico-lock { -webkit-mask-image: url("assets/brand/icons/lock.svg"); mask-image: url("assets/brand/icons/lock.svg"); }
       .ico-search { -webkit-mask-image: url("assets/brand/icons/search.svg"); mask-image: url("assets/brand/icons/search.svg"); }
+      .ico-plus { -webkit-mask-image: url("assets/brand/icons/plus.svg"); mask-image: url("assets/brand/icons/plus.svg"); }
 
       /* --- address bar --------------------------------------------------- */
       .address {
-        position: relative;
         flex: 1 1 auto;
         display: flex;
         align-items: center;
         gap: 8px;
-        height: 30px;
+        height: 28px;
         margin: 0 6px;
         padding: 0 11px;
-        border: 1px solid var(--hairline);
+        border: 1px solid transparent;
         border-radius: var(--radius);
-        background: var(--surface);
+        background: #0e1319;
         min-width: 0;
-        transition: border-color 110ms ease, background 110ms ease;
+        transition: border-color 110ms ease;
       }
       .address:hover {
         border-color: #2d363f;
       }
       .address:focus-within {
-        background: #10161c;
         border-color: transparent;
         outline: 2px solid var(--accent);
         outline-offset: -1px;
@@ -145,8 +262,8 @@
 
       .scheme {
         flex: 0 0 auto;
-        width: 13px;
-        height: 13px;
+        width: 12px;
+        height: 12px;
         color: var(--fg-muted);
       }
 
@@ -158,8 +275,7 @@
         background: transparent;
         color: var(--fg);
         font-family: var(--font-ui);
-        font-size: 13px;
-        letter-spacing: 0.005em;
+        font-size: 12.5px;
         user-select: text;
         -webkit-user-select: text;
         cursor: text;
@@ -169,18 +285,16 @@
       }
       #url::placeholder {
         color: var(--fg-muted);
-        opacity: 0.75;
+        opacity: 0.7;
       }
 
       /* --- loading indicator --------------------------------------------- */
       /* A 2px rule along the bottom edge of the chrome. Indeterminate, because
          WebView2 reports load start and finish but no progress fraction - a bar
-         that claimed a percentage would be inventing it. */
+         claiming a percentage would be inventing it. */
       .progress {
-        flex: 0 0 auto;
+        flex: 0 0 2px;
         position: relative;
-        height: 2px;
-        background: transparent;
         overflow: hidden;
       }
       .progress[data-loading="true"]::after {
@@ -188,12 +302,7 @@
         position: absolute;
         inset: 0;
         width: 32%;
-        background: linear-gradient(
-          90deg,
-          transparent,
-          var(--brume-haar-dark),
-          transparent
-        );
+        background: linear-gradient(90deg, transparent, var(--brume-haar-dark), transparent);
         animation: sweep 1.05s ease-in-out infinite;
       }
       @keyframes sweep {
@@ -204,6 +313,8 @@
   </head>
 
   <body>
+    <div class="tabs" id="tabs"></div>
+
     <div class="toolbar">
       <button class="btn" id="back" title="Back" aria-label="Back" disabled>
         <span class="ico ico-back"></span>
@@ -238,13 +349,23 @@
       const el = (id) => document.getElementById(id);
       const urlInput = el("url");
 
+      let loading = false;
+
+      /**
+       * True while the user is typing in the address bar.
+       *
+       * State events keep arriving during a page load, and overwriting the field
+       * mid-keystroke is the single most infuriating thing an address bar can
+       * do. Every real browser suppresses this; so does Brume.
+       */
+      let editing = false;
+
       /**
        * Invoke a command, surfacing any failure.
        *
-       * Every call goes through here rather than being fired and forgotten. A
-       * rejected promise with no handler is invisible - the button appears to
-       * do nothing at all, which is indistinguishable from a dead button and
-       * impossible to report usefully.
+       * A rejected promise with no handler is invisible - the button appears
+       * dead, which is indistinguishable from a broken one and impossible to
+       * report usefully.
        */
       function call(command, args) {
         return invoke(command, args).catch((err) => {
@@ -253,26 +374,93 @@
         });
       }
 
-      let loading = false;
+      /** Favicon URL for a page, or null when there is nothing sensible to try. */
+      function faviconFor(pageUrl) {
+        try {
+          const u = new URL(pageUrl);
+          if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+          // Fetched straight from the site itself. Routing this through a
+          // third-party favicon service would hand that service a log of every
+          // domain visited, which is precisely what Brume is trying to avoid.
+          return `${u.origin}/favicon.ico`;
+        } catch {
+          return null;
+        }
+      }
 
-      /**
-       * True while the user is typing in the address bar.
-       *
-       * Navigation events keep arriving during a page load, and overwriting the
-       * field mid-keystroke is the single most infuriating thing an address bar
-       * can do. Every real browser suppresses this; so does Brume.
-       */
-      let editing = false;
+      // --- tab strip ------------------------------------------------------
+      function renderTabs(tabs) {
+        const strip = el("tabs");
+        strip.textContent = "";
 
+        for (const tab of tabs) {
+          const node = document.createElement("div");
+          node.className = "tab";
+          node.dataset.active = String(tab.active);
+          node.title = tab.title;
+          node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
+
+          const icon = faviconFor(tab.url);
+          if (icon) {
+            const img = document.createElement("img");
+            img.className = "tab-favicon";
+            img.src = icon;
+            img.alt = "";
+            // Plenty of sites have no /favicon.ico. Swap in the generic mark
+            // rather than leaving a broken-image glyph in the strip.
+            img.addEventListener("error", () => {
+              const fallback = document.createElement("span");
+              fallback.className = "tab-favicon-fallback";
+              img.replaceWith(fallback);
+            });
+            node.appendChild(img);
+          } else {
+            const fallback = document.createElement("span");
+            fallback.className = "tab-favicon-fallback";
+            node.appendChild(fallback);
+          }
+
+          const title = document.createElement("span");
+          title.className = "tab-title";
+          title.textContent = tab.title;
+          node.appendChild(title);
+
+          const close = document.createElement("button");
+          close.className = "tab-close";
+          close.title = "Close tab";
+          close.setAttribute("aria-label", "Close tab");
+          close.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 5l14 14M19 5L5 19"/></svg>';
+          close.addEventListener("click", (event) => {
+            // Without this the click also activates the tab being closed.
+            event.stopPropagation();
+            call("close_tab", { id: tab.id });
+          });
+          node.appendChild(close);
+
+          strip.appendChild(node);
+        }
+
+        const add = document.createElement("button");
+        add.className = "new-tab";
+        add.title = "New tab";
+        add.setAttribute("aria-label", "New tab");
+        add.innerHTML = '<span class="ico ico-plus"></span>';
+        add.addEventListener("click", () => call("open_tab", { url: null }));
+        strip.appendChild(add);
+      }
+
+      // --- toolbar --------------------------------------------------------
       function render(state) {
+        renderTabs(state.tabs);
+
         el("back").disabled = !state.canGoBack;
         el("forward").disabled = !state.canGoForward;
 
         loading = state.loading;
         el("progress").dataset.loading = String(state.loading);
 
-        const reloadIcon = el("reload-icon");
-        reloadIcon.className = state.loading ? "ico ico-stop" : "ico ico-reload";
+        el("reload-icon").className = state.loading ? "ico ico-stop" : "ico ico-reload";
         el("reload").title = state.loading ? "Stop" : "Reload";
         el("reload").setAttribute("aria-label", state.loading ? "Stop" : "Reload");
 
@@ -289,7 +477,7 @@
       }
 
       // --- events ---------------------------------------------------------
-      listen("brume://nav", (event) => render(event.payload));
+      listen("brume://state", (event) => render(event.payload));
 
       el("back").addEventListener("click", () => call("go_back"));
       el("forward").addEventListener("click", () => call("go_forward"));
@@ -299,14 +487,13 @@
 
       urlInput.addEventListener("focus", () => {
         editing = true;
-        // Select everything, so typing replaces rather than appends.
-        urlInput.select();
+        urlInput.select(); // typing replaces rather than appends
       });
 
       urlInput.addEventListener("blur", () => {
         editing = false;
         // Put back whatever is actually loaded, discarding an abandoned edit.
-        call("nav_status").then((s) => s && render(s));
+        call("browser_state").then((s) => s && render(s));
       });
 
       urlInput.addEventListener("keydown", (event) => {
@@ -323,7 +510,7 @@
       });
 
       // --- boot -----------------------------------------------------------
-      call("nav_status").then((s) => s && render(s));
+      call("browser_state").then((s) => s && render(s));
     </script>
   </body>
 </html>
