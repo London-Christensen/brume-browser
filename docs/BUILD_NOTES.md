@@ -238,6 +238,62 @@ schemes fall through to a search rather than being handed to the webview.
 
 ---
 
+## Persistence: JSON, and specifically two different shapes
+
+```text
+%APPDATA%/com.londonchristensen.brume/
+  settings.json     small, mutable        -> atomic whole-file rewrite
+  bookmarks.json    small, mutable        -> atomic whole-file rewrite
+  history.jsonl     large, append-only    -> one JSON object per line
+```
+
+**Not SQLite**, despite it being the obvious answer. `rusqlite` bundles the
+SQLite C library — roughly 1–1.5 MB on a binary under 5 MB. A ~25% size increase
+to store a list of URLs is hard to justify in a project whose entire premise is
+not being large. `serde_json` was already present for settings, so this cost
+nothing new.
+
+**History is append-only because it is written on every page load.** Rewriting a
+growing file that often is exactly the waste that makes people reach for a
+database. Appending one line is O(1) and touches only the tail. JSONL also
+degrades well: a torn write from a crash costs the last line rather than the
+whole file, and the reader skips lines it cannot parse — there is a test for
+precisely that.
+
+Bookmarks are small, edited rarely, and need whole-list operations, so a plain
+array is the better fit. Both writes go through a temp-file-and-rename, because
+serialising directly over the destination leaves a truncated file if the process
+dies mid-write — which for bookmarks means losing all of them.
+
+Compaction to `HISTORY_CAP` runs **once at startup**, never during a navigation.
+Trimming on write would turn the O(1) append back into an O(n) rewrite, which is
+the entire thing this format exists to avoid.
+
+### When to revisit
+
+Every history query loads and parses the file. At the cap that is a few megabytes
+and milliseconds — fine for a personal browser. Full-text search, or ranking by
+visit frequency over a much larger corpus, is where SQLite starts earning its
+size. All reads and writes are confined to `store.rs` so that swap stays
+contained.
+
+---
+
+## The panel lives in the chrome webview
+
+History, bookmarks and (next) settings render inside the **chrome** webview,
+which grows to the full window height while open, hiding the content webviews.
+
+The alternatives were both worse. A privileged internal page in a *tab* would sit
+in the same list as arbitrary websites and need IPC permissions, putting a
+trusted surface one bug away from an untrusted one. A separate window is heavier
+and loses the browser's context.
+
+Expanding the chrome keeps every privileged surface inside the one webview that
+already holds capabilities, and costs one boolean plus a branch in `relayout`.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

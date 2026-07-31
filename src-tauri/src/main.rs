@@ -16,6 +16,7 @@
 mod browser;
 mod search;
 mod settings;
+mod store;
 mod updater;
 
 use tauri::Manager;
@@ -33,6 +34,9 @@ fn main() {
             let auto_update = store.get().auto_update;
             app.manage(store);
             app.manage(browser::Browser::default());
+            // Registered before the window is built: the first tab's page-load
+            // handler records a visit, and that runs as soon as it navigates.
+            app.manage(store::Store::load(app.handle()));
 
             browser::build(app.handle())?;
 
@@ -57,6 +61,13 @@ fn main() {
             browser::open_tab,
             browser::close_tab,
             browser::activate_tab,
+            browser::set_panel,
+            browser::toggle_bookmark_active,
+            store::history,
+            store::clear_history,
+            store::bookmarks,
+            store::toggle_bookmark,
+            store::remove_bookmark,
             search::search_engines,
             settings::get_settings,
             settings::set_auto_update,

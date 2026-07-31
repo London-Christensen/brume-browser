@@ -235,6 +235,16 @@
       .ico-lock { -webkit-mask-image: url("assets/brand/icons/lock.svg"); mask-image: url("assets/brand/icons/lock.svg"); }
       .ico-search { -webkit-mask-image: url("assets/brand/icons/search.svg"); mask-image: url("assets/brand/icons/search.svg"); }
       .ico-plus { -webkit-mask-image: url("assets/brand/icons/plus.svg"); mask-image: url("assets/brand/icons/plus.svg"); }
+      .ico-bookmark { -webkit-mask-image: url("assets/brand/icons/bookmark.svg"); mask-image: url("assets/brand/icons/bookmark.svg"); }
+      .ico-history { -webkit-mask-image: url("assets/brand/icons/history.svg"); mask-image: url("assets/brand/icons/history.svg"); }
+      .ico-trash { -webkit-mask-image: url("assets/brand/icons/trash.svg"); mask-image: url("assets/brand/icons/trash.svg"); }
+
+      /* The star fills in when the page is bookmarked. Lamplight is the accent
+         the brand allows once per screen, and this is where it earns it: a
+         single, deliberate signal that this page is saved. */
+      .btn[data-on="true"] {
+        color: var(--brume-lamplight);
+      }
 
       /* --- address bar --------------------------------------------------- */
       .address {
@@ -288,6 +298,143 @@
         opacity: 0.7;
       }
 
+      /* --- panel --------------------------------------------------------- */
+      .panel {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        background: var(--bg);
+      }
+
+      .panel-head {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--hairline);
+      }
+
+      .seg {
+        display: flex;
+        gap: 2px;
+        padding: 2px;
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+      .seg-btn {
+        padding: 5px 13px;
+        border: 0;
+        border-radius: 2px;
+        background: transparent;
+        color: var(--fg-muted);
+        font: inherit;
+        font-size: 12.5px;
+        cursor: default;
+        transition: background 110ms ease, color 110ms ease;
+      }
+      .seg-btn:hover {
+        color: var(--fg);
+      }
+      .seg-btn[data-active="true"] {
+        background: #262f39;
+        color: var(--fg);
+      }
+
+      #panel-search {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 28px;
+        padding: 0 11px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        background: #0e1319;
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 12.5px;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+      #panel-search:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+
+      .panel-list {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 6px 8px 16px;
+        min-height: 0;
+      }
+
+      .entry {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 8px 10px;
+        border-radius: var(--radius);
+        cursor: default;
+      }
+      .entry:hover {
+        background: var(--surface);
+      }
+
+      .entry-text {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .entry-title {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 13px;
+      }
+      .entry-url {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--fg-muted);
+        font-size: 11.5px;
+        font-family: var(--font-mono);
+      }
+      .entry-when {
+        flex: 0 0 auto;
+        color: var(--fg-muted);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .entry-remove {
+        flex: 0 0 auto;
+        width: 20px;
+        height: 20px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 2px;
+        background: transparent;
+        color: var(--fg-muted);
+        cursor: default;
+        opacity: 0;
+      }
+      .entry:hover .entry-remove {
+        opacity: 1;
+      }
+      .entry-remove:hover {
+        background: #2b333c;
+        color: var(--fg);
+      }
+
+      .panel-empty {
+        padding: 40px 12px;
+        text-align: center;
+        color: var(--fg-muted);
+        font-size: 13px;
+      }
+
       /* --- loading indicator --------------------------------------------- */
       /* A 2px rule along the bottom edge of the chrome. Indeterminate, because
          WebView2 reports load start and finish but no progress fraction - a bar
@@ -337,9 +484,44 @@
           autocapitalize="off"
         />
       </div>
+
+      <button class="btn" id="bookmark" title="Bookmark this page" aria-label="Bookmark this page">
+        <span class="ico ico-bookmark"></span>
+      </button>
+      <button class="btn" id="show-history" title="History" aria-label="History">
+        <span class="ico ico-history"></span>
+      </button>
     </div>
 
     <div class="progress" id="progress" data-loading="false"></div>
+
+    <!--
+      The panel occupies the space the page normally would. The Rust side grows
+      this webview to the full window height while it is open, so everything
+      privileged stays inside the one webview that holds capabilities.
+    -->
+    <section class="panel" id="panel" hidden>
+      <header class="panel-head">
+        <div class="seg" role="tablist">
+          <button class="seg-btn" data-view="history" role="tab">History</button>
+          <button class="seg-btn" data-view="bookmarks" role="tab">Bookmarks</button>
+        </div>
+        <input
+          type="text"
+          id="panel-search"
+          placeholder="Search"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button class="btn" id="panel-clear" title="Clear history" aria-label="Clear history">
+          <span class="ico ico-trash"></span>
+        </button>
+        <button class="btn" id="panel-close" title="Close" aria-label="Close">
+          <span class="ico ico-stop"></span>
+        </button>
+      </header>
+      <div class="panel-list" id="panel-list"></div>
+    </section>
 
     <script>
       const { invoke } = window.__TAURI__.core;
@@ -460,6 +642,11 @@
         loading = state.loading;
         el("progress").dataset.loading = String(state.loading);
 
+        el("bookmark").dataset.on = String(state.bookmarked);
+        el("bookmark").title = state.bookmarked
+          ? "Remove bookmark"
+          : "Bookmark this page";
+
         el("reload-icon").className = state.loading ? "ico ico-stop" : "ico ico-reload";
         el("reload").title = state.loading ? "Stop" : "Reload";
         el("reload").setAttribute("aria-label", state.loading ? "Stop" : "Reload");
@@ -475,6 +662,183 @@
             : "ico scheme ico-search";
         }
       }
+
+      // --- panel ----------------------------------------------------------
+      let panelView = "history";
+
+      /** Compact relative time: browsing history is read as "when", not "at". */
+      function whenLabel(unixSeconds) {
+        const secs = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
+        if (secs < 60) return "just now";
+        if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+        if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+        const days = Math.floor(secs / 86400);
+        if (days < 30) return `${days}d ago`;
+        return new Date(unixSeconds * 1000).toLocaleDateString();
+      }
+
+      function entryNode({ title, url, when, onOpen, onRemove }) {
+        const row = document.createElement("div");
+        row.className = "entry";
+        row.addEventListener("click", onOpen);
+
+        const icon = faviconFor(url);
+        if (icon) {
+          const img = document.createElement("img");
+          img.className = "tab-favicon";
+          img.src = icon;
+          img.alt = "";
+          img.addEventListener("error", () => {
+            const fb = document.createElement("span");
+            fb.className = "tab-favicon-fallback";
+            img.replaceWith(fb);
+          });
+          row.appendChild(img);
+        } else {
+          const fb = document.createElement("span");
+          fb.className = "tab-favicon-fallback";
+          row.appendChild(fb);
+        }
+
+        const text = document.createElement("div");
+        text.className = "entry-text";
+        const t = document.createElement("div");
+        t.className = "entry-title";
+        t.textContent = title || url;
+        const u = document.createElement("div");
+        u.className = "entry-url";
+        u.textContent = url;
+        text.append(t, u);
+        row.appendChild(text);
+
+        if (when) {
+          const w = document.createElement("div");
+          w.className = "entry-when";
+          w.textContent = when;
+          row.appendChild(w);
+        }
+
+        if (onRemove) {
+          const rm = document.createElement("button");
+          rm.className = "entry-remove";
+          rm.title = "Remove";
+          rm.setAttribute("aria-label", "Remove");
+          rm.innerHTML =
+            '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 5l14 14M19 5L5 19"/></svg>';
+          rm.addEventListener("click", (e) => {
+            e.stopPropagation(); // otherwise the row's open handler also fires
+            onRemove();
+          });
+          row.appendChild(rm);
+        }
+
+        return row;
+      }
+
+      async function renderPanel() {
+        for (const btn of document.querySelectorAll(".seg-btn")) {
+          btn.dataset.active = String(btn.dataset.view === panelView);
+        }
+        el("panel-search").placeholder =
+          panelView === "history" ? "Search history" : "Search bookmarks";
+        // Clearing everything only makes sense for history; bookmarks are
+        // removed one at a time and deleting them all by accident would hurt.
+        el("panel-clear").hidden = panelView !== "history";
+
+        const list = el("panel-list");
+        list.textContent = "";
+        const query = el("panel-search").value.trim();
+
+        const open = (url) => {
+          call("navigate", { input: url });
+          closePanel();
+        };
+
+        if (panelView === "history") {
+          const rows = (await call("history", { query: query || null, limit: 300 })) || [];
+          if (!rows.length) {
+            list.innerHTML = `<div class="panel-empty">${
+              query ? "Nothing in history matches that." : "No history yet."
+            }</div>`;
+            return;
+          }
+          for (const v of rows) {
+            list.appendChild(
+              entryNode({
+                title: v.title,
+                url: v.url,
+                when: whenLabel(v.visited_at),
+                onOpen: () => open(v.url),
+              })
+            );
+          }
+        } else {
+          let rows = (await call("bookmarks")) || [];
+          if (query) {
+            const q = query.toLowerCase();
+            rows = rows.filter(
+              (b) =>
+                b.title.toLowerCase().includes(q) || b.url.toLowerCase().includes(q)
+            );
+          }
+          if (!rows.length) {
+            list.innerHTML = `<div class="panel-empty">${
+              query ? "No bookmarks match that." : "No bookmarks yet."
+            }</div>`;
+            return;
+          }
+          // Newest first, matching how history reads.
+          rows.sort((a, b) => b.added_at - a.added_at);
+          for (const b of rows) {
+            list.appendChild(
+              entryNode({
+                title: b.title,
+                url: b.url,
+                when: whenLabel(b.added_at),
+                onOpen: () => open(b.url),
+                onRemove: async () => {
+                  await call("remove_bookmark", { id: b.id });
+                  renderPanel();
+                },
+              })
+            );
+          }
+        }
+      }
+
+      async function openPanel(view) {
+        panelView = view;
+        el("panel").hidden = false;
+        el("panel-search").value = "";
+        await call("set_panel", { open: true });
+        renderPanel();
+      }
+
+      async function closePanel() {
+        el("panel").hidden = true;
+        await call("set_panel", { open: false });
+      }
+
+      el("show-history").addEventListener("click", () => openPanel("history"));
+      el("panel-close").addEventListener("click", closePanel);
+      el("panel-search").addEventListener("input", renderPanel);
+      for (const btn of document.querySelectorAll(".seg-btn")) {
+        btn.addEventListener("click", () => {
+          panelView = btn.dataset.view;
+          el("panel-search").value = "";
+          renderPanel();
+        });
+      }
+      el("panel-clear").addEventListener("click", async () => {
+        await call("clear_history");
+        renderPanel();
+      });
+
+      el("bookmark").addEventListener("click", async () => {
+        await call("toggle_bookmark_active");
+        // The star's state comes back through brume://state, so nothing is set
+        // here - the backend stays the single source of truth.
+      });
 
       // --- events ---------------------------------------------------------
       listen("brume://state", (event) => render(event.payload));

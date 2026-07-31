@@ -24,6 +24,7 @@
 //! This is the only module that touches Tauri's `unstable` multiwebview API, so
 //! that a breaking change upstream has exactly one place to be repaired.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -148,12 +149,23 @@ impl Tabs {
 
 pub struct Browser {
     tabs: Mutex<Tabs>,
+    /// Whether the chrome is expanded over the whole window to show history,
+    /// bookmarks or settings.
+    ///
+    /// The panel lives inside the chrome webview rather than in a tab or a
+    /// second window. A tab would need IPC permissions, which would mean putting
+    /// a privileged page in the same list as arbitrary websites; a separate
+    /// window is heavier and loses the browser's context. Expanding the chrome
+    /// keeps every privileged surface in the one webview that already has
+    /// capabilities.
+    panel_open: AtomicBool,
 }
 
 impl Default for Browser {
     fn default() -> Self {
         Self {
             tabs: Mutex::new(Tabs::default()),
+            panel_open: AtomicBool::new(false),
         }
     }
 }
@@ -181,9 +193,13 @@ pub struct BrowserState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub loading: bool,
+    /// Whether the active tab's URL is bookmarked, so the star reflects reality
+    /// rather than the frontend having to track it separately and drift.
+    pub bookmarked: bool,
+    pub panel_open: bool,
 }
 
-fn snapshot(tabs: &Tabs) -> BrowserState {
+fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
     let active = tabs.active_tab();
 
     BrowserState {
@@ -204,7 +220,31 @@ fn snapshot(tabs: &Tabs) -> BrowserState {
         can_go_back: active.is_some_and(|t| t.nav.can_go_back()),
         can_go_forward: active.is_some_and(|t| t.nav.can_go_forward()),
         loading: active.is_some_and(|t| t.nav.loading),
+        bookmarked,
+        panel_open,
     }
+}
+
+/// Builds a snapshot, consulting the bookmark store for the active URL.
+///
+/// Split out because the bookmark lookup needs its own lock, and taking it while
+/// holding the tabs lock is exactly the pattern that turns into a deadlock the
+/// first time something calls in the other order.
+fn current_state(app: &AppHandle) -> BrowserState {
+    let active_url = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        tabs.active_tab()
+            .and_then(|t| t.nav.current().cloned())
+            .unwrap_or_default()
+    };
+
+    let bookmarked = app.state::<crate::store::Store>().is_bookmarked(&active_url);
+
+    let browser = app.state::<Browser>();
+    let panel_open = browser.panel_open.load(Ordering::Relaxed);
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    snapshot(&tabs, bookmarked, panel_open)
 }
 
 /// Pushes current state to the chrome.
@@ -213,11 +253,7 @@ fn snapshot(tabs: &Tabs) -> BrowserState {
 /// buttons cannot disagree with reality after a link click, a redirect, or a
 /// background tab finishing its load.
 fn publish(app: &AppHandle) {
-    let state = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-        snapshot(&tabs)
-    };
+    let state = current_state(app);
     let _ = app.emit_to(CHROME_LABEL, "brume://state", state);
 }
 
@@ -237,13 +273,24 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
 
+    let panel_open = app
+        .state::<Browser>()
+        .panel_open
+        .load(Ordering::Relaxed);
+
+    // With the panel open the chrome takes the whole window and every content
+    // webview is hidden. That is what keeps history, bookmarks and settings
+    // inside the one webview that holds capabilities, instead of needing a
+    // privileged tab alongside arbitrary websites.
+    let chrome_height = if panel_open { size.height } else { CHROME_HEIGHT };
+
     // A window can be dragged smaller than the chrome mid-resize; clamping stops
     // the content webview being handed a negative height.
     let content_height = (size.height - CHROME_HEIGHT).max(0.0);
 
     if let Some(chrome) = app.get_webview(CHROME_LABEL) {
         chrome.set_position(LogicalPosition::new(0.0, 0.0))?;
-        chrome.set_size(LogicalSize::new(size.width, CHROME_HEIGHT))?;
+        chrome.set_size(LogicalSize::new(size.width, chrome_height))?;
     }
 
     let (active_label, inactive_labels) = {
@@ -269,9 +316,13 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
 
     if let Some(label) = active_label {
         if let Some(view) = app.get_webview(&label) {
-            view.set_position(LogicalPosition::new(0.0, CHROME_HEIGHT))?;
-            view.set_size(LogicalSize::new(size.width, content_height))?;
-            let _ = view.show();
+            if panel_open {
+                let _ = view.hide();
+            } else {
+                view.set_position(LogicalPosition::new(0.0, CHROME_HEIGHT))?;
+                view.set_size(LogicalSize::new(size.width, content_height))?;
+                let _ = view.show();
+            }
         }
     }
 
@@ -323,13 +374,39 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                 true
             })
             .on_page_load(move |_webview, payload| {
-                {
+                let finished = matches!(payload.event(), PageLoadEvent::Finished);
+
+                // What to record is decided while holding the tabs lock, but the
+                // store is written after releasing it. Taking the store's lock
+                // while holding this one would establish a lock order that the
+                // bookmark path takes in reverse.
+                let visit = {
                     let browser = load_handle.state::<Browser>();
                     let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-                    if let Some(tab) = tabs.tab_mut(id) {
-                        tab.nav.loading = matches!(payload.event(), PageLoadEvent::Started);
+                    match tabs.tab_mut(id) {
+                        Some(tab) => {
+                            tab.nav.loading = !finished;
+                            if finished {
+                                tab.nav
+                                    .current()
+                                    .cloned()
+                                    .map(|url| (url, tab.display_title()))
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
                     }
+                };
+
+                // Recorded on load *finished* rather than on navigation start,
+                // so the entry carries a real title instead of an empty one.
+                if let Some((url, title)) = visit {
+                    load_handle
+                        .state::<crate::store::Store>()
+                        .record_visit(&url, &title);
                 }
+
                 publish(&load_handle);
             })
             .on_document_title_changed(move |_webview, title| {
@@ -629,7 +706,40 @@ pub fn stop_loading(app: AppHandle) -> Result<(), String> {
 /// Everything after that arrives by event.
 #[tauri::command]
 pub fn browser_state(app: AppHandle) -> BrowserState {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-    snapshot(&tabs)
+    current_state(&app)
+}
+
+/// Expands the chrome over the whole window, or restores it.
+///
+/// Async for the same reason the tab commands are: it re-lays-out webviews.
+#[tauri::command]
+pub async fn set_panel(app: AppHandle, open: bool) -> Result<(), String> {
+    app.state::<Browser>()
+        .panel_open
+        .store(open, Ordering::Relaxed);
+    relayout(&app).map_err(|e| e.to_string())?;
+    publish(&app);
+    Ok(())
+}
+
+/// Bookmarks or un-bookmarks the active tab, and republishes so the star updates.
+#[tauri::command]
+pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
+    let (url, title) = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        match tabs.active_tab() {
+            Some(t) => (
+                t.nav.current().cloned().unwrap_or_default(),
+                t.display_title(),
+            ),
+            None => return Ok(false),
+        }
+    };
+
+    let bookmarked = app
+        .state::<crate::store::Store>()
+        .toggle_bookmark(&url, &title)?;
+    publish(&app);
+    Ok(bookmarked)
 }
