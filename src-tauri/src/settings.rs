@@ -43,6 +43,13 @@ pub struct Settings {
     /// in a later version reaches everyone, instead of leaving users pinned to
     /// whatever string was copied into their settings file the day they chose it.
     pub search_engine: String,
+
+    /// Where new tabs open. Empty means "follow the search engine".
+    ///
+    /// Empty is the default rather than a baked-in URL, so that choosing Mojeek
+    /// moves the new-tab page too. Someone who sets an explicit homepage has
+    /// said what they want and it is left alone.
+    pub homepage: String,
 }
 
 impl Default for Settings {
@@ -50,6 +57,7 @@ impl Default for Settings {
         Self {
             auto_update: true,
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
+            homepage: String::new(),
         }
     }
 }
@@ -153,13 +161,47 @@ impl SettingsState {
         self.current.lock().expect("settings mutex poisoned").clone()
     }
 
-    pub fn set_auto_update(&self, enabled: bool) -> Result<(), String> {
+    /// Applies a change and writes it out.
+    ///
+    /// One helper rather than a setter per field: every setter needs the same
+    /// lock-mutate-clone-persist sequence, and repeating it is how one of them
+    /// eventually forgets to persist.
+    fn update<F: FnOnce(&mut Settings)>(&self, change: F) -> Result<(), String> {
         let updated = {
             let mut guard = self.current.lock().expect("settings mutex poisoned");
-            guard.auto_update = enabled;
+            change(&mut guard);
             guard.clone()
         };
         self.persist(&updated)
+    }
+
+    pub fn set_auto_update(&self, enabled: bool) -> Result<(), String> {
+        self.update(|s| s.auto_update = enabled)
+    }
+
+    pub fn set_search_engine(&self, id: &str) -> Result<(), String> {
+        // Resolved through engine_by_id so an unknown id cannot be stored;
+        // it falls back to the default rather than leaving search broken.
+        let resolved = crate::search::engine_by_id(id).id.to_string();
+        self.update(|s| s.search_engine = resolved)
+    }
+
+    pub fn set_homepage(&self, url: &str) -> Result<(), String> {
+        let trimmed = url.trim().to_string();
+        self.update(|s| s.homepage = trimmed)
+    }
+
+    /// The URL a new tab should open.
+    ///
+    /// An explicit homepage wins; otherwise the active engine's own landing page.
+    pub fn resolved_homepage(&self) -> String {
+        let current = self.get();
+        if !current.homepage.is_empty() {
+            return current.homepage;
+        }
+        crate::search::engine_by_id(&current.search_engine)
+            .home
+            .to_string()
     }
 }
 
@@ -171,4 +213,20 @@ pub fn get_settings(state: State<'_, SettingsState>) -> Settings {
 #[tauri::command]
 pub fn set_auto_update(state: State<'_, SettingsState>, enabled: bool) -> Result<(), String> {
     state.set_auto_update(enabled)
+}
+
+#[tauri::command]
+pub fn set_search_engine(state: State<'_, SettingsState>, id: String) -> Result<(), String> {
+    state.set_search_engine(&id)
+}
+
+#[tauri::command]
+pub fn set_homepage(state: State<'_, SettingsState>, url: String) -> Result<(), String> {
+    state.set_homepage(&url)
+}
+
+/// The running version, for the updates section of Settings.
+#[tauri::command]
+pub fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
 }

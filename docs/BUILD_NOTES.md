@@ -294,6 +294,39 @@ already holds capabilities, and costs one boolean plus a branch in `relayout`.
 
 ---
 
+## Settings: homepage follows the search engine
+
+`homepage` defaults to **empty**, not to a URL. Empty means "use the active
+search engine's own landing page", so choosing Mojeek moves the new-tab page with
+it rather than leaving every new tab on a DuckDuckGo page. Setting an explicit
+homepage is a statement of intent and always wins.
+
+That is why `SearchEngine` carries a `home` field alongside `template`, and why a
+test asserts DuckDuckGo's homepage carries the same theme parameters as its
+results template — a themed results page paired with an unthemed homepage would
+be a visible seam every time a tab opens.
+
+The engine is stored by **id**, never by URL template. Storing the template would
+pin every user to whatever string was current the day they chose it, so a later
+fix to a query string would never reach them.
+
+### A CSS trap worth remembering
+
+`[hidden]` is only a **user-agent default** of `display: none`. Any element given
+an explicit display wins over it — `.btn { display: grid }` meant the clear-history
+button stayed visible on the Settings tab while `element.hidden` reported `true`,
+which is a confusing thing to debug from either side.
+
+The fix is one rule that has to outrank the components:
+
+```css
+[hidden] { display: none !important; }
+```
+
+Worth having in any stylesheet that hides things by attribute.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

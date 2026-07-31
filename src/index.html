@@ -39,6 +39,14 @@
         box-sizing: border-box;
       }
 
+      /* Must outrank the components' own display rules.
+         `[hidden]` is only a UA default of `display: none`, so any element given
+         an explicit display - `.btn` is `display: grid` - ignores it completely
+         and stays on screen while reporting `hidden === true`. */
+      [hidden] {
+        display: none !important;
+      }
+
       html,
       body {
         height: 100%;
@@ -238,6 +246,8 @@
       .ico-bookmark { -webkit-mask-image: url("assets/brand/icons/bookmark.svg"); mask-image: url("assets/brand/icons/bookmark.svg"); }
       .ico-history { -webkit-mask-image: url("assets/brand/icons/history.svg"); mask-image: url("assets/brand/icons/history.svg"); }
       .ico-trash { -webkit-mask-image: url("assets/brand/icons/trash.svg"); mask-image: url("assets/brand/icons/trash.svg"); }
+      .ico-settings { -webkit-mask-image: url("assets/brand/icons/settings.svg"); mask-image: url("assets/brand/icons/settings.svg"); }
+      .ico-check { -webkit-mask-image: url("assets/brand/icons/check.svg"); mask-image: url("assets/brand/icons/check.svg"); }
 
       /* The star fills in when the page is bookmarked. Lamplight is the accent
          the brand allows once per screen, and this is where it earns it: a
@@ -428,6 +438,186 @@
         color: var(--fg);
       }
 
+      /* --- settings form -------------------------------------------------- */
+      .settings {
+        max-width: 620px;
+        padding: 8px 4px 40px;
+      }
+
+      .group + .group {
+        margin-top: 30px;
+      }
+
+      .group-title {
+        margin-bottom: 12px;
+        color: var(--fg-muted);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 11px 10px;
+        border-radius: var(--radius);
+      }
+      .row + .row {
+        border-top: 1px solid var(--hairline);
+      }
+      .row-label {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .row-name {
+        font-size: 13px;
+      }
+      .row-help {
+        margin-top: 3px;
+        color: var(--fg-muted);
+        font-size: 11.5px;
+        line-height: 16px;
+      }
+      .row-control {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .text-input {
+        width: 290px;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        background: #0e1319;
+        color: var(--fg);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+      .text-input:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+
+      .action {
+        height: 28px;
+        padding: 0 13px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12.5px;
+        cursor: default;
+        transition: background 110ms ease;
+      }
+      .action:hover {
+        background: #232c35;
+      }
+      .action:disabled {
+        opacity: 0.5;
+      }
+
+      /* Same switch as the installer shell, so the two surfaces of Brume that
+         ask this question look like the same product. */
+      .switch {
+        position: relative;
+        width: 36px;
+        height: 21px;
+        padding: 0;
+        border: 0;
+        border-radius: 11px;
+        background: #2a323a;
+        cursor: default;
+        transition: background 160ms ease;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: #7d8b95;
+        transition: transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1), background 160ms ease;
+      }
+      .switch[aria-checked="true"] {
+        background: var(--brume-haar-dark);
+      }
+      .switch[aria-checked="true"]::after {
+        transform: translateX(15px);
+        background: var(--brume-ink);
+      }
+      .switch:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .engine {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 9px 10px;
+        border: 0;
+        border-radius: var(--radius);
+        background: transparent;
+        color: var(--fg-muted);
+        font: inherit;
+        text-align: left;
+        cursor: default;
+        transition: background 110ms ease, color 110ms ease;
+      }
+      .engine:hover {
+        background: var(--surface);
+        color: var(--fg);
+      }
+      .engine[data-selected="true"] {
+        color: var(--fg);
+      }
+      .engine-check {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        background: currentColor;
+        opacity: 0;
+        -webkit-mask: url("assets/brand/icons/check.svg") no-repeat center / contain;
+        mask: url("assets/brand/icons/check.svg") no-repeat center / contain;
+      }
+      .engine[data-selected="true"] .engine-check {
+        opacity: 1;
+      }
+      .engine-name {
+        flex: 0 0 auto;
+        font-size: 13px;
+      }
+      .engine-host {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        text-align: right;
+      }
+
+      .status {
+        color: var(--fg-muted);
+        font-size: 11.5px;
+      }
+
       .panel-empty {
         padding: 40px 12px;
         text-align: center;
@@ -491,6 +681,9 @@
       <button class="btn" id="show-history" title="History" aria-label="History">
         <span class="ico ico-history"></span>
       </button>
+      <button class="btn" id="show-settings" title="Settings" aria-label="Settings">
+        <span class="ico ico-settings"></span>
+      </button>
     </div>
 
     <div class="progress" id="progress" data-loading="false"></div>
@@ -505,6 +698,7 @@
         <div class="seg" role="tablist">
           <button class="seg-btn" data-view="history" role="tab">History</button>
           <button class="seg-btn" data-view="bookmarks" role="tab">Bookmarks</button>
+          <button class="seg-btn" data-view="settings" role="tab">Settings</button>
         </div>
         <input
           type="text"
@@ -747,6 +941,16 @@
 
         const list = el("panel-list");
         list.textContent = "";
+
+        if (panelView === "settings") {
+          // Search filters a list; settings is a form. Hiding the box is
+          // clearer than leaving a control that silently does nothing.
+          el("panel-search").hidden = true;
+          await renderSettings(list);
+          return;
+        }
+        el("panel-search").hidden = false;
+
         const query = el("panel-search").value.trim();
 
         const open = (url) => {
@@ -806,6 +1010,157 @@
         }
       }
 
+      // --- settings -------------------------------------------------------
+      function group(title) {
+        const g = document.createElement("div");
+        g.className = "group";
+        const t = document.createElement("div");
+        t.className = "group-title";
+        t.textContent = title;
+        g.appendChild(t);
+        return g;
+      }
+
+      function row(name, help) {
+        const r = document.createElement("div");
+        r.className = "row";
+        const label = document.createElement("div");
+        label.className = "row-label";
+        const n = document.createElement("div");
+        n.className = "row-name";
+        n.textContent = name;
+        label.appendChild(n);
+        if (help) {
+          const h = document.createElement("div");
+          h.className = "row-help";
+          h.textContent = help;
+          label.appendChild(h);
+        }
+        const control = document.createElement("div");
+        control.className = "row-control";
+        r.append(label, control);
+        return { row: r, control };
+      }
+
+      async function renderSettings(list) {
+        const [settings, engines, version] = await Promise.all([
+          call("get_settings"),
+          call("search_engines"),
+          call("app_version"),
+        ]);
+        if (!settings || !engines) return;
+
+        const form = document.createElement("div");
+        form.className = "settings";
+
+        // --- general ---
+        const general = group("General");
+        const home = row(
+          "Homepage",
+          "Where new tabs open. Leave empty to follow the search engine."
+        );
+        const homeInput = document.createElement("input");
+        homeInput.type = "text";
+        homeInput.className = "text-input";
+        homeInput.spellcheck = false;
+        homeInput.value = settings.homepage || "";
+        homeInput.placeholder = "Follow search engine";
+        // Saved on blur rather than per keystroke: writing the file on every
+        // character would be pointless churn, and Enter is not obviously a
+        // "save" gesture in a form with no submit button.
+        homeInput.addEventListener("blur", () =>
+          call("set_homepage", { url: homeInput.value })
+        );
+        homeInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") homeInput.blur();
+        });
+        home.control.appendChild(homeInput);
+        general.appendChild(home.row);
+        form.appendChild(general);
+
+        // --- search ---
+        const search = group("Search engine");
+        for (const engine of engines) {
+          const btn = document.createElement("button");
+          btn.className = "engine";
+          btn.dataset.selected = String(engine.id === settings.search_engine);
+
+          const check = document.createElement("span");
+          check.className = "engine-check";
+          const name = document.createElement("span");
+          name.className = "engine-name";
+          name.textContent = engine.name;
+          const host = document.createElement("span");
+          host.className = "engine-host";
+          try {
+            host.textContent = new URL(engine.home).host;
+          } catch {
+            host.textContent = "";
+          }
+
+          btn.append(check, name, host);
+          btn.addEventListener("click", async () => {
+            await call("set_search_engine", { id: engine.id });
+            renderPanel();
+          });
+          search.appendChild(btn);
+        }
+        form.appendChild(search);
+
+        // --- updates ---
+        const updates = group("Updates");
+
+        const ver = row("Version", `Brume ${version || "unknown"}`);
+        updates.appendChild(ver.row);
+
+        const auto = row(
+          "Check for updates on launch",
+          "Brume asks before installing. Updates are never applied silently."
+        );
+        const toggle = document.createElement("button");
+        toggle.className = "switch";
+        toggle.setAttribute("role", "switch");
+        toggle.setAttribute("aria-checked", String(settings.auto_update));
+        toggle.setAttribute("aria-label", "Check for updates on launch");
+        toggle.addEventListener("click", async () => {
+          const next = toggle.getAttribute("aria-checked") !== "true";
+          await call("set_auto_update", { enabled: next });
+          toggle.setAttribute("aria-checked", String(next));
+        });
+        auto.control.appendChild(toggle);
+        updates.appendChild(auto.row);
+
+        const manual = row(
+          "Check now",
+          "Always available, whatever the setting above is."
+        );
+        const status = document.createElement("span");
+        status.className = "status";
+        const check = document.createElement("button");
+        check.className = "action";
+        check.textContent = "Check for updates";
+        check.addEventListener("click", async () => {
+          check.disabled = true;
+          status.textContent = "Checking…";
+          try {
+            // The command shows its own dialog for every outcome; this only
+            // clears the inline status so the button does not look stuck.
+            await invoke("check_for_updates");
+            status.textContent = "";
+          } catch (err) {
+            console.error("[brume] update check failed:", err);
+            status.textContent = "";
+          } finally {
+            check.disabled = false;
+          }
+        });
+        manual.control.append(status, check);
+        updates.appendChild(manual.row);
+
+        form.appendChild(updates);
+        list.appendChild(form);
+      }
+
       async function openPanel(view) {
         panelView = view;
         el("panel").hidden = false;
@@ -820,6 +1175,7 @@
       }
 
       el("show-history").addEventListener("click", () => openPanel("history"));
+      el("show-settings").addEventListener("click", () => openPanel("settings"));
       el("panel-close").addEventListener("click", closePanel);
       el("panel-search").addEventListener("input", renderPanel);
       for (const btn of document.querySelectorAll(".seg-btn")) {

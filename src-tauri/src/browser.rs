@@ -45,12 +45,24 @@ const CHROME_HEIGHT: f64 = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT;
 pub const WINDOW_LABEL: &str = "main";
 pub const CHROME_LABEL: &str = "chrome";
 
-/// Where a new tab starts. Becomes a setting in step 8.
+/// Fallback landing page.
 ///
-/// Carries the same promo-suppression parameters as the search template in
-/// `search.rs`, so the landing page is as free of house advertising as the
-/// results page is.
-const HOME_URL: &str = "https://duckduckgo.com/?kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1&kae=d";
+/// Only reached if settings cannot be read at all - normally a new tab uses
+/// `SettingsState::resolved_homepage`, which is the user's homepage if they set
+/// one and the active engine's own landing page otherwise.
+const FALLBACK_HOME: &str = "https://duckduckgo.com/";
+
+/// Where a new tab should open.
+fn home_url(app: &AppHandle) -> String {
+    let resolved = app
+        .state::<crate::settings::SettingsState>()
+        .resolved_homepage();
+    if resolved.is_empty() {
+        FALLBACK_HOME.to_string()
+    } else {
+        resolved
+    }
+}
 
 /// Session history for one tab.
 ///
@@ -344,9 +356,11 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
     let content_height = (size.height - CHROME_HEIGHT).max(0.0);
 
     let parsed = url.parse().unwrap_or_else(|_| {
-        HOME_URL
+        // A homepage the user typed by hand can be unparseable; falling back
+        // beats refusing to open a tab.
+        FALLBACK_HOME
             .parse()
-            .expect("HOME_URL is a compile-time constant and must be valid")
+            .expect("FALLBACK_HOME is a compile-time constant and must be valid")
     });
 
     let nav_handle = app.clone();
@@ -491,7 +505,7 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
 /// open the first tab through the same path, instead of the command's
 /// stringly-typed error being forced through a conversion at the call site.
 fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
-    let target = url.unwrap_or_else(|| HOME_URL.to_string());
+    let target = url.unwrap_or_else(|| home_url(app));
 
     let (id, label) = {
         let browser = app.state::<Browser>();

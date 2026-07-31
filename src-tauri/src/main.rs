@@ -71,6 +71,9 @@ fn main() {
             search::search_engines,
             settings::get_settings,
             settings::set_auto_update,
+            settings::set_search_engine,
+            settings::set_homepage,
+            settings::app_version,
             updater::check_for_updates,
         ])
         // `generate_context!` reads tauri.conf.json at compile time and bakes the

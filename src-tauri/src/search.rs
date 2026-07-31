@@ -19,6 +19,13 @@ pub struct SearchEngine {
     pub id: &'static str,
     pub name: &'static str,
     pub template: &'static str,
+    /// Where a new tab lands when no explicit homepage is set.
+    ///
+    /// Per-engine rather than one global constant, so choosing Mojeek does not
+    /// leave every new tab sitting on a DuckDuckGo page. Carries the same
+    /// suppression and theming parameters as `template`, since the landing page
+    /// should be as free of house advertising as the results page.
+    pub home: &'static str,
 }
 
 /// The engines offered out of the box.
@@ -82,6 +89,11 @@ pub const ENGINES: &[SearchEngine] = &[
         template: "https://duckduckgo.com/?q={query}\
                    &kae=-1&k7=101418&k8=9db2c0&k9=f3f4f5&kx=6e7f8c&kaa=9db2c0&k21=171d24&kj=101418\
                    &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
+        // Same parameters as the template. A test asserts they stay in step, so
+        // a themed results page cannot end up paired with an unthemed homepage.
+        home: "https://duckduckgo.com/\
+               ?kae=-1&k7=101418&k8=9db2c0&k9=f3f4f5&kx=6e7f8c&kaa=9db2c0&k21=171d24&kj=101418\
+               &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
     },
     SearchEngine {
         id: "duckduckgo-lite",
@@ -97,6 +109,7 @@ pub const ENGINES: &[SearchEngine] = &[
         // a stylesheet into the content webview, which is a user-styles feature
         // rather than a search setting.
         template: "https://lite.duckduckgo.com/lite/?q={query}",
+        home: "https://lite.duckduckgo.com/lite/",
     },
     SearchEngine {
         id: "mojeek",
@@ -105,11 +118,15 @@ pub const ENGINES: &[SearchEngine] = &[
         // page weight of a DuckDuckGo result page. `theme=dark` is honoured, so
         // unlike Lite this one matches Brume's chrome.
         template: "https://www.mojeek.com/search?q={query}&theme=dark",
+        home: "https://www.mojeek.com/?theme=dark",
     },
     SearchEngine {
         id: "brave",
         name: "Brave Search",
+        // No theme parameter needed: Brave follows prefers-color-scheme, and the
+        // window is created with a dark theme, so it renders dark already.
         template: "https://search.brave.com/search?q={query}",
+        home: "https://search.brave.com/",
     },
 ];
 
@@ -367,6 +384,34 @@ mod tests {
         );
         // Nothing to switch off, so nothing should have been bolted on.
         assert!(!url.contains("k1="), "lite should need no ad parameter: {url}");
+    }
+
+    #[test]
+    fn duckduckgo_homepage_carries_the_same_theme_as_results() {
+        let home = engine_by_id("duckduckgo").home;
+        // A themed results page paired with an unthemed homepage would be an
+        // obvious visual seam every time a tab opens.
+        for param in [
+            "kae=-1", "k7=101418", "k8=9db2c0", "k9=f3f4f5", "kj=101418", "k1=-1", "kak=-1",
+        ] {
+            assert!(home.contains(param), "homepage missing {param}: {home}");
+        }
+    }
+
+    #[test]
+    fn every_engine_has_a_usable_homepage() {
+        for engine in ENGINES {
+            assert!(
+                engine.home.starts_with("https://"),
+                "{} has no https homepage",
+                engine.id
+            );
+            assert!(
+                !engine.home.contains("{query}"),
+                "{} homepage still has a query placeholder",
+                engine.id
+            );
+        }
     }
 
     #[test]
