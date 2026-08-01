@@ -248,6 +248,8 @@ laptop having the right toolchain and the right key.
 |---|---|
 | Build warns about no signing key | `TAURI_SIGNING_PRIVATE_KEY` unset and no key file. Artifacts will be unsigned and rejected by clients. |
 | Build appears to hang after "Finished 1 bundle" | It is waiting on the key password prompt. Look for `Info Decrypting updater signing key, expect a prompt for password`. Restore `brume-updater.pass` or set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. |
+| Build fails with `expected value at line 1 column 1` | A UTF-8 BOM in a config file. `Set-Content -Encoding utf8` adds one on PowerShell 5.1 and strict parsers reject it; the message names neither the file's real problem nor the tool that caused it. The bump now writes through `UTF8Encoding(false)` and checks afterwards. |
+| `gh release create` says the tag "has not been pushed" | The tag was lightweight. `git push --follow-tags` only pushes **annotated** tags, so it stayed local. Use `git tag -a`, or push the tag by name. |
 | `new-release.ps1` errors that no `.nsis.zip` was produced | `bundle.createUpdaterArtifacts` is not `true`, or signing failed. |
 | Clients never see the update | `latest.json` not attached to the release; repo went private; or the version in the manifest is not higher than the client's. |
 | Clients see it but installation fails | Signature mismatch — the artifact was signed with a different key than the public key compiled into that client. |
