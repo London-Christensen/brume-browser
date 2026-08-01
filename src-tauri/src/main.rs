@@ -16,6 +16,7 @@
 mod browser;
 mod search;
 mod settings;
+mod shortcuts;
 mod store;
 mod updater;
 
@@ -29,6 +30,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(shortcuts::plugin())
         .setup(|app| {
             let store = settings::SettingsState::load(app.handle());
             let auto_update = store.get().auto_update;
@@ -39,6 +41,10 @@ fn main() {
             app.manage(store::Store::load(app.handle()));
 
             browser::build(app.handle())?;
+
+            // The window is created focused, and the focus event that would
+            // normally arm the shortcuts has already been and gone by now.
+            shortcuts::set_active(app.handle(), true);
 
             if auto_update {
                 // Spawned rather than awaited: setup runs before the window is
@@ -73,6 +79,7 @@ fn main() {
             settings::set_auto_update,
             settings::set_search_engine,
             settings::set_homepage,
+            settings::set_theme,
             settings::app_version,
             updater::check_for_updates,
         ])

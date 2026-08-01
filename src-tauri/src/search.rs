@@ -26,6 +26,15 @@ pub struct SearchEngine {
     /// suppression and theming parameters as `template`, since the landing page
     /// should be as free of house advertising as the results page.
     pub home: &'static str,
+
+    /// Light-theme variants, where the engine exposes theming at all.
+    ///
+    /// `None` means the engine has nothing to switch - either it follows
+    /// `prefers-color-scheme` on its own (Brave), or it ships no stylesheets to
+    /// theme (DuckDuckGo Lite). Without these, choosing a light browser theme
+    /// would leave a dark results page bolted underneath a light toolbar.
+    pub template_light: Option<&'static str>,
+    pub home_light: Option<&'static str>,
 }
 
 /// The engines offered out of the box.
@@ -94,6 +103,18 @@ pub const ENGINES: &[SearchEngine] = &[
         home: "https://duckduckgo.com/\
                ?kae=-1&k7=101418&k8=9db2c0&k9=f3f4f5&kx=6e7f8c&kaa=9db2c0&k21=171d24&kj=101418\
                &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
+        // Light: Paper page, Ink titles, Haar body. The same roles as the dark
+        // set, with the two neutrals swapped.
+        template_light: Some(
+            "https://duckduckgo.com/?q={query}\
+             &kae=-1&k7=f3f4f5&k8=4a5c6b&k9=101418&kx=6e7f8c&kaa=4a5c6b&k21=ffffff&kj=f3f4f5\
+             &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
+        ),
+        home_light: Some(
+            "https://duckduckgo.com/\
+             ?kae=-1&k7=f3f4f5&k8=4a5c6b&k9=101418&kx=6e7f8c&kaa=4a5c6b&k21=ffffff&kj=f3f4f5\
+             &k1=-1&kak=-1&kax=-1&kaq=-1&kap=-1&kao=-1",
+        ),
     },
     SearchEngine {
         id: "duckduckgo-lite",
@@ -110,6 +131,10 @@ pub const ENGINES: &[SearchEngine] = &[
         // rather than a search setting.
         template: "https://lite.duckduckgo.com/lite/?q={query}",
         home: "https://lite.duckduckgo.com/lite/",
+        // Nothing to theme: the page ships zero stylesheets, so it renders in
+        // the engine's default black-on-white whatever Brume is set to.
+        template_light: None,
+        home_light: None,
     },
     SearchEngine {
         id: "mojeek",
@@ -119,6 +144,8 @@ pub const ENGINES: &[SearchEngine] = &[
         // unlike Lite this one matches Brume's chrome.
         template: "https://www.mojeek.com/search?q={query}&theme=dark",
         home: "https://www.mojeek.com/?theme=dark",
+        template_light: Some("https://www.mojeek.com/search?q={query}&theme=light"),
+        home_light: Some("https://www.mojeek.com/?theme=light"),
     },
     SearchEngine {
         id: "brave",
@@ -127,6 +154,10 @@ pub const ENGINES: &[SearchEngine] = &[
         // window is created with a dark theme, so it renders dark already.
         template: "https://search.brave.com/search?q={query}",
         home: "https://search.brave.com/",
+        // Brave follows prefers-color-scheme, which the webview reports from the
+        // window theme, so it changes with Brume without being told.
+        template_light: None,
+        home_light: None,
     },
 ];
 
@@ -212,8 +243,28 @@ fn looks_like_url(input: &str) -> bool {
     }
 }
 
+impl SearchEngine {
+    /// The search template for the current theme.
+    pub fn template_for(&self, dark: bool) -> &'static str {
+        if dark {
+            self.template
+        } else {
+            self.template_light.unwrap_or(self.template)
+        }
+    }
+
+    /// The landing page for the current theme.
+    pub fn home_for(&self, dark: bool) -> &'static str {
+        if dark {
+            self.home
+        } else {
+            self.home_light.unwrap_or(self.home)
+        }
+    }
+}
+
 /// Resolves address bar input to a URL to navigate to.
-pub fn resolve(input: &str, engine_id: &str) -> String {
+pub fn resolve(input: &str, engine_id: &str, dark: bool) -> String {
     let trimmed = input.trim();
 
     if trimmed.is_empty() {
@@ -232,7 +283,7 @@ pub fn resolve(input: &str, engine_id: &str) -> String {
     }
 
     engine_by_id(engine_id)
-        .template
+        .template_for(dark)
         .replace("{query}", &encode_query(trimmed))
 }
 
@@ -246,7 +297,7 @@ mod tests {
     use super::*;
 
     fn ddg(input: &str) -> String {
-        resolve(input, DEFAULT_ENGINE_ID)
+        resolve(input, DEFAULT_ENGINE_ID, true)
     }
 
     #[test]
@@ -295,7 +346,7 @@ mod tests {
 
     #[test]
     fn unknown_engine_falls_back_rather_than_failing() {
-        assert!(resolve("test", "not-a-real-engine").starts_with("https://duckduckgo.com/"));
+        assert!(resolve("test", "not-a-real-engine", true).starts_with("https://duckduckgo.com/"));
     }
 
     /// The brand kit itself, read at compile time.
@@ -377,7 +428,7 @@ mod tests {
 
     #[test]
     fn lite_endpoint_needs_no_suppression() {
-        let url = resolve("test", "duckduckgo-lite");
+        let url = resolve("test", "duckduckgo-lite", true);
         assert!(
             url.starts_with("https://lite.duckduckgo.com/lite/?q="),
             "got {url}"
@@ -395,6 +446,33 @@ mod tests {
             "kae=-1", "k7=101418", "k8=9db2c0", "k9=f3f4f5", "kj=101418", "k1=-1", "kak=-1",
         ] {
             assert!(home.contains(param), "homepage missing {param}: {home}");
+        }
+    }
+
+    #[test]
+    fn light_theme_swaps_the_search_palette() {
+        let light = resolve("test", "duckduckgo", false);
+        // Paper page, Ink titles - the dark values must not survive.
+        assert!(light.contains("k7=f3f4f5"), "page not Paper: {light}");
+        assert!(light.contains("k9=101418"), "titles not Ink: {light}");
+        assert!(!light.contains("k7=101418"), "dark page colour leaked: {light}");
+
+        // Ad and promo suppression is not a theme concern and must persist.
+        for param in ["k1=-1", "kak=-1", "kax=-1"] {
+            assert!(light.contains(param), "light variant lost {param}: {light}");
+        }
+    }
+
+    #[test]
+    fn engines_without_a_light_variant_fall_back_rather_than_break() {
+        // Brave follows prefers-color-scheme; Lite has no stylesheets at all.
+        for id in ["brave", "duckduckgo-lite"] {
+            let engine = engine_by_id(id);
+            assert_eq!(
+                engine.template_for(false),
+                engine.template,
+                "{id} should reuse its only template in light mode"
+            );
         }
     }
 

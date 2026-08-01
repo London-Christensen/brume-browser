@@ -36,6 +36,10 @@ tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 
+# Keyboard shortcuts. Registered only while Brume has focus - see shortcuts.rs
+# for why a menu accelerator table cannot do this job on Windows.
+tauri-plugin-global-shortcut = "2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

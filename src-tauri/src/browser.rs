@@ -56,7 +56,7 @@ const FALLBACK_HOME: &str = "https://duckduckgo.com/";
 fn home_url(app: &AppHandle) -> String {
     let resolved = app
         .state::<crate::settings::SettingsState>()
-        .resolved_homepage();
+        .resolved_homepage(app);
     if resolved.is_empty() {
         FALLBACK_HOME.to_string()
     } else {
@@ -266,6 +266,20 @@ fn current_state(app: &AppHandle) -> BrowserState {
 /// background tab finishing its load.
 fn publish(app: &AppHandle) {
     let state = current_state(app);
+
+    // The window title tracks the active tab, the way every browser's does.
+    // Driven from the same place as the rest of the state so the two cannot
+    // disagree - a title left showing a page you have navigated away from is a
+    // small thing that reads as broken.
+    if let Some(window) = app.get_window(WINDOW_LABEL) {
+        let active = state.tabs.iter().find(|t| t.active);
+        let title = match active.map(|t| t.title.as_str()).unwrap_or("") {
+            "" => "Brume".to_string(),
+            page => format!("{page} — Brume"),
+        };
+        let _ = window.set_title(&title);
+    }
+
     let _ = app.emit_to(CHROME_LABEL, "brume://state", state);
 }
 
@@ -470,14 +484,18 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 
     open_tab_inner(app, None)?;
 
-    let resize_handle = app.clone();
-    window.on_window_event(move |event| {
-        if matches!(
-            event,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            let _ = relayout(&resize_handle);
+    let event_handle = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            let _ = relayout(&event_handle);
         }
+        // Shortcuts are registered globally, so they are armed only while Brume
+        // is in front - otherwise Brume would be holding Ctrl+T hostage for
+        // every other application on the machine.
+        WindowEvent::Focused(focused) => {
+            crate::shortcuts::set_active(&event_handle, *focused);
+        }
+        _ => {}
     });
 
     Ok(())
@@ -628,11 +646,9 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
 /// should not have to know, or be able to disagree about, which engine is current.
 #[tauri::command]
 pub fn navigate(app: AppHandle, input: String) -> Result<(), String> {
-    let engine_id = app
-        .state::<crate::settings::SettingsState>()
-        .get()
-        .search_engine;
-    let target = crate::search::resolve(&input, &engine_id);
+    let settings = app.state::<crate::settings::SettingsState>();
+    let engine_id = settings.get().search_engine;
+    let target = crate::search::resolve(&input, &engine_id, settings.is_dark(&app));
     if target.is_empty() {
         return Ok(());
     }
@@ -713,6 +729,34 @@ pub fn stop_loading(app: AppHandle) -> Result<(), String> {
     }
     publish(&app);
     Ok(())
+}
+
+/// Id of the active tab, for callers that act on "whatever is in front".
+pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    tabs.active_tab().map(|t| t.id)
+}
+
+/// Moves to the next or previous tab, wrapping at the ends.
+///
+/// Wrapping rather than stopping: Ctrl+Tab on the last tab going nowhere feels
+/// broken, and every browser cycles.
+pub fn neighbour_tab_id(app: &AppHandle, forward: bool) -> Option<u32> {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+
+    let count = tabs.items.len();
+    if count == 0 {
+        return None;
+    }
+    let current = tabs.items.iter().position(|t| t.id == tabs.active)?;
+    let next = if forward {
+        (current + 1) % count
+    } else {
+        (current + count - 1) % count
+    };
+    tabs.items.get(next).map(|t| t.id)
 }
 
 /// Lets the chrome ask for the current state once, on load.

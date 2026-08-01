@@ -327,6 +327,56 @@ Worth having in any stylesheet that hides things by attribute.
 
 ---
 
+## Keyboard shortcuts: why not a menu accelerator table
+
+The obvious approach for Ctrl+T is a native menu with accelerators, hidden so no
+menu bar shows. It is the platform's own mechanism and needs no dependency.
+
+**It does not work in this stack.** muda builds an accelerator table and exposes
+`haccel()`, but translating it requires someone to call `TranslateAcceleratorW`
+in the message loop — and nothing does. Verified two ways: grepping tao, wry and
+tauri-runtime-wry for a non-doc call site (none), and then attaching a menu,
+focusing the window, pressing Ctrl+T and watching nothing happen.
+
+A `keydown` listener in the chrome is not an alternative either. Keystrokes go to
+whichever webview has focus, and while the user is reading a page that is the
+*content* webview — which is deliberately outside every capability and cannot
+call a command. The listener would be silent during most of the browser's use.
+
+So shortcuts are **global shortcuts, registered on window focus and released on
+blur**. "Global" is doing less work than it sounds: while Brume is focused no
+other application receives keystrokes anyway, so the practical effect is an
+application shortcut. The focus gating is what stops Brume holding Ctrl+T hostage
+across the machine, and it is tested by minimising the window and confirming the
+shortcut no longer fires.
+
+If a future Tauri starts calling `TranslateAcceleratorW`, the menu approach
+becomes viable and would drop a dependency.
+
+---
+
+## Theme: one switch, three surfaces
+
+Choosing light has to move three things, and missing any one leaves a visible
+seam:
+
+1. **The chrome** — every surface colour is a CSS variable, so the light theme is
+   a value swap rather than a second stylesheet.
+2. **The window frame** — drawn by Windows, and only changes if the window is
+   told. Otherwise a light UI keeps a dark title bar bolted to the top.
+3. **The search results page** — `search.rs` carries `template_light` and
+   `home_light`. Without them, choosing light left a dark DuckDuckGo page under a
+   light toolbar, which looked broken.
+
+`None` for those light variants means the engine needs nothing: Brave follows
+`prefers-color-scheme` on its own, and DuckDuckGo Lite ships no stylesheets to
+theme in either direction.
+
+"System" is resolved by asking the **window** what the OS gave it, rather than
+guessing from a media query on the Rust side.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

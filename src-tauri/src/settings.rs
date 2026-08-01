@@ -44,6 +44,13 @@ pub struct Settings {
     /// whatever string was copied into their settings file the day they chose it.
     pub search_engine: String,
 
+    /// "system", "light" or "dark".
+    ///
+    /// Dark is the default rather than system: Brume's chrome is dark-first and
+    /// the brand is built around Ink, so following a light OS by default would
+    /// show most users something the design was not drawn for.
+    pub theme: String,
+
     /// Where new tabs open. Empty means "follow the search engine".
     ///
     /// Empty is the default rather than a baked-in URL, so that choosing Mojeek
@@ -57,6 +64,7 @@ impl Default for Settings {
         Self {
             auto_update: true,
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
+            theme: "dark".to_string(),
             homepage: String::new(),
         }
     }
@@ -191,16 +199,46 @@ impl SettingsState {
         self.update(|s| s.homepage = trimmed)
     }
 
+    pub fn set_theme(&self, theme: &str) -> Result<(), String> {
+        // Anything unrecognised becomes dark rather than being stored, so a
+        // hand-edited settings file cannot leave the UI in an undefined state.
+        let normalised = match theme {
+            "light" | "system" => theme,
+            _ => "dark",
+        }
+        .to_string();
+        self.update(|s| s.theme = normalised)
+    }
+
+    /// Whether the UI is currently dark.
+    ///
+    /// "system" is resolved by asking the window what the OS gave it, rather
+    /// than guessing. If there is no window yet, dark is the safer default -
+    /// Brume's chrome is dark-first, so that is the palette everything else is
+    /// drawn to match.
+    pub fn is_dark(&self, app: &AppHandle) -> bool {
+        match self.get().theme.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => app
+                .get_window(crate::browser::WINDOW_LABEL)
+                .and_then(|w| w.theme().ok())
+                .map(|t| t == tauri::Theme::Dark)
+                .unwrap_or(true),
+        }
+    }
+
     /// The URL a new tab should open.
     ///
-    /// An explicit homepage wins; otherwise the active engine's own landing page.
-    pub fn resolved_homepage(&self) -> String {
+    /// An explicit homepage wins; otherwise the active engine's own landing
+    /// page, in the current theme.
+    pub fn resolved_homepage(&self, app: &AppHandle) -> String {
         let current = self.get();
         if !current.homepage.is_empty() {
             return current.homepage;
         }
         crate::search::engine_by_id(&current.search_engine)
-            .home
+            .home_for(self.is_dark(app))
             .to_string()
     }
 }
@@ -223,6 +261,28 @@ pub fn set_search_engine(state: State<'_, SettingsState>, id: String) -> Result<
 #[tauri::command]
 pub fn set_homepage(state: State<'_, SettingsState>, url: String) -> Result<(), String> {
     state.set_homepage(&url)
+}
+
+/// Stores the theme and applies it to the window frame.
+///
+/// The chrome restyles itself in CSS, but the title bar is drawn by Windows and
+/// only changes if the window is told - otherwise a light UI keeps a dark title
+/// bar bolted to the top of it.
+#[tauri::command]
+pub fn set_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
+    app.state::<SettingsState>().set_theme(&theme)?;
+
+    let resolved = match theme.as_str() {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        // None hands the decision back to the OS.
+        _ => None,
+    };
+
+    if let Some(window) = app.get_window(crate::browser::WINDOW_LABEL) {
+        let _ = window.set_theme(resolved);
+    }
+    Ok(())
 }
 
 /// The running version, for the updates section of Settings.
