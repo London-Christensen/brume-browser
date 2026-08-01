@@ -34,6 +34,18 @@ $owner   = 'London-Christensen'
 $project = 'brume-browser'
 $tag     = "v$Version"
 
+# Writes text without a byte-order mark.
+#
+# `Set-Content -Encoding utf8` on PowerShell 5.1 prepends a UTF-8 BOM, and that
+# is not cosmetic: it corrupts every strict parser downstream. A BOM on
+# tauri.conf.json makes the build fail with "expected value at line 1 column 1",
+# which names neither the file's real problem nor the tool that caused it. This
+# script bumps five config files, so it was silently poisoning four of them.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Write-TextFile([string]$Path, [string]$Content) {
+    [System.IO.File]::WriteAllText($Path, $Content, $Utf8NoBom)
+}
+
 # --- refuse to build from a dirty tree --------------------------------------
 # A release you cannot reproduce from a commit is not a release.
 if (-not $SkipDirtyCheck) {
@@ -68,9 +80,16 @@ foreach ($b in $bumps) {
     # Only the first match: Cargo.toml's [package] version comes before any
     # dependency version, and package.json's own version precedes dependencies.
     $updated = [regex]::Replace($raw, $b.Pattern, "`${1}$Version`${2}", 1)
-    # -NoNewline: Set-Content would otherwise append a trailing newline each run.
-    Set-Content $full $updated -NoNewline -Encoding utf8
+    Write-TextFile $full $updated
     Write-Output "      $($b.Path)"
+}
+
+# Guard against the failure above ever returning quietly.
+foreach ($b in $bumps) {
+    $bytes = [System.IO.File]::ReadAllBytes((Join-Path $repo $b.Path))
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        throw "$($b.Path) was written with a UTF-8 BOM. Strict parsers reject it; see Write-TextFile."
+    }
 }
 
 # Verify they actually agree now.
@@ -135,7 +154,7 @@ $manifest = [ordered]@{
 $dist = Join-Path $repo 'dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
 $manifestPath = Join-Path $dist 'latest.json'
-$manifest | ConvertTo-Json -Depth 6 | Set-Content $manifestPath -Encoding utf8
+Write-TextFile $manifestPath ($manifest | ConvertTo-Json -Depth 6)
 
 Write-Output ''
 Write-Output "=== Release $tag prepared ==="

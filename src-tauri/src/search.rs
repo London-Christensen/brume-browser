@@ -1,4 +1,4 @@
-﻿//! Turning what the user typed into somewhere to go.
+//! Turning what the user typed into somewhere to go.
 //!
 //! The address bar is one field doing two jobs - navigation and search - and the
 //! guessing between them is the entire content of this module. Deliberately
