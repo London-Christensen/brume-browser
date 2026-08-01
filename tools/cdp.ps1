@@ -76,13 +76,21 @@ function Get-BrumeTargets {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:BrumePort)/json/list" `
                                       -UseBasicParsing -TimeoutSec 5
 
+        # -UseBasicParsing hands back a string or a byte[] depending on the
+        # response content type, and guessing wrong throws rather than degrading.
+        $body = if ($response.Content -is [byte[]]) {
+            [System.Text.Encoding]::UTF8.GetString($response.Content)
+        } else {
+            [string]$response.Content
+        }
+
         # Enumerate with an explicit loop rather than wrapping in @().
         #
         # ConvertFrom-Json on PowerShell 5.1 emits a JSON array as a *single*
         # pipeline object, and @() around that just wraps the blob again - it
         # does not flatten it. foreach handles both shapes correctly: an array
         # enumerates, a lone object yields one item.
-        $parsed = ConvertFrom-Json $response.Content
+        $parsed = ConvertFrom-Json $body
         $out = @()
         foreach ($item in $parsed) { $out += $item }
         $out

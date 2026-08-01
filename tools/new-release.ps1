@@ -173,7 +173,10 @@ if (-not $Publish) {
     Write-Output ''
     Write-Output 'Not published (no -Publish). To publish:'
     Write-Output ''
-    Write-Output "  git commit -am ""Release $Version"" ; git tag $tag ; git push --follow-tags"
+    # -a: an annotated tag. `git push --follow-tags` ignores lightweight ones, so
+    # a plain `git tag` leaves the tag local and `gh release create` then refuses
+    # to build a release from a tag the remote has never seen.
+    Write-Output "  git commit -am ""Release $Version"" ; git tag -a $tag -m ""Brume $Version"" ; git push --follow-tags"
     Write-Output "  gh release create $tag --title ""Brume $Version"" --notes ""$Notes"" ``"
     foreach ($a in $assets) { Write-Output "    ""$a"" ``" }
     Write-Output ''
@@ -184,7 +187,8 @@ if (-not $Publish) {
 Push-Location $repo
 try {
     git commit -am "Release $Version"
-    git tag $tag
+    # Annotated, so --follow-tags actually pushes it.
+    git tag -a $tag -m "Brume $Version"
     git push --follow-tags
     gh release create $tag --title "Brume $Version" --notes $Notes @assets
 } finally {
