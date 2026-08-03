@@ -20,7 +20,23 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = '',
     [switch]$Publish,
-    [switch]$SkipDirtyCheck
+    [switch]$SkipDirtyCheck,
+
+    # Attach latest.json to the release as well, purely so installs from before
+    # the endpoint moved can find one last update.
+    #
+    # Up to and including 0.2.0 the compiled-in endpoint was
+    #   .../releases/latest/download/latest.json
+    # which resolves against whichever release is newest. Those installs cannot
+    # be told about the new address, because the old one is baked into them. But
+    # if the first release under the new scheme still carries latest.json as an
+    # asset, they find it, update, and the version they land on reads from the
+    # repository from then on.
+    #
+    # It is a one-release bridge. Pass it for that release and never again: once
+    # a later release omits the asset the old URL 404s, which is harmless because
+    # nothing is left pointing at it.
+    [switch]$AttachLegacyFeed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,25 +130,79 @@ $nsisDir = Join-Path $repo 'src-tauri\target\release\bundle\nsis'
 # looking for the zip fails in a way that looks like broken signing rather than
 # a changed filename. If a future Tauri reintroduces the archive, this is the
 # line to revisit.
+# Pinned to the version being released, and the signature derived from the
+# artifact rather than picked independently.
+#
+# This directory is never cleaned, so it accumulates every build ever made -
+# 0.1.0 and 0.2.0 sit side by side in it today. Taking "the newest .exe" and,
+# separately, "the newest .sig" never checked that the two belonged together. If
+# signing failed for the current build, the newest .exe was the new version
+# while the newest .sig was still the previous release's, and they were paired
+# without complaint.
+#
+# The result would be a manifest advertising the new version, linking the new
+# installer, and carrying the old signature: every client downloads it and
+# rejects it, silently, which is the exact failure RELEASING.md lists under
+# "Clients see it but installation fails". A .sig existing is not the same as
+# the .sig being the right one.
 $artifact = Get-ChildItem $nsisDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*_${Version}_*" } |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$sig = Get-ChildItem $nsisDir -Filter '*-setup.exe.sig' -ErrorAction SilentlyContinue |
-       Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 if (-not $artifact) {
-    throw "No NSIS installer found in $nsisDir - stage 1 of the build did not complete."
+    $seen = (Get-ChildItem $nsisDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
+             ForEach-Object { "        $($_.Name)" }) -join "`n"
+    if (-not $seen) { $seen = '        (none)' }
+    throw @"
+No installer for $Version found in $nsisDir.
+
+Stage 1 of the build did not produce one. Present in that directory:
+$seen
+"@
 }
 
-if (-not $sig) {
+# The NSIS installer is no longer published, only verified.
+#
+# It is embedded inside Brume-Setup.exe by installer-shell/build.rs, so shipping
+# it separately meant publishing a second copy of a file already inside the one
+# above it. Confirming it exists at the right version still matters: it proves
+# stage 1 built what stage 2 went on to embed.
+Write-Output ''
+Write-Output "      nsis payload    : $($artifact.Name)  ($([math]::Round($artifact.Length/1MB,2)) MB, embedded)"
+
+# --- sign the file the updater will actually download -----------------------
+#
+# Tauri signs the NSIS installer automatically, but that is not the file being
+# advertised any more. The signature in the manifest has to cover the exact
+# bytes a client downloads, and that is Brume-Setup.exe, so it is signed here.
+#
+# The updater runs whatever the manifest points at with `/P /R /UPDATE`, and
+# Brume-Setup.exe forwards those straight to the installer it carries instead of
+# drawing its UI. See installer-shell/src/main.rs.
+$dist = Join-Path $repo 'dist'
+$setupExe = Join-Path $dist 'Brume-Setup.exe'
+if (-not (Test-Path $setupExe)) { throw "Stage 2 produced no $setupExe" }
+
+$setupSig = "$setupExe.sig"
+# Removed first: signer failures must not leave the previous release's signature
+# sitting there to be picked up as if it were this one's.
+if (Test-Path $setupSig) { Remove-Item $setupSig -Force }
+
+Write-Output '      signing dist\Brume-Setup.exe'
+# Reads TAURI_SIGNING_PRIVATE_KEY and ..._PASSWORD, which build-installer.ps1
+# has already put in the environment. Native command, so the exit code is
+# checked by hand.
+npx tauri signer sign $setupExe
+if ($LASTEXITCODE -ne 0) { throw "Signing $setupExe failed with exit code $LASTEXITCODE." }
+
+if (-not (Test-Path $setupSig)) {
     throw @"
-The installer was built but never signed.
+Signing reported success but produced no signature.
 
-  installer: $($artifact.Name)
-  expected:  $($artifact.Name).sig  (missing)
+  expected: $setupSig
 
-Without a signature every client will reject this update. Check that
-bundle.createUpdaterArtifacts is true in src-tauri/tauri.conf.json, and that the
-signing key and password were found - build-installer.ps1 reports which it used.
+Without it every client rejects the update. Check the signing key and password;
+build-installer.ps1 reports which it used.
 "@
 }
 
@@ -145,29 +215,94 @@ $manifest = [ordered]@{
     pub_date  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     platforms = [ordered]@{
         'windows-x86_64' = [ordered]@{
-            signature = (Get-Content $sig.FullName -Raw).Trim()
-            url       = "https://github.com/$owner/$project/releases/download/$tag/$($artifact.Name)"
+            signature = (Get-Content $setupSig -Raw).Trim()
+            url       = "https://github.com/$owner/$project/releases/download/$tag/Brume-Setup.exe"
         }
     }
 }
 
-$dist = Join-Path $repo 'dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
 $manifestPath = Join-Path $dist 'latest.json'
 Write-TextFile $manifestPath ($manifest | ConvertTo-Json -Depth 6)
 
+# The tracked copy, which is what the compiled-in endpoint actually fetches.
+# Written but deliberately NOT committed here - see the publish step for why the
+# order matters.
+$feedPath = Join-Path $repo 'updates\latest.json'
+New-Item -ItemType Directory -Force (Split-Path $feedPath) | Out-Null
+
 Write-Output ''
 Write-Output "=== Release $tag prepared ==="
-Write-Output "      update artifact : $($artifact.Name)  ($([math]::Round($artifact.Length/1MB,2)) MB)"
-Write-Output "      manifest        : dist\latest.json"
-Write-Output "      installer       : dist\Brume-Setup.exe"
+Write-Output "      published asset : dist\Brume-Setup.exe  ($([math]::Round((Get-Item $setupExe).Length/1MB,2)) MB)"
+Write-Output "      update feed     : updates\latest.json  (committed, not attached)"
 
-$assets = @(
-    (Join-Path $dist 'Brume-Setup.exe')   # for humans
-    $artifact.FullName                     # for the updater
-    $sig.FullName
-    $manifestPath
-)
+# What actually gets attached to the release.
+#
+# The .sig is deliberately NOT here. Its contents are already embedded in
+# latest.json as the `signature` field, and that is the only place the updater
+# reads them from: it fetches the manifest, then the installer, and verifies one
+# against the other. It never requests a .sig URL. Uploading the file as well
+# just put a fourth item on the release page that nothing downloads.
+#
+# The file is still produced and still checked above, because a missing or stale
+# .sig is how we detect that signing did not run. It is a build artifact, not a
+# release asset.
+#
+# The three below are all load-bearing:
+#   Brume-Setup.exe            humans, first install
+#   Brume_<ver>_x64-setup.exe  the updater downloads this; latest.json links it
+#   latest.json                the update endpoint itself
+#
+# GitHub adds "Source code (zip)" and "Source code (tar.gz)" to every release on
+# its own. Those cannot be turned off.
+# The release page body, which is not the same text as the update prompt.
+#
+# $Notes alone goes into latest.json, because that is what the running app shows
+# in its "an update is available" dialog. Someone reading that dialog is not
+# about to download anything, so install instructions there would be nonsense.
+#
+# The GitHub page has the opposite problem: a visitor sees several files and no
+# indication which one to click, and two of them are a machine-readable update
+# feed that no person should ever download. So the page body leads with the
+# answer and says plainly what the rest are for.
+$releaseBody = @"
+### Install
+
+Download **Brume-Setup.exe** and run it. That is the only file you need.
+
+$Notes
+
+<details>
+<summary>What are the other files?</summary>
+
+``Brume_${Version}_x64-setup.exe`` and ``latest.json`` are how an installed copy
+of Brume updates itself. It reads ``latest.json``, then downloads and verifies
+that installer in the background. Neither is meant to be downloaded by hand.
+</details>
+"@
+
+# Passed to gh as a file rather than inline. The body is multi-line, and
+# threading that through a quoted --notes argument breaks in both the printed
+# fallback command and the real one. Not a release asset, just a local file.
+$notesPath = Join-Path $dist 'release-notes.md'
+Write-TextFile $notesPath $releaseBody
+
+# One asset. That is the whole point of this arrangement.
+#
+# The NSIS installer is inside Brume-Setup.exe already, and latest.json is served
+# from the repository, so neither needs attaching. A visitor to the release page
+# sees the file to download and the two source archives GitHub adds by itself.
+$assets = @($setupExe)
+
+if ($AttachLegacyFeed) {
+    # Same file, same contents as the tracked copy. Old clients resolve it
+    # through releases/latest/download/, new ones read it from the repository,
+    # and both get the same answer.
+    $assets += $manifestPath
+    Write-Output ''
+    Write-Output '      NOTE: attaching latest.json for pre-0.2.0-endpoint installs.'
+    Write-Output '            One release only. Do not pass -AttachLegacyFeed again.'
+}
 
 if (-not $Publish) {
     Write-Output ''
@@ -177,20 +312,57 @@ if (-not $Publish) {
     # a plain `git tag` leaves the tag local and `gh release create` then refuses
     # to build a release from a tag the remote has never seen.
     Write-Output "  git commit -am ""Release $Version"" ; git tag -a $tag -m ""Brume $Version"" ; git push --follow-tags"
-    Write-Output "  gh release create $tag --title ""Brume $Version"" --notes ""$Notes"" ``"
-    foreach ($a in $assets) { Write-Output "    ""$a"" ``" }
+    Write-Output "  gh release create $tag --title ""Brume $Version"" --notes-file ""$notesPath"" ``"
+    foreach ($a in $assets) { Write-Output "    ""$a""" }
+    Write-Output ''
+    Write-Output '  # Only after the release exists, or the feed points at a 404:'
+    Write-Output "  copy ""$manifestPath"" ""$feedPath"""
+    Write-Output "  git add updates/latest.json ; git commit -m ""Point the update feed at $Version"" ; git push"
     Write-Output ''
     return
 }
 
 # --- 4. publish -------------------------------------------------------------
+# Every exit code below is checked by hand.
+#
+# $ErrorActionPreference = 'Stop' does not apply to native commands: git and gh
+# can fail and the script carries straight on. That matters most between the
+# push and the release - a rejected push followed by `gh release create` does
+# not fail, because gh creates the missing tag itself from the default branch.
+# The release then ships built from a different commit than the tag names, which
+# is precisely the class of quiet mismatch this script exists to prevent.
 Push-Location $repo
 try {
     git commit -am "Release $Version"
+    if ($LASTEXITCODE -ne 0) { throw "git commit failed. Nothing was released." }
+
     # Annotated, so --follow-tags actually pushes it.
     git tag -a $tag -m "Brume $Version"
+    if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed. Does the tag already exist?" }
+
     git push --follow-tags
-    gh release create $tag --title "Brume $Version" --notes $Notes @assets
+    if ($LASTEXITCODE -ne 0) { throw "git push failed. Nothing was released; the tag is local only." }
+
+    gh release create $tag --title "Brume $Version" --notes-file $notesPath @assets
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release create failed. The commit and tag are pushed - delete the tag or retry the release."
+    }
+
+    # The update feed goes last, deliberately.
+    #
+    # It names a download URL on the release that was only just created. Pushing
+    # the feed first would advertise a version whose installer does not exist
+    # yet, and every client checking in that window would fail its download and
+    # report the update as broken. Publish the file, then point at it.
+    Copy-Item $manifestPath $feedPath -Force
+    git add -- 'updates/latest.json'
+    if ($LASTEXITCODE -ne 0) { throw "git add of the update feed failed." }
+
+    git commit -m "Point the update feed at $Version"
+    if ($LASTEXITCODE -ne 0) { throw "Committing the update feed failed. The release is live but nobody will be offered it." }
+
+    git push
+    if ($LASTEXITCODE -ne 0) { throw "Pushing the update feed failed. The release is live but nobody will be offered it." }
 } finally {
     Pop-Location
 }
