@@ -169,6 +169,24 @@
         mask: url("assets/brand/icons/tab.svg") no-repeat center / contain;
       }
 
+      /* Private tabs read as a distinct kind of tab, not just a tab with a
+         different icon. Slightly lifted so the difference survives a glance. */
+      .tab[data-private="true"] {
+        background: var(--elev-1);
+      }
+      .tab[data-private="true"][data-active="true"] {
+        background: var(--elev-2);
+      }
+      .tab-private {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        background: currentColor;
+        opacity: 0.75;
+        -webkit-mask: url("assets/brand/icons/private.svg") no-repeat center / contain;
+        mask: url("assets/brand/icons/private.svg") no-repeat center / contain;
+      }
+
       .tab-title {
         flex: 1 1 auto;
         min-width: 0;
@@ -951,8 +969,19 @@
           node.title = tab.title;
           node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
 
-          // Eager: the strip is always on screen and only ever holds a few.
-          node.appendChild(faviconNode(tab.url, false));
+          if (tab.private) {
+            // The mask, not a favicon. Whose site it is matters less than the
+            // fact that this tab is not being recorded, and fetching the icon
+            // would mean a request to that site from a private tab.
+            node.dataset.private = "true";
+            const mark = document.createElement("span");
+            mark.className = "ico tab-private";
+            mark.title = "Private tab. Nothing here is saved.";
+            node.appendChild(mark);
+          } else {
+            // Eager: the strip is always on screen and only ever holds a few.
+            node.appendChild(faviconNode(tab.url, false));
+          }
 
           const title = document.createElement("span");
           title.className = "tab-title";
@@ -1401,6 +1430,36 @@
           search.appendChild(btn);
         }
         form.appendChild(search);
+
+        // --- privacy ---
+        const privacy = group("Privacy");
+        const siteData = row(
+          "Clear site data",
+          "Cookies, cache and local storage for every site. History and bookmarks are cleared from their own tabs."
+        );
+        const clearStatus = document.createElement("span");
+        clearStatus.className = "status";
+        const clearBtn = document.createElement("button");
+        clearBtn.className = "action";
+        clearBtn.textContent = "Clear site data";
+        clearBtn.addEventListener("click", async () => {
+          // No confirmation prompt, because this is recoverable in the only way
+          // that matters: you sign back in. Deleting bookmarks would deserve one.
+          clearBtn.disabled = true;
+          clearStatus.textContent = "Clearing...";
+          try {
+            await invoke("clear_site_data");
+            clearStatus.textContent = "Cleared";
+          } catch (err) {
+            console.error("[brume] clear failed:", err);
+            clearStatus.textContent = "Failed";
+          } finally {
+            clearBtn.disabled = false;
+          }
+        });
+        siteData.control.append(clearStatus, clearBtn);
+        privacy.appendChild(siteData.row);
+        form.appendChild(privacy);
 
         // --- updates ---
         const updates = group("Updates");

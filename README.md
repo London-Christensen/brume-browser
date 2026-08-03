@@ -73,22 +73,32 @@ way.
 | Shortcut | Action |
 |---|---|
 | `Ctrl`+`T` | New tab |
+| `Ctrl`+`Shift`+`N` | New private tab |
 | `Ctrl`+`W` | Close tab |
 | `Ctrl`+`Shift`+`T` | Reopen the last closed tab |
 | `Ctrl`+`Tab` / `Ctrl`+`Shift`+`Tab` | Next / previous tab |
 | `Ctrl`+`1`…`8` | Switch to that tab |
 | `Ctrl`+`9` | Last tab |
 | `Ctrl`+`L` | Focus the address bar |
+| `Ctrl`+`F` | Find on page. `Enter` / `Shift`+`Enter` step, `Esc` closes |
 | `Ctrl`+`R` / `F5` | Reload |
 | `Alt`+`←` / `Alt`+`→` | Back / forward |
+| `Alt`+`Home` | Homepage |
 | `Ctrl`+`D` | Bookmark this page |
 | `Ctrl`+`H` | History |
 | `Ctrl`+`,` | Settings |
+| `Ctrl`+`P` | Print |
+| `F11` | Fullscreen |
 | `Ctrl`+scroll, `Ctrl`+`+`/`-`/`0` | Zoom the page |
 
 Shortcuts are registered while Brume has focus and released when it loses it, so they are not
 held hostage from other applications. Zoom is handled by WebView2 itself rather than by Brume.
 See [docs/BUILD_NOTES.md](docs/BUILD_NOTES.md) for why menu accelerators could not be used.
+
+`Esc` is deliberately not registered. These are global shortcuts while the window has focus, so
+claiming `Esc` would take it from every page: no dismissing a site's own dialog, no leaving its
+fullscreen. The find bar handles it locally instead, which works because the chrome already has
+focus while you are typing in it.
 
 ## Project layout
 

@@ -598,6 +598,170 @@ guard the history and bookmark paths use.
 
 ---
 
+## 0.4.0: reaching WebView2 directly
+
+Two modules now hold `unsafe` COM: `find.rs` and `history.rs`. Both exist for
+the same reason, that Tauri surfaces only part of WebView2, and both confine
+their interop so a breaking change upstream has a small number of places to be
+repaired in. The route in either case is `Webview::with_webview`, which hands
+back the raw `ICoreWebView2Controller`.
+
+### The threading rule here is the opposite of browser.rs
+
+browser.rs insists that webview-creating commands are `async`, because
+`add_child` deadlocks a synchronous command. The find and history commands are
+deliberately **synchronous**, and that is not an inconsistency.
+
+`with_webview` posts through `send_user_message`, which checks whether it is
+already on the main thread. On the main thread it runs the closure *inline* and
+returns. Off it, it posts to the event loop and returns immediately without
+waiting. A sync command already runs on the main thread, so the closure has
+finished by the time the call returns and the result can be read straight back.
+Nothing in either module creates a webview, so the `add_child` reasoning does
+not apply.
+
+The channel those modules pass results through waits with `recv_timeout` rather
+than `try_recv`, so the same helper works when called from a background thread,
+where the closure genuinely has not run yet.
+
+### Two async reads that cost three test cycles
+
+Both of these compiled, ran, and returned wrong answers. Neither was findable
+without driving a real browser.
+
+**`Find.Start` is asynchronous.** Reading `MatchCount` on the following line
+returns 0 every time. On a page with two matches it reported none, which looks
+exactly like a search that does not work. The count comes back through the
+completion handler instead, and reaches the bar as an event because it does not
+exist when the command returns.
+
+**`FindNext` is asynchronous too, and the obvious fix does not work.**
+`ActiveMatchIndexChanged` fires *before* the index property is updated, so
+reading inside that handler is stale as well. The bar sat one press behind:
+Next on "1 of 2" still read "1 of 2". What works is letting it settle briefly
+and reading after, which is what `SETTLE` in find.rs is.
+
+The pattern worth remembering: a WebView2 method that starts something does not
+mean the property describing it has changed yet, and its change event is not a
+promise that it has either.
+
+### The chrome height is no longer constant
+
+The find bar grows the chrome by exactly its own height and shrinks the page to
+match, rather than floating over it. A bar drawn on top of the page can cover
+the match it just scrolled to.
+
+`CHROME_HEIGHT` is therefore a floor rather than the answer, and everything that
+positions a content webview reads `chrome_extent()`. The 36px in the CSS and the
+`FIND_BAR_HEIGHT` constant have the same contract the tab strip and toolbar
+already had: disagree and the page is overlapped by the difference.
+
+---
+
+## Back and forward stopped re-navigating
+
+browser.rs used to keep a `Vec<String>` per tab and go back by navigating to the
+previous URL. That was the only option at the time, because nothing exposed
+whether a webview could go back and a back button that is always enabled is
+worse than none.
+
+The cost was paid on every press: re-navigating refetches the page, loses scroll
+position, discards form state and re-runs whatever the page does on load.
+`ICoreWebView2` has had `GoBack` and `HistoryChanged` since its first release,
+and they were reachable all along once find.rs proved the route.
+
+`NavState` is now the current URL plus two flags mirrored from the runtime.
+Nothing computes `can_go_back` here, because the runtime is the only thing that
+knows.
+
+**Why `HistoryChanged` rather than reading CanGoBack in `publish`:** publish runs
+from inside WebView2's own navigation events, and calling back into the same
+object from one of its handlers is the reentrancy its documentation warns about.
+Letting the runtime say when history changed avoids the question.
+
+Measured after the change: scroll to 3000, navigate away, back, still 3000.
+
+**The JS heap is not preserved**, so bfcache proper appears to be off in
+WebView2. Scroll and session history are restored either way, which is the part
+a person notices, but do not promise form state.
+
+---
+
+## Session restore saves on change, not on quit
+
+Tabs are persisted next to the window geometry in settings.json and rebuilt at
+startup.
+
+The first version saved only on `CloseRequested`, which is where the geometry is
+saved and looked consistent. It was wrong: a crash or a kill lost the session,
+and surviving an unexpected exit is the main thing session restore is for. It is
+now written whenever the tab set changes. The write is small and atomic and
+happens far less often than the history append that already runs on every page
+load.
+
+Only URLs are kept. Per-tab back history died with the stack when traversal moved
+to WebView2, and the runtime's own history goes with the webview.
+
+Closing every tab still leaves nothing to restore. That is deliberate, and it is
+what every mainstream browser does: you closed them.
+
+---
+
+## Downloads are recorded, not intercepted
+
+WebView2 performs the transfer and shows its own dialog either way. Brume simply
+never heard about it, so there was nothing to list. `on_download` gives
+`Requested` and `Finished` and nothing between, so there is no byte count and no
+progress bar. Reaching one means going through
+`ICoreWebView2DownloadOperation` directly, which is not done here.
+
+The destination is deliberately left alone. The runtime already puts files where
+Windows says downloads go, and overriding that to somewhere Brume invented would
+be worse than doing nothing.
+
+`reveal_download` checks the path against the recorded list before handing it to
+Explorer. It arrives over IPC, and launching a process with an unchecked
+caller-supplied string is worse than it looks.
+
+---
+
+## Private tabs are two separate jobs
+
+`WebviewBuilder::incognito(true)` hands cookies, storage and cache to a
+throwaway partition the runtime discards with the webview. That is half of it,
+and the easy half.
+
+The other half is everything **Brume** would otherwise write to disk, and each
+one is a separate decision:
+
+- no history entry on page load
+- no entry in the saved session, or the file would name pages the tab existed to
+  keep off disk
+- no place in the reopen-closed-tab list, since that list outlives the tab
+
+A link opened from a private tab inherits privacy. Anything else would leak a
+private context into a recorded one on the first `target="_blank"`.
+
+The tab strip shows the mask rather than a favicon, deliberately: fetching the
+icon means a request to that site from a tab whose point is not making them.
+
+## Clearing site data is a third interop module
+
+`profile.rs` joins find.rs and history.rs. Cookies, local storage, IndexedDB and
+the HTTP cache live in the WebView2 profile, reached through
+`ICoreWebView2_13::Profile` and cleared with `ICoreWebView2Profile2::ClearBrowsingDataAll`.
+
+`ClearBrowsingDataAll` rather than a time range, because a control labelled
+"clear everything" that quietly kept last week would be worse than not offering
+one. It is asynchronous and reports through a completion handler, and the
+command waits for it: returning before the work is done invites a second press.
+
+**History and bookmarks are deliberately not included.** Those are Brume's own
+records with their own controls. "What the sites left behind" and "what I chose
+to keep" are different decisions and should not share a button.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

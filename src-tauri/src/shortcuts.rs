@@ -82,6 +82,9 @@ const BINDINGS: &[(&str, &str)] = &[
     // find bar closes on Escape from its own keydown handler in the chrome,
     // which is where the focus already is while typing in it.
     ("CmdOrCtrl+F", "find"),
+    ("CmdOrCtrl+P", "print"),
+    ("F11", "fullscreen"),
+    ("CmdOrCtrl+Shift+N", "private_tab"),
 ];
 
 fn action_for(shortcut: &Shortcut) -> Option<&'static str> {
@@ -137,7 +140,7 @@ pub fn set_active(app: &AppHandle, active: bool) {
 /// Runs the action behind a binding.
 pub fn handle(app: &AppHandle, action: &str) {
     match action {
-        "new_tab" => spawn(app, |app| async move { browser::open_tab(app, None).await }),
+        "new_tab" => spawn(app, |app| async move { browser::open_tab(app, None, None).await }),
 
         "close_tab" => {
             if let Some(tab) = browser::active_tab_id(app) {
@@ -146,6 +149,10 @@ pub fn handle(app: &AppHandle, action: &str) {
         }
 
         "reopen_tab" => spawn(app, |app| async move { browser::reopen_closed_tab(app).await }),
+
+        "private_tab" => spawn(app, |app| async move {
+            browser::open_tab(app, None, Some(true)).await
+        }),
 
         "next_tab" | "prev_tab" => {
             let forward = action == "next_tab";
@@ -192,6 +199,10 @@ pub fn handle(app: &AppHandle, action: &str) {
         // Alt+Home, not Ctrl+Home. Ctrl+Home is "scroll to top of document" in
         // every browser and belongs to the page, not to us.
         "home" => log(browser::go_home(app.clone())),
+        "print" => log(browser::print_page(app.clone())),
+
+        // Resizes webviews, so it goes through spawn like the tab commands.
+        "fullscreen" => spawn(app, |app| async move { browser::toggle_fullscreen(app).await }),
         "bookmark" => log(browser::toggle_bookmark_active(app.clone()).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.

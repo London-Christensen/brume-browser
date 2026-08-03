@@ -117,6 +117,13 @@ struct Tab {
     label: String,
     title: String,
     nav: NavState,
+    /// A private tab keeps nothing: no history entry, no session entry, and no
+    /// place in the reopen-closed-tab list.
+    ///
+    /// The webview is built with `incognito`, so cookies and storage are the
+    /// runtime's problem and go when it closes. What is tracked here is the part
+    /// Brume itself would otherwise write to disk.
+    private: bool,
 }
 
 impl Tab {
@@ -222,6 +229,7 @@ pub struct TabView {
     pub url: String,
     pub active: bool,
     pub loading: bool,
+    pub private: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -252,6 +260,7 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
                 url: t.nav.current().cloned().unwrap_or_default(),
                 active: t.id == tabs.active,
                 loading: t.nav.loading,
+                private: t.private,
             })
             .collect(),
         url: active
@@ -404,7 +413,7 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Creates a content webview for one tab and registers its event handlers.
-fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri::Result<()> {
+fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str, private: bool) -> tauri::Result<()> {
     // An error, not a silent Ok. Returning Ok here registered a tab that had no
     // webview behind it and reported success, which is the worst of both: the
     // tab strip grew a row that rendered nothing and nothing anywhere said why.
@@ -432,9 +441,16 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
     let title_handle = app.clone();
     let newwin_handle = app.clone();
     let download_handle = app.clone();
+    // A link opened from a private tab stays private. Inheriting is the only
+    // sane rule: the page that asked for it is already in a private context.
+    let opener_private = private;
 
     window.add_child(
         WebviewBuilder::new(label, WebviewUrl::External(parsed))
+            // Incognito hands cookies, storage and cache to a throwaway
+            // partition the runtime discards with the webview. Brume still has
+            // to keep its own records out, which is what Tab::private is for.
+            .incognito(private)
             // Ctrl+scroll and Ctrl+plus/minus, which WebView2 gates behind its
             // IsZoomControlEnabled setting.
             //
@@ -459,7 +475,7 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                 // to the main thread and then blocks waiting on it - the same
                 // deadlock the async commands below exist to avoid.
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = open_tab_inner(&handle, Some(target)) {
+                    if let Err(e) = open_tab_inner(&handle, Some(target), opener_private) {
                         eprintln!("[browser] new-window request failed: {e}");
                     }
                 });
@@ -554,7 +570,9 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                     match tabs.tab_mut(id) {
                         Some(tab) => {
                             tab.nav.loading = !finished;
-                            if finished {
+                            // A private tab records nothing. This is the single
+                            // place a visit would reach history from.
+                            if finished && !tab.private {
                                 tab.nav
                                     .current()
                                     .cloned()
@@ -695,6 +713,9 @@ fn save_session(app: &AppHandle) {
         let urls: Vec<String> = tabs
             .items
             .iter()
+            // Private tabs are left out: a session file naming them would
+            // outlive the browsing they were supposed to keep off disk.
+            .filter(|t| !t.private)
             .filter_map(|t| t.nav.current().cloned())
             // A tab still sitting on about:blank has nowhere to be restored to.
             .filter(|u| !u.starts_with("about:"))
@@ -816,10 +837,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .session();
 
     if session.is_empty() {
-        open_tab_inner(app, None)?;
+        open_tab_inner(app, None, false)?;
     } else {
         for url in &session {
-            if let Err(e) = open_tab_inner(app, Some(url.clone())) {
+            if let Err(e) = open_tab_inner(app, Some(url.clone()), false) {
                 eprintln!("[browser] could not restore {url}: {e}");
             }
         }
@@ -832,7 +853,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         // Nothing restored, so there is no tab at all. Fall back rather than
         // leave an empty window.
         if tab_id_at(app, 0).is_none() {
-            open_tab_inner(app, None)?;
+            open_tab_inner(app, None, false)?;
         }
         relayout(app)?;
         publish(app);
@@ -895,7 +916,7 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
 /// Split from the command so that `build` - which returns `tauri::Result` - can
 /// open the first tab through the same path, instead of the command's
 /// stringly-typed error being forced through a conversion at the call site.
-fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
+fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri::Result<()> {
     let target = url.unwrap_or_else(|| home_url(app));
 
     let (id, label, previous_active) = {
@@ -917,6 +938,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
             label: label.clone(),
             title: String::new(),
             nav: NavState::default(),
+            private,
         });
         tabs.active = id;
 
@@ -931,7 +953,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
     // tab, so every subsequent navigate, reload and back resolved to a webview
     // that did not exist and failed. The chrome raises a dialog per failed
     // command, so the browser became unusable until that tab was closed.
-    let spawned = spawn_tab_webview(app, id, &label, &target);
+    let spawned = spawn_tab_webview(app, id, &label, &target, private);
 
     // Subscribe to the runtime's history events once the webview exists. Only
     // on success: there is nothing to watch otherwise.
@@ -978,8 +1000,12 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
 // applies to any future command that creates, closes or reparents a webview.
 
 #[tauri::command]
-pub async fn open_tab(app: AppHandle, url: Option<String>) -> Result<(), String> {
-    open_tab_inner(&app, url).map_err(|e| e.to_string())
+pub async fn open_tab(
+    app: AppHandle,
+    url: Option<String>,
+    private: Option<bool>,
+) -> Result<(), String> {
+    open_tab_inner(&app, url, private.unwrap_or(false)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1000,7 +1026,13 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
         let was_active = tabs.active == id;
         // Captured before the removal: afterwards the tab is gone and there is
         // nothing left to read the URL from.
-        let reopen_url = tabs.items[pos].nav.current().cloned();
+        // A private tab is not offered back by Ctrl+Shift+T. Reopening it
+        // would put its URL in a list that survives the tab.
+        let reopen_url = if tabs.items[pos].private {
+            None
+        } else {
+            tabs.items[pos].nav.current().cloned()
+        };
         tabs.items.remove(pos);
 
         if tabs.items.is_empty() {
@@ -1084,6 +1116,33 @@ pub fn navigate(app: AppHandle, input: String) -> Result<(), String> {
     active_webview(&app)?
         .navigate(url)
         .map_err(|e| e.to_string())
+}
+
+/// Opens the system print dialog for the active tab.
+///
+/// WebView2's own dialog, not one of Brume's. Printing is a platform surface
+/// with page setup, printer selection and a preview, and reimplementing it to
+/// match the chrome would be a large amount of work for something people expect
+/// to look exactly like it does everywhere else.
+#[tauri::command]
+pub fn print_page(app: AppHandle) -> Result<(), String> {
+    active_webview(&app)?.print().map_err(|e| e.to_string())
+}
+
+/// Toggles fullscreen.
+///
+/// The chrome goes with it. Tauri's fullscreen covers the whole window, and the
+/// content webview is positioned relative to that window, so `relayout` puts the
+/// page over the full screen once the toolbar is out of the way.
+#[tauri::command]
+pub async fn toggle_fullscreen(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_window(WINDOW_LABEL) else {
+        return Ok(());
+    };
+    let now = window.is_fullscreen().map_err(|e| e.to_string())?;
+    window.set_fullscreen(!now).map_err(|e| e.to_string())?;
+    relayout(&app).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Navigates the active tab to the homepage.
@@ -1217,7 +1276,7 @@ pub async fn reopen_closed_tab(app: AppHandle) -> Result<(), String> {
     };
 
     match url {
-        Some(url) => open_tab_inner(&app, Some(url)).map_err(|e| e.to_string()),
+        Some(url) => open_tab_inner(&app, Some(url), false).map_err(|e| e.to_string()),
         None => Ok(()),
     }
 }
@@ -1346,6 +1405,7 @@ mod tests {
             label: "tab-0".into(),
             title: String::new(),
             nav: NavState::default(),
+            private: false,
         };
         assert_eq!(tab.display_title(), "New tab");
 

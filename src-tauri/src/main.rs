@@ -16,6 +16,7 @@
 mod browser;
 mod find;
 mod history;
+mod profile;
 mod search;
 mod settings;
 mod shortcuts;
@@ -72,6 +73,8 @@ fn main() {
             browser::activate_tab,
             browser::set_panel,
             browser::set_find_bar,
+            browser::print_page,
+            browser::toggle_fullscreen,
             browser::toggle_bookmark_active,
             store::history,
             store::clear_history,
@@ -81,6 +84,7 @@ fn main() {
             store::downloads,
             store::clear_downloads,
             store::reveal_download,
+            profile::clear_site_data,
             search::search_engines,
             settings::get_settings,
             settings::set_auto_update,
