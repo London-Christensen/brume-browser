@@ -29,7 +29,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{
-    webview::{PageLoadEvent, WebviewBuilder},
+    webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder},
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WindowEvent,
 };
 
@@ -159,8 +159,22 @@ impl Tabs {
     }
 }
 
+/// How many closed tabs can be reopened.
+///
+/// Bounded because this holds URLs of pages the user has closed - which is
+/// exactly the list someone clearing their history would expect to be gone. Ten
+/// covers the accidental Ctrl+W without keeping a shadow history for the session.
+const CLOSED_TAB_LIMIT: usize = 10;
+
 pub struct Browser {
     tabs: Mutex<Tabs>,
+    /// URLs of recently closed tabs, most recent last, for Ctrl+Shift+T.
+    ///
+    /// Only the URL is kept, not the tab's whole history. Reopening restores
+    /// where you were, not the trail you took to get there - which is what the
+    /// shortcut is actually for, and it avoids persisting a per-tab history
+    /// stack for tabs that no longer exist.
+    closed: Mutex<Vec<String>>,
     /// Whether the chrome is expanded over the whole window to show history,
     /// bookmarks or settings.
     ///
@@ -177,6 +191,7 @@ impl Default for Browser {
     fn default() -> Self {
         Self {
             tabs: Mutex::new(Tabs::default()),
+            closed: Mutex::new(Vec::new()),
             panel_open: AtomicBool::new(false),
         }
     }
@@ -272,8 +287,21 @@ fn publish(app: &AppHandle) {
     // disagree - a title left showing a page you have navigated away from is a
     // small thing that reads as broken.
     if let Some(window) = app.get_window(WINDOW_LABEL) {
-        let active = state.tabs.iter().find(|t| t.active);
-        let title = match active.map(|t| t.title.as_str()).unwrap_or("") {
+        // The tab's *raw* title, not its display title.
+        //
+        // TabView carries display_title(), which falls back to the host and then
+        // to "New tab" so the tab strip never shows a blank. Reading that here
+        // meant the empty-title branch below could never be taken, and a freshly
+        // launched Brume announced itself as "New tab - Brume" in the taskbar.
+        // The window wants the opposite fallback: no page title yet means the
+        // application name on its own.
+        let raw_title = {
+            let browser = app.state::<Browser>();
+            let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            tabs.active_tab().map(|t| t.title.clone()).unwrap_or_default()
+        };
+
+        let title = match raw_title.trim() {
             "" => "Brume".to_string(),
             page => format!("{page} — Brume"),
         };
@@ -361,8 +389,11 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
 
 /// Creates a content webview for one tab and registers its event handlers.
 fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri::Result<()> {
+    // An error, not a silent Ok. Returning Ok here registered a tab that had no
+    // webview behind it and reported success, which is the worst of both: the
+    // tab strip grew a row that rendered nothing and nothing anywhere said why.
     let Some(window) = app.get_window(WINDOW_LABEL) else {
-        return Ok(());
+        return Err(tauri::Error::WindowNotFound);
     };
 
     let scale = window.scale_factor()?;
@@ -380,10 +411,64 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
     let nav_handle = app.clone();
     let load_handle = app.clone();
     let title_handle = app.clone();
+    let newwin_handle = app.clone();
 
     window.add_child(
         WebviewBuilder::new(label, WebviewUrl::External(parsed))
+            // Ctrl+scroll and Ctrl+plus/minus, which WebView2 gates behind its
+            // IsZoomControlEnabled setting.
+            //
+            // wry and tauri-runtime both default this to `false`, so leaving it
+            // unset does not mean "platform default" - it means zoom is switched
+            // off outright, on a browser. Enabling it is the whole fix: WebView2
+            // handles both the wheel and the keyboard itself, so there is no
+            // accelerator for Brume to register and nothing to keep in step.
+            .zoom_hotkeys_enabled(true)
+            // A page asking for a new window gets a Brume tab instead.
+            //
+            // This is not an enhancement, it repairs a hole: wry registers a
+            // NewWindowRequested handler unconditionally, and when no callback
+            // is supplied its else-branch calls SetHandled(true) and completes
+            // the deferral - which *cancels* the request. Without this,
+            // target="_blank" and window.open() silently did nothing at all.
+            .on_new_window(move |url, _features| {
+                let handle = newwin_handle.clone();
+                let target = url.to_string();
+                // Spawned, never called inline. This handler runs on the main
+                // thread, and open_tab_inner reaches add_child, which dispatches
+                // to the main thread and then blocks waiting on it - the same
+                // deadlock the async commands below exist to avoid.
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = open_tab_inner(&handle, Some(target)) {
+                        eprintln!("[browser] new-window request failed: {e}");
+                    }
+                });
+                // Deny, not Allow: allowing it hands the page a bare OS window
+                // with no chrome, no tab strip and no address bar - a popup
+                // Brume could neither show the URL of nor close.
+                NewWindowResponse::Deny
+            })
             .on_navigation(move |url| {
+                // Brume's own UI is served from tauri.localhost, and the asset
+                // protocol from asset.localhost. Neither is somewhere a website
+                // has any business navigating to.
+                //
+                // The content webview holds no capabilities, so a page that got
+                // there could not invoke a command today. It could still render
+                // Brume's chrome inside a tab, and the whole reason that
+                // capability scoping is safe is that nothing else is relying on
+                // it alone. Refusing here is a second lock on the same door.
+                //
+                // Matched exactly rather than by suffix: `ends_with` would also
+                // accept `nottauri.localhost`.
+                if url
+                    .host_str()
+                    .is_some_and(|h| h == "tauri.localhost" || h == "asset.localhost")
+                {
+                    eprintln!("[browser] refused navigation to Brume's own origin: {url}");
+                    return false;
+                }
+
                 // Fires for every navigation, including ones Brume did not
                 // start: link clicks, form submissions, redirects, JavaScript.
                 // Recording here rather than only in `navigate` is what keeps
@@ -461,11 +546,91 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
     Ok(())
 }
 
+/// Default window size, used on first run and whenever a saved one is unusable.
+const DEFAULT_WIDTH: f64 = 1200.0;
+const DEFAULT_HEIGHT: f64 = 800.0;
+
+/// Whether a saved position still lands on a display that exists.
+///
+/// Restoring coordinates blindly is how a window ends up invisible: unplug the
+/// second monitor and last session's position is somewhere the desktop no longer
+/// covers, leaving Brume running with no way to reach it. Only the top-left
+/// corner is checked, which is enough to guarantee the title bar is grabbable.
+fn position_is_on_screen(window: &tauri::Window, x: f64, y: f64) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return false;
+    };
+
+    monitors.iter().any(|m| {
+        let scale = m.scale_factor();
+        let pos = m.position().to_logical::<f64>(scale);
+        let size = m.size().to_logical::<f64>(scale);
+        x >= pos.x && y >= pos.y && x < pos.x + size.width && y < pos.y + size.height
+    })
+}
+
+/// Persists the window's current geometry.
+///
+/// Skipped while maximised or minimised for the size, because those report the
+/// filled or zeroed rectangle rather than the size to return to - saving them
+/// would make un-maximising restore to full screen forever.
+fn save_geometry(app: &AppHandle) {
+    let Some(window) = app.get_window(WINDOW_LABEL) else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+
+    let maximized = window.is_maximized().unwrap_or(false);
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Ok(pos) = window.outer_position() else {
+        return;
+    };
+
+    let size: LogicalSize<f64> = size.to_logical(scale);
+    let pos: LogicalPosition<f64> = pos.to_logical(scale);
+
+    let settings = app.state::<crate::settings::SettingsState>();
+    let previous = settings.window();
+
+    // While maximised, keep the previously saved size and record only the flag,
+    // so the un-maximised size survives being maximised at quit.
+    let (width, height, x, y) = match (maximized, previous) {
+        (true, Some(prev)) => (prev.width, prev.height, prev.x, prev.y),
+        (true, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT, pos.x, pos.y),
+        (false, _) => (size.width, size.height, pos.x, pos.y),
+    };
+
+    let _ = settings.set_window(crate::settings::WindowGeometry {
+        x,
+        y,
+        width,
+        height,
+        maximized,
+    });
+}
+
 /// Builds the window, the chrome, and the first tab.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
+    let saved = app.state::<crate::settings::SettingsState>().window();
+
+    // Size is taken from the saved geometry, but position is applied *after* the
+    // window exists - checking whether coordinates are on a real display needs
+    // the monitor list, and that comes off a window.
+    let (width, height) = match saved {
+        Some(g) if g.width >= 480.0 && g.height >= 360.0 => (g.width, g.height),
+        _ => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
+    };
+
     let window = tauri::window::WindowBuilder::new(app, WINDOW_LABEL)
         .title("Brume")
-        .inner_size(1200.0, 800.0)
+        .inner_size(width, height)
         .min_inner_size(480.0, 360.0)
         .center()
         .theme(Some(tauri::Theme::Dark))
@@ -473,11 +638,66 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .background_color(tauri::window::Color(0x10, 0x14, 0x18, 0xff))
         .build()?;
 
+    // Position and maximised state, now that there is a window to ask about
+    // monitors. An off-screen saved position is discarded and the centred
+    // position from the builder stands.
+    if let Some(g) = saved {
+        if position_is_on_screen(&window, g.x, g.y) {
+            let _ = window.set_position(LogicalPosition::new(g.x, g.y));
+        }
+
+        // Then shrink it if it no longer fits.
+        //
+        // The size was applied by the builder before any monitor was known. A
+        // window saved on a large display and reopened on a smaller one would
+        // otherwise come back bigger than the screen it is on, with its edges
+        // and resize handles somewhere unreachable. Clamped against whichever
+        // monitor it actually landed on.
+        if let Ok(Some(monitor)) = window.current_monitor() {
+            let scale = monitor.scale_factor();
+            let available: LogicalSize<f64> = monitor.size().to_logical(scale);
+            let fitted_w = width.min(available.width);
+            let fitted_h = height.min(available.height);
+            if fitted_w < width || fitted_h < height {
+                let _ = window.set_size(LogicalSize::new(fitted_w, fitted_h));
+                let _ = window.center();
+            }
+        }
+
+        if g.maximized {
+            let _ = window.maximize();
+        }
+    }
+
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
 
     window.add_child(
-        WebviewBuilder::new(CHROME_LABEL, WebviewUrl::App("index.html".into())),
+        WebviewBuilder::new(CHROME_LABEL, WebviewUrl::App("index.html".into()))
+            // The chrome must never leave its own origin.
+            //
+            // This is the one webview that holds capabilities, so a website
+            // loaded here would inherit every command Brume exposes. Nothing in
+            // the chrome navigates anywhere today - there is not a single
+            // anchor in index.html - but that is a property of the current
+            // markup, not of the design, and one "report a bug" link in the
+            // settings panel would quietly undo it.
+            //
+            // Phrased as "refuse external web addresses" rather than "allow a
+            // known list", so an internal scheme this does not anticipate still
+            // loads. Getting an allowlist wrong here means a blank chrome and a
+            // browser that does not start.
+            .on_navigation(|url| {
+                let is_web = matches!(url.scheme(), "http" | "https");
+                let internal = url
+                    .host_str()
+                    .is_some_and(|h| h == "localhost" || h.ends_with(".localhost"));
+                if is_web && !internal {
+                    eprintln!("[browser] refused to navigate the chrome to {url}");
+                    return false;
+                }
+                true
+            }),
         LogicalPosition::new(0.0, 0.0),
         LogicalSize::new(size.width, CHROME_HEIGHT),
     )?;
@@ -494,6 +714,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         // every other application on the machine.
         WindowEvent::Focused(focused) => {
             crate::shortcuts::set_active(&event_handle, *focused);
+        }
+        // Saved on close rather than on every Moved and Resized event.
+        //
+        // Those fire continuously while a window is dragged, and each one would
+        // be a serialise-and-rewrite of settings.json - hundreds of writes to
+        // record one final position. The cost is that a hard kill loses the
+        // last move, which is a fair trade for not thrashing the disk.
+        WindowEvent::CloseRequested { .. } => {
+            save_geometry(&event_handle);
         }
         _ => {}
     });
@@ -525,7 +754,7 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
 fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
     let target = url.unwrap_or_else(|| home_url(app));
 
-    let (id, label) = {
+    let (id, label, previous_active) = {
         let browser = app.state::<Browser>();
         let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
 
@@ -536,6 +765,9 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
         // a stale handler from the old webview writing into the new tab.
         let label = format!("tab-{id}");
 
+        // Kept so the tab can be taken back out if the webview fails to build.
+        let previous_active = tabs.active;
+
         tabs.items.push(Tab {
             id,
             label: label.clone(),
@@ -544,10 +776,32 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
         });
         tabs.active = id;
 
-        (id, label)
+        (id, label, previous_active)
     };
 
-    spawn_tab_webview(app, id, &label, &target)?;
+    // Roll back if the webview cannot be created.
+    //
+    // The tab has to be registered first, because the webview's own handlers
+    // fire during construction and look it up by id. But leaving it there on
+    // failure produced a tab with nothing behind it that was also the *active*
+    // tab, so every subsequent navigate, reload and back resolved to a webview
+    // that did not exist and failed. The chrome raises a dialog per failed
+    // command, so the browser became unusable until that tab was closed.
+    if let Err(e) = spawn_tab_webview(app, id, &label, &target) {
+        {
+            let browser = app.state::<Browser>();
+            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            tabs.items.retain(|t| t.id != id);
+            // Only restore the old active tab if it is still open.
+            if tabs.items.iter().any(|t| t.id == previous_active) {
+                tabs.active = previous_active;
+            }
+        }
+        let _ = relayout(app);
+        publish(app);
+        return Err(e);
+    }
+
     relayout(app)?;
     publish(app);
     Ok(())
@@ -582,7 +836,7 @@ pub async fn close_tab(app: AppHandle, id: u32) -> Result<(), String> {
 }
 
 fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
-    let (label, closed_last, new_active) = {
+    let (label, closed_last, reopen_url) = {
         let browser = app.state::<Browser>();
         let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
 
@@ -592,10 +846,13 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
 
         let label = tabs.items[pos].label.clone();
         let was_active = tabs.active == id;
+        // Captured before the removal: afterwards the tab is gone and there is
+        // nothing left to read the URL from.
+        let reopen_url = tabs.items[pos].nav.current().cloned();
         tabs.items.remove(pos);
 
         if tabs.items.is_empty() {
-            (label, true, None)
+            (label, true, reopen_url)
         } else {
             if was_active {
                 // Activate the neighbour to the right, or the new last tab -
@@ -603,10 +860,25 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
                 let next = tabs.items.get(pos).or_else(|| tabs.items.last());
                 tabs.active = next.map(|t| t.id).unwrap_or(0);
             }
-            let active = tabs.active;
-            (label, false, Some(active))
+            (label, false, reopen_url)
         }
     };
+
+    // Recorded after the tabs lock is released, because this takes a different
+    // lock and doing it above would set a lock order the rest of the file does
+    // not follow.
+    if let Some(url) = reopen_url {
+        if !url.is_empty() && !url.starts_with("about:") {
+            let browser = app.state::<Browser>();
+            let mut closed = browser.closed.lock().expect("closed mutex poisoned");
+            closed.push(url);
+            // Trim from the front: the oldest entry is the one worth losing.
+            if closed.len() > CLOSED_TAB_LIMIT {
+                let excess = closed.len() - CLOSED_TAB_LIMIT;
+                closed.drain(..excess);
+            }
+        }
+    }
 
     if let Some(view) = app.get_webview(&label) {
         let _ = view.close();
@@ -620,9 +892,8 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
         return Ok(());
     }
 
-    let _ = new_active;
-    relayout(&app).map_err(|e| e.to_string())?;
-    publish(&app);
+    relayout(app).map_err(|e| e.to_string())?;
+    publish(app);
     Ok(())
 }
 
@@ -707,13 +978,24 @@ pub fn go_forward(app: AppHandle) -> Result<(), String> {
     traverse(&app, true)
 }
 
+/// Reloads the active tab.
+///
+/// Uses the runtime's own reload rather than evaluating `location.reload()`.
+/// Injected script only works on a document that hosts script in the first
+/// place: a PDF in the built-in viewer, a bare image, or one of WebView2's own
+/// error pages has no `location` worth calling, so the old approach failed
+/// silently on exactly the pages a reload button is most wanted on.
 #[tauri::command]
 pub fn reload(app: AppHandle) -> Result<(), String> {
-    active_webview(&app)?
-        .eval("location.reload()")
-        .map_err(|e| e.to_string())
+    active_webview(&app)?.reload().map_err(|e| e.to_string())
 }
 
+/// Stops the active tab loading.
+///
+/// Still `window.stop()`, because neither Tauri nor wry surfaces WebView2's
+/// `Stop()` - checked, there is no `Webview::stop`. Reaching it means going
+/// through `with_webview` to the ICoreWebView2 directly, which is worth doing
+/// alongside the other interop work rather than on its own.
 #[tauri::command]
 pub fn stop_loading(app: AppHandle) -> Result<(), String> {
     active_webview(&app)?
@@ -736,6 +1018,42 @@ pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
     let browser = app.state::<Browser>();
     let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
     tabs.active_tab().map(|t| t.id)
+}
+
+/// Id of the tab at a zero-based position, for the Ctrl+1..8 bindings.
+///
+/// Returns `None` when there is no tab there, so Ctrl+5 with three tabs open
+/// does nothing rather than jumping somewhere arbitrary.
+pub fn tab_id_at(app: &AppHandle, index: usize) -> Option<u32> {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    tabs.items.get(index).map(|t| t.id)
+}
+
+/// Id of the last tab, for Ctrl+9.
+///
+/// Ctrl+9 means "last tab", not "ninth tab", in every mainstream browser - it is
+/// the one number that is positional rather than an index.
+pub fn last_tab_id(app: &AppHandle) -> Option<u32> {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    tabs.items.last().map(|t| t.id)
+}
+
+/// Reopens the most recently closed tab. Does nothing when none were closed.
+///
+/// Async for the same reason the tab commands are: it creates a webview.
+pub async fn reopen_closed_tab(app: AppHandle) -> Result<(), String> {
+    let url = {
+        let browser = app.state::<Browser>();
+        let mut closed = browser.closed.lock().expect("closed mutex poisoned");
+        closed.pop()
+    };
+
+    match url {
+        Some(url) => open_tab_inner(&app, Some(url)).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
 }
 
 /// Moves to the next or previous tab, wrapping at the ends.
@@ -800,4 +1118,127 @@ pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
         .toggle_bookmark(&url, &title)?;
     publish(&app);
     Ok(bookmarked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Walks history the way `traverse` does, without needing an AppHandle.
+    ///
+    /// `traverse` is the real caller and it moves the index then navigates; the
+    /// index arithmetic is the part that can be wrong, so that is what is tested.
+    fn back(nav: &mut NavState) -> bool {
+        if !nav.can_go_back() {
+            return false;
+        }
+        nav.index -= 1;
+        true
+    }
+
+    fn forward(nav: &mut NavState) -> bool {
+        if !nav.can_go_forward() {
+            return false;
+        }
+        nav.index += 1;
+        true
+    }
+
+    #[test]
+    fn a_fresh_tab_can_go_nowhere() {
+        let nav = NavState::default();
+        assert!(!nav.can_go_back());
+        assert!(!nav.can_go_forward());
+        assert_eq!(nav.current(), None);
+    }
+
+    #[test]
+    fn the_first_page_is_not_something_to_go_back_from() {
+        let mut nav = NavState::default();
+        nav.push("https://a.test/".into());
+
+        assert_eq!(nav.current().map(String::as_str), Some("https://a.test/"));
+        // An always-enabled back button is worse than no back button, which is
+        // the whole reason Brume tracks this itself.
+        assert!(!nav.can_go_back());
+        assert!(!nav.can_go_forward());
+    }
+
+    #[test]
+    fn walking_back_and_forward_returns_to_the_same_place() {
+        let mut nav = NavState::default();
+        for url in ["https://a.test/", "https://b.test/", "https://c.test/"] {
+            nav.push(url.into());
+        }
+
+        assert!(back(&mut nav));
+        assert_eq!(nav.current().map(String::as_str), Some("https://b.test/"));
+        assert!(back(&mut nav));
+        assert_eq!(nav.current().map(String::as_str), Some("https://a.test/"));
+        assert!(!back(&mut nav), "should not walk off the start");
+
+        assert!(forward(&mut nav));
+        assert!(forward(&mut nav));
+        assert_eq!(nav.current().map(String::as_str), Some("https://c.test/"));
+        assert!(!forward(&mut nav), "should not walk off the end");
+    }
+
+    #[test]
+    fn re_navigating_to_the_current_page_does_not_corrupt_history() {
+        // This is the mechanism that makes back and forward work at all: they
+        // re-navigate to a known entry, which fires on_navigation, which calls
+        // push. Without the identical-URL guard every back press would append.
+        let mut nav = NavState::default();
+        nav.push("https://a.test/".into());
+        nav.push("https://b.test/".into());
+        back(&mut nav);
+
+        nav.push("https://a.test/".into()); // what on_navigation does
+
+        assert_eq!(nav.entries.len(), 2, "history grew on a back navigation");
+        assert_eq!(nav.index, 0, "index moved on a back navigation");
+        assert!(nav.can_go_forward(), "forward history was lost");
+    }
+
+    #[test]
+    fn a_new_page_after_going_back_discards_the_forward_trail() {
+        let mut nav = NavState::default();
+        for url in ["https://a.test/", "https://b.test/", "https://c.test/"] {
+            nav.push(url.into());
+        }
+        back(&mut nav);
+        back(&mut nav);
+        assert!(nav.can_go_forward());
+
+        nav.push("https://d.test/".into());
+
+        assert_eq!(nav.entries.len(), 2);
+        assert_eq!(nav.current().map(String::as_str), Some("https://d.test/"));
+        assert!(nav.can_go_back());
+        assert!(
+            !nav.can_go_forward(),
+            "b and c should be unreachable after branching off a"
+        );
+    }
+
+    #[test]
+    fn display_title_falls_back_to_the_host_then_to_new_tab() {
+        let mut tab = Tab {
+            id: 0,
+            label: "tab-0".into(),
+            title: String::new(),
+            nav: NavState::default(),
+        };
+        assert_eq!(tab.display_title(), "New tab");
+
+        tab.nav.push("https://www.example.com/deep/path".into());
+        // www. is stripped: it is noise in a tab that is only ~140px wide.
+        assert_eq!(tab.display_title(), "example.com");
+
+        tab.title = "  ".into();
+        assert_eq!(tab.display_title(), "example.com", "blank title is not a title");
+
+        tab.title = "Real Page Title".into();
+        assert_eq!(tab.display_title(), "Real Page Title");
+    }
 }

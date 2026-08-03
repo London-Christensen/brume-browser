@@ -57,6 +57,30 @@ pub struct Settings {
     /// moves the new-tab page too. Someone who sets an explicit homepage has
     /// said what they want and it is left alone.
     pub homepage: String,
+
+    /// Last window geometry, or `None` until the first window closes.
+    ///
+    /// Kept here rather than in its own file so it inherits this module's
+    /// BOM-stripping and corrupt-file handling. It is not a preference, and the
+    /// Settings panel deliberately does not show it.
+    pub window: Option<WindowGeometry>,
+}
+
+/// Where the window was, in logical pixels.
+///
+/// Logical rather than physical so the window comes back the same apparent size
+/// when it is restored on a display with a different scale factor - storing
+/// physical pixels means a window saved at 150% reopens two thirds the size at
+/// 100%.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct WindowGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// Restored as maximised, with the values above kept as the size to return
+    /// to when it is un-maximised.
+    pub maximized: bool,
 }
 
 impl Default for Settings {
@@ -66,6 +90,7 @@ impl Default for Settings {
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
             theme: "dark".to_string(),
             homepage: String::new(),
+            window: None,
         }
     }
 }
@@ -157,12 +182,19 @@ impl SettingsState {
         state
     }
 
+    /// Writes settings out, atomically.
+    ///
+    /// Shares `store::write_atomic` rather than calling `fs::write` directly.
+    /// Serialising straight over the destination leaves a truncated file if the
+    /// process dies mid-write, and a truncated settings.json is every setting
+    /// gone at once. store.rs already reasoned this through for bookmarks; the
+    /// argument is identical here and the two had simply drifted apart.
+    ///
+    /// It matters more since the window geometry started being saved on close,
+    /// because that write happens exactly when the process is about to exit.
     fn persist(&self, settings: &Settings) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
         let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-        fs::write(&self.path, json).map_err(|e| e.to_string())
+        crate::store::write_atomic(&self.path, &json)
     }
 
     pub fn get(&self) -> Settings {
@@ -208,6 +240,14 @@ impl SettingsState {
         }
         .to_string();
         self.update(|s| s.theme = normalised)
+    }
+
+    pub fn set_window(&self, geometry: WindowGeometry) -> Result<(), String> {
+        self.update(|s| s.window = Some(geometry))
+    }
+
+    pub fn window(&self) -> Option<WindowGeometry> {
+        self.get().window
     }
 
     /// Whether the UI is currently dark.

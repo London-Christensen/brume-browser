@@ -89,7 +89,7 @@ pub struct Store {
 /// process dies mid-write, which for bookmarks means losing all of them. Writing
 /// a sibling and renaming means the destination is either the old contents or
 /// the new ones, never a half-written mixture.
-fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
