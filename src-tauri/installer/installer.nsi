@@ -164,7 +164,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Values are Ink and Paper from brand/assets/css/tokens.css. NSIS wants RRGGBB
 ; with no leading hash. These must stay in step with tools/make-installer-art.ps1,
 ; which paints the header and sidebar bitmaps on the same Ink field so the images
-; sit seamlessly against the page rather than floating on a pale rectangle.
+; sit flush against the page rather than floating on a pale rectangle.
 ;
 ; Not everything here can be themed - see the Theming section of docs/INSTALLER.md
 ; for what stays light and why.
@@ -931,6 +931,18 @@ Section Install
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "$0"
 
+  ; Installation date - BRUME ADDITION
+  ;
+  ; Upstream never writes this, which leaves the "Installed on" column blank in
+  ; Settings > Installed apps. NSIS has no date primitive of its own; ${GetTime}
+  ; comes from FileFunc.nsh, already included above for ${GetSize}.
+  ;
+  ; Windows wants YYYYMMDD. GetTime hands back day, month and year in that
+  ; order, so the registers are read back reversed. Registers start at $2
+  ; because ${GetSize} above has finished with $0-$2 by this point.
+  ${GetTime} "" "L" $2 $3 $4 $5 $6 $7 $8
+  WriteRegStr SHCTX "${UNINSTKEY}" "InstallDate" "$4$3$2"
+
   !if "${HOMEPAGE}" != ""
     WriteRegStr SHCTX "${UNINSTKEY}" "URLInfoAbout" "${HOMEPAGE}"
     WriteRegStr SHCTX "${UNINSTKEY}" "URLUpdateInfo" "${HOMEPAGE}"
@@ -1105,6 +1117,15 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+
+    ; The installer shell's own profile - BRUME ADDITION
+    ;
+    ; Brume-Setup.exe is itself a Tauri app, with its own identifier of
+    ; "<bundle id>.setup", so WebView2 gives it a second profile directory
+    ; alongside the browser's. The two paths above are exact, not prefixes, so
+    ; nothing upstream ever names this one and it survives every uninstall -
+    ; measured at ~10 MB of cache for a window the user saw once.
+    RmDir /r "$LOCALAPPDATA\${BUNDLEID}.setup"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
