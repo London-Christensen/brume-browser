@@ -15,6 +15,7 @@
 
 mod browser;
 mod find;
+mod history;
 mod search;
 mod settings;
 mod shortcuts;

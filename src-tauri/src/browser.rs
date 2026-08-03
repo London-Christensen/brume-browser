@@ -77,50 +77,37 @@ fn home_url(app: &AppHandle) -> String {
     }
 }
 
-/// Session history for one tab.
+/// Where one tab currently is.
 ///
-/// Brume owns this rather than deferring to the webview's own history, because
-/// nothing exposes whether a webview *can* go back - neither the DOM nor Tauri -
-/// and a back button that is always enabled is worse than no back button.
-///
-/// The cost is that going back re-navigates instead of restoring from the
-/// back-forward cache, so scroll position is lost and the page is refetched.
-/// The way out is WebView2's own CanGoBack via `webview2-com`.
+/// This used to be a `Vec<String>` with an index, because nothing exposed
+/// whether a webview could go back, so Brume kept its own stack and went back by
+/// re-navigating. That refetched the page and lost scroll position on every
+/// press. history.rs reaches WebView2's real history instead, so the stack is
+/// gone and what is left is the current URL plus two flags mirrored from the
+/// runtime.
 #[derive(Default)]
 struct NavState {
-    entries: Vec<String>,
-    /// Index into `entries` of the page currently displayed.
-    index: usize,
+    url: String,
     loading: bool,
+    /// Mirrored from CanGoBack/CanGoForward whenever HistoryChanged fires.
+    /// Never computed here: the runtime is the only thing that knows.
+    can_back: bool,
+    can_forward: bool,
 }
 
 impl NavState {
     fn current(&self) -> Option<&String> {
-        self.entries.get(self.index)
-    }
-
-    fn can_go_back(&self) -> bool {
-        self.index > 0
-    }
-
-    fn can_go_forward(&self) -> bool {
-        !self.entries.is_empty() && self.index + 1 < self.entries.len()
-    }
-
-    /// Records arriving somewhere new, discarding any forward history.
-    ///
-    /// Ignores a URL identical to the current entry, which is what lets `back`
-    /// and `forward` - which re-navigate to a known entry - walk the history
-    /// without corrupting it.
-    fn push(&mut self, url: String) {
-        if self.current().is_some_and(|c| *c == url) {
-            return;
+        if self.url.is_empty() {
+            None
+        } else {
+            Some(&self.url)
         }
-        if !self.entries.is_empty() {
-            self.entries.truncate(self.index + 1);
-        }
-        self.entries.push(url);
-        self.index = self.entries.len() - 1;
+    }
+
+    /// Records arriving somewhere. No stack to corrupt any more, so unlike the
+    /// old `push` this has nothing to guard against.
+    fn set_url(&mut self, url: String) {
+        self.url = url;
     }
 }
 
@@ -270,8 +257,8 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
         url: active
             .and_then(|t| t.nav.current().cloned())
             .unwrap_or_default(),
-        can_go_back: active.is_some_and(|t| t.nav.can_go_back()),
-        can_go_forward: active.is_some_and(|t| t.nav.can_go_forward()),
+        can_go_back: active.is_some_and(|t| t.nav.can_back),
+        can_go_forward: active.is_some_and(|t| t.nav.can_forward),
         loading: active.is_some_and(|t| t.nav.loading),
         bookmarked,
         panel_open,
@@ -545,7 +532,7 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                     let browser = nav_handle.state::<Browser>();
                     let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
                     if let Some(tab) = tabs.tab_mut(id) {
-                        tab.nav.push(url.to_string());
+                        tab.nav.set_url(url.to_string());
                         tab.nav.loading = true;
                         // The old page's title does not describe the new one.
                         tab.title.clear();
@@ -864,7 +851,15 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>) -> tauri::Result<()> {
     // tab, so every subsequent navigate, reload and back resolved to a webview
     // that did not exist and failed. The chrome raises a dialog per failed
     // command, so the browser became unusable until that tab was closed.
-    if let Err(e) = spawn_tab_webview(app, id, &label, &target) {
+    let spawned = spawn_tab_webview(app, id, &label, &target);
+
+    // Subscribe to the runtime's history events once the webview exists. Only
+    // on success: there is nothing to watch otherwise.
+    if spawned.is_ok() {
+        crate::history::watch(app, id, &label);
+    }
+
+    if let Err(e) = spawned {
         {
             let browser = app.state::<Browser>();
             let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
@@ -1028,37 +1023,34 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
 
 /// Walks the active tab's history by `delta` entries.
 fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
-    let target = {
+    // The runtime decides whether there is anywhere to go. Brume no longer
+    // tracks an index it could disagree about.
+    let webview = active_webview(app)?;
+    crate::history::go(&webview, forward)?;
+    // No publish here. Moving fires the webview's own navigation and history
+    // events, and those publish with values the runtime has actually settled on.
+    Ok(())
+}
+
+/// Records what the runtime says about a tab's history, and republishes.
+///
+/// Called from history.rs when WebView2 reports a change. Separate from the
+/// navigation handlers on purpose: whether a page can be gone back from is not
+/// knowable at the moment navigation starts.
+pub fn update_traverse(app: &AppHandle, tab_id: u32, can_back: bool, can_forward: bool) {
+    {
         let browser = app.state::<Browser>();
         let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-        let Some(tab) = tabs.active_tab_mut() else {
-            return Ok(());
+        let Some(tab) = tabs.tab_mut(tab_id) else {
+            return;
         };
-
-        if forward {
-            if !tab.nav.can_go_forward() {
-                return Ok(());
-            }
-            tab.nav.index += 1;
-        } else {
-            if !tab.nav.can_go_back() {
-                return Ok(());
-            }
-            tab.nav.index -= 1;
+        if tab.nav.can_back == can_back && tab.nav.can_forward == can_forward {
+            return; // nothing the chrome would render differently
         }
-        tab.nav.current().cloned()
-    };
-
-    if let Some(url) = target {
-        let parsed = url
-            .parse()
-            .map_err(|_| "Invalid history entry".to_string())?;
-        active_webview(app)?
-            .navigate(parsed)
-            .map_err(|e| e.to_string())?;
+        tab.nav.can_back = can_back;
+        tab.nav.can_forward = can_forward;
     }
     publish(app);
-    Ok(())
 }
 
 #[tauri::command]
@@ -1241,101 +1233,29 @@ pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// Walks history the way `traverse` does, without needing an AppHandle.
-    ///
-    /// `traverse` is the real caller and it moves the index then navigates; the
-    /// index arithmetic is the part that can be wrong, so that is what is tested.
-    fn back(nav: &mut NavState) -> bool {
-        if !nav.can_go_back() {
-            return false;
-        }
-        nav.index -= 1;
-        true
-    }
-
-    fn forward(nav: &mut NavState) -> bool {
-        if !nav.can_go_forward() {
-            return false;
-        }
-        nav.index += 1;
-        true
-    }
+    // The traversal tests that used to live here are gone with the stack they
+    // exercised. Back and forward are WebView2's now, and verifying them needs a
+    // running webview rather than a unit test - done through tools/cdp.ps1.
+    // What is left here is the part Brume still decides for itself.
 
     #[test]
-    fn a_fresh_tab_can_go_nowhere() {
+    fn a_fresh_tab_has_no_url_and_cannot_move() {
         let nav = NavState::default();
-        assert!(!nav.can_go_back());
-        assert!(!nav.can_go_forward());
         assert_eq!(nav.current(), None);
+        // Both mirror the runtime and start false, so a new tab's back button is
+        // disabled until WebView2 says otherwise.
+        assert!(!nav.can_back);
+        assert!(!nav.can_forward);
     }
 
     #[test]
-    fn the_first_page_is_not_something_to_go_back_from() {
+    fn an_empty_url_is_not_a_url() {
         let mut nav = NavState::default();
-        nav.push("https://a.test/".into());
+        nav.set_url(String::new());
+        assert_eq!(nav.current(), None, "empty should read as nowhere, not as \"\"");
 
+        nav.set_url("https://a.test/".into());
         assert_eq!(nav.current().map(String::as_str), Some("https://a.test/"));
-        // An always-enabled back button is worse than no back button, which is
-        // the whole reason Brume tracks this itself.
-        assert!(!nav.can_go_back());
-        assert!(!nav.can_go_forward());
-    }
-
-    #[test]
-    fn walking_back_and_forward_returns_to_the_same_place() {
-        let mut nav = NavState::default();
-        for url in ["https://a.test/", "https://b.test/", "https://c.test/"] {
-            nav.push(url.into());
-        }
-
-        assert!(back(&mut nav));
-        assert_eq!(nav.current().map(String::as_str), Some("https://b.test/"));
-        assert!(back(&mut nav));
-        assert_eq!(nav.current().map(String::as_str), Some("https://a.test/"));
-        assert!(!back(&mut nav), "should not walk off the start");
-
-        assert!(forward(&mut nav));
-        assert!(forward(&mut nav));
-        assert_eq!(nav.current().map(String::as_str), Some("https://c.test/"));
-        assert!(!forward(&mut nav), "should not walk off the end");
-    }
-
-    #[test]
-    fn re_navigating_to_the_current_page_does_not_corrupt_history() {
-        // This is the mechanism that makes back and forward work at all: they
-        // re-navigate to a known entry, which fires on_navigation, which calls
-        // push. Without the identical-URL guard every back press would append.
-        let mut nav = NavState::default();
-        nav.push("https://a.test/".into());
-        nav.push("https://b.test/".into());
-        back(&mut nav);
-
-        nav.push("https://a.test/".into()); // what on_navigation does
-
-        assert_eq!(nav.entries.len(), 2, "history grew on a back navigation");
-        assert_eq!(nav.index, 0, "index moved on a back navigation");
-        assert!(nav.can_go_forward(), "forward history was lost");
-    }
-
-    #[test]
-    fn a_new_page_after_going_back_discards_the_forward_trail() {
-        let mut nav = NavState::default();
-        for url in ["https://a.test/", "https://b.test/", "https://c.test/"] {
-            nav.push(url.into());
-        }
-        back(&mut nav);
-        back(&mut nav);
-        assert!(nav.can_go_forward());
-
-        nav.push("https://d.test/".into());
-
-        assert_eq!(nav.entries.len(), 2);
-        assert_eq!(nav.current().map(String::as_str), Some("https://d.test/"));
-        assert!(nav.can_go_back());
-        assert!(
-            !nav.can_go_forward(),
-            "b and c should be unreachable after branching off a"
-        );
     }
 
     #[test]
@@ -1348,7 +1268,7 @@ mod tests {
         };
         assert_eq!(tab.display_title(), "New tab");
 
-        tab.nav.push("https://www.example.com/deep/path".into());
+        tab.nav.set_url("https://www.example.com/deep/path".into());
         // www. is stripped: it is noise in a tab that is only ~140px wide.
         assert_eq!(tab.display_title(), "example.com");
 
