@@ -5,7 +5,7 @@
 # from the real brand rasters onto an Ink field, so they sit flush against
 # the MUI_BGCOLOR set in installer.nsi rather than floating on a white square.
 #
-#   pwsh tools/make-installer-art.ps1
+#   powershell tools/make-installer-art.ps1
 #
 # Output: src-tauri/installer/header.bmp, src-tauri/installer/sidebar.bmp
 

@@ -10,7 +10,7 @@
 # The stage 2 output is the file to publish. It is self-contained: the NSIS
 # installer is inside it.
 #
-#   pwsh tools/build-installer.ps1
+#   powershell tools/build-installer.ps1
 
 $ErrorActionPreference = 'Stop'
 

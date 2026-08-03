@@ -10,7 +10,7 @@
 # that happens to be committed. Re-run this after regenerating the kit. Never
 # hand-edit anything under a destination directory - they are wiped and rebuilt.
 #
-#   pwsh tools/sync-brand-assets.ps1
+#   powershell tools/sync-brand-assets.ps1
 
 $ErrorActionPreference = 'Stop'
 

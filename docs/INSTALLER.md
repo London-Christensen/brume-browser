@@ -62,7 +62,7 @@ because the filename carries the version; a hardcoded name would silently embed 
 payload after a version bump.
 
 ```bash
-pwsh tools/build-installer.ps1
+powershell tools/build-installer.ps1
 ```
 
 runs both stages in order and drops the result in `dist/`. Running `cargo build` in
@@ -284,7 +284,7 @@ created correctly. Use `[Environment]::GetFolderPath('Desktop')` when verifying.
 ## Testing it yourself
 
 ```bash
-pwsh tools/build-installer.ps1
+powershell tools/build-installer.ps1
 ```
 
 Then run `dist/Brume-Setup.exe`. To exercise the NSIS layer on its own, which is what an
@@ -310,14 +310,14 @@ registry entry so Settings never lists Brume, a scratch install from testing, or
 whose shortcut and registry entry disagree about where the binary lives), use:
 
 ```bash
-pwsh tools/uninstall-brume.ps1
+powershell tools/uninstall-brume.ps1
 ```
 
 It reports what it found and changes nothing. Add `-Run` to remove it, and `-IncludeData` to
 take the browsing profile with it:
 
 ```bash
-pwsh tools/uninstall-brume.ps1 -Run -IncludeData
+powershell tools/uninstall-brume.ps1 -Run -IncludeData
 ```
 
 Reporting is the default deliberately, because `-IncludeData` deletes bookmarks and history.

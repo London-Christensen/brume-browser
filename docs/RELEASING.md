@@ -3,7 +3,7 @@
 ## The short version
 
 ```bash
-pwsh tools/new-release.ps1 -Version 0.2.0 -Notes "What changed in this release."
+powershell tools/new-release.ps1 -Version 0.2.0 -Notes "What changed in this release."
 ```
 
 That bumps, builds, signs and writes `dist/latest.json`, then stops and prints the command to
@@ -72,7 +72,7 @@ scheme is published with `-AttachLegacyFeed`, which attaches `latest.json` to it
 as well:
 
 ```bash
-pwsh tools/new-release.ps1 -Version 0.3.0 -Notes "..." -Publish -AttachLegacyFeed
+powershell tools/new-release.ps1 -Version 0.3.0 -Notes "..." -Publish -AttachLegacyFeed
 ```
 
 An old install resolves that URL against the newest release, finds the manifest,
@@ -90,16 +90,17 @@ script therefore creates the GitHub release, and only then commits and pushes
 installer is not there yet, and every client checking in that window reports a
 failed download.
 
-Both `.exe` files are installers, which is confusing until you know why: the first is the styled
-shell a person double-clicks, the second is what it wraps. Updates use the inner one directly.
+Both files are installers, which is confusing until you know why: `Brume-Setup.exe` is the styled
+shell a person double-clicks, and the NSIS installer is what it wraps. Only the shell is
+published, because it contains the other one.
 
 > Tauri 2.11 signs the installer `.exe` itself. Older versions wrapped it in a `.nsis.zip`
 > first, and a lot of documentation still says so. If a future upgrade reintroduces the archive,
 > `tools/new-release.ps1` is where the filename pattern lives.
 
-Note what is *not* in the update path: the pretty installer shell. Updates run the NSIS
-installer directly, passively, with no UI. That is by design; see
-[INSTALLER.md](INSTALLER.md).
+An update still ends up running NSIS passively with no UI, but it gets there through the shell
+rather than around it: the updater runs `Brume-Setup.exe`, which sees `/UPDATE` and hands over to
+the installer it carries without drawing anything. See [INSTALLER.md](INSTALLER.md).
 
 ---
 
@@ -267,7 +268,7 @@ If the script is unavailable or you want to understand each step:
 # 1. Bump the version in all five files listed above.
 
 # 2. Build and sign.
-pwsh tools/build-installer.ps1
+powershell tools/build-installer.ps1
 
 # 3. Sign the file that will be published. Tauri signed the NSIS installer, but
 #    that one is only embedded, so its signature is not the one clients check.

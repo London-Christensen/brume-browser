@@ -16,9 +16,9 @@
 # Tauri app whose id is `<bundle id>.setup`, so its WebView2 profile is an exact
 # path the uninstaller never names and is orphaned on every uninstall.
 #
-#   pwsh tools/uninstall-brume.ps1                 # report only, changes nothing
-#   pwsh tools/uninstall-brume.ps1 -Run            # remove the app, keep browsing data
-#   pwsh tools/uninstall-brume.ps1 -Run -IncludeData   # remove everything
+#   powershell tools/uninstall-brume.ps1                 # report only, changes nothing
+#   powershell tools/uninstall-brume.ps1 -Run            # remove the app, keep browsing data
+#   powershell tools/uninstall-brume.ps1 -Run -IncludeData   # remove everything
 #
 # Reporting is the default on purpose: this deletes bookmarks and history when
 # asked to, and a tool that does that on a bare invocation is a tool that
@@ -182,7 +182,7 @@ Write-Output ''
 if (-not $Run) {
     Write-Output 'Nothing was changed. To remove what is listed above:'
     Write-Output ''
-    Write-Output '    pwsh tools/uninstall-brume.ps1 -Run'
+    Write-Output '    powershell tools/uninstall-brume.ps1 -Run'
     return
 }
 

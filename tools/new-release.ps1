@@ -1,7 +1,7 @@
 # Cuts a Brume release.
 #
-#   pwsh tools/new-release.ps1 -Version 0.2.0 -Notes "What changed."
-#   pwsh tools/new-release.ps1 -Version 0.2.0 -Notes "..." -Publish
+#   powershell tools/new-release.ps1 -Version 0.2.0 -Notes "What changed."
+#   powershell tools/new-release.ps1 -Version 0.2.0 -Notes "..." -Publish
 #
 # Without -Publish this stops after building and writing dist/latest.json, and
 # prints the exact command to publish. Publishing is a one-way, outward-facing
@@ -125,13 +125,15 @@ foreach ($b in $bumps) {
 # --- 3. latest.json ---------------------------------------------------------
 $nsisDir = Join-Path $repo 'src-tauri\target\release\bundle\nsis'
 
-# The update artifact is the NSIS installer .exe itself, with a detached .sig
-# beside it. Older Tauri wrapped it in a .nsis.zip first; 2.11 does not, and
-# looking for the zip fails in a way that looks like broken signing rather than
-# a changed filename. If a future Tauri reintroduces the archive, this is the
-# line to revisit.
-# Pinned to the version being released, and the signature derived from the
-# artifact rather than picked independently.
+# Locate the NSIS installer for this version.
+#
+# It is not published any more, only verified: installer-shell/build.rs embeds it
+# in Brume-Setup.exe, so finding it here proves stage 1 built what stage 2 went
+# on to wrap. Older Tauri wrapped it in a .nsis.zip; 2.11 does not, and looking
+# for the zip fails in a way that reads as broken signing rather than a changed
+# filename.
+#
+# Pinned to the version being released rather than picked by timestamp.
 #
 # This directory is never cleaned, so it accumulates every build ever made -
 # 0.1.0 and 0.2.0 sit side by side in it today. Taking "the newest .exe" and,

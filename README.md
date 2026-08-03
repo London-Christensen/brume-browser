@@ -47,7 +47,7 @@ subsequent runs are incremental and fast.
 ### Produce the Windows installer
 
 ```bash
-pwsh tools/build-installer.ps1
+powershell tools/build-installer.ps1
 ```
 
 This runs both stages and drops the shippable installer at **`dist/Brume-Setup.exe`**. That
@@ -111,7 +111,7 @@ the `src/` directory, the subset the running app needs (design tokens, the 44-ic
 the logo SVGs) is copied into `src/assets/brand/` by:
 
 ```bash
-pwsh tools/sync-brand-assets.ps1
+powershell tools/sync-brand-assets.ps1
 ```
 
 Re-run that after changing anything under `brand/assets/`. Never hand-edit files in
