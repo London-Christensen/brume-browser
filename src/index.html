@@ -796,11 +796,25 @@
         });
       }
 
+      /* Origins already known to have no /favicon.ico.
+       *
+       * Without this the strip flickers. renderTabs rebuilds itself on every
+       * state publish, and there are three or four of those per navigation, so
+       * a site with no favicon went empty-box then fallback-mark each time. A
+       * 404 is also frequently sent with no cache headers, so the request went
+       * out again on every rebuild rather than being served from cache.
+       *
+       * Session-only and unbounded on purpose: it holds origins already visited
+       * this session, which the history store knows anyway, and it disappears
+       * on quit. */
+      const faviconMisses = new Set();
+
       /** Favicon URL for a page, or null when there is nothing sensible to try. */
       function faviconFor(pageUrl) {
         try {
           const u = new URL(pageUrl);
           if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+          if (faviconMisses.has(u.origin)) return null;
           // Fetched straight from the site itself. Routing this through a
           // third-party favicon service would hand that service a log of every
           // domain visited, which is precisely what Brume is trying to avoid.
@@ -808,6 +822,41 @@
         } catch {
           return null;
         }
+      }
+
+      /* Builds the favicon element for a tab or a list row.
+       *
+       * `lazy` matters more than it looks. The history panel renders up to 300
+       * rows at once, and an eager <img> per row means a request to every domain
+       * in your history the moment the panel opens: slow, and a burst of traffic
+       * announcing to each site that you just opened it. Deferring to what is
+       * actually on screen cuts that to the handful of visible rows.
+       */
+      function faviconNode(pageUrl, lazy) {
+        const fallback = () => {
+          const span = document.createElement("span");
+          span.className = "tab-favicon-fallback";
+          return span;
+        };
+
+        const src = faviconFor(pageUrl);
+        if (!src) return fallback();
+
+        const img = document.createElement("img");
+        img.className = "tab-favicon";
+        img.src = src;
+        img.alt = "";
+        if (lazy) img.loading = "lazy";
+        img.addEventListener("error", () => {
+          // Remembered, so neither this render nor the next one asks again.
+          try {
+            faviconMisses.add(new URL(pageUrl).origin);
+          } catch {
+            /* unparseable, nothing to remember */
+          }
+          img.replaceWith(fallback());
+        });
+        return img;
       }
 
       // --- tab strip ------------------------------------------------------
@@ -822,25 +871,8 @@
           node.title = tab.title;
           node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
 
-          const icon = faviconFor(tab.url);
-          if (icon) {
-            const img = document.createElement("img");
-            img.className = "tab-favicon";
-            img.src = icon;
-            img.alt = "";
-            // Plenty of sites have no /favicon.ico. Swap in the generic mark
-            // rather than leaving a broken-image glyph in the strip.
-            img.addEventListener("error", () => {
-              const fallback = document.createElement("span");
-              fallback.className = "tab-favicon-fallback";
-              img.replaceWith(fallback);
-            });
-            node.appendChild(img);
-          } else {
-            const fallback = document.createElement("span");
-            fallback.className = "tab-favicon-fallback";
-            node.appendChild(fallback);
-          }
+          // Eager: the strip is always on screen and only ever holds a few.
+          node.appendChild(faviconNode(tab.url, false));
 
           const title = document.createElement("span");
           title.className = "tab-title";
@@ -922,23 +954,8 @@
         row.className = "entry";
         row.addEventListener("click", onOpen);
 
-        const icon = faviconFor(url);
-        if (icon) {
-          const img = document.createElement("img");
-          img.className = "tab-favicon";
-          img.src = icon;
-          img.alt = "";
-          img.addEventListener("error", () => {
-            const fb = document.createElement("span");
-            fb.className = "tab-favicon-fallback";
-            img.replaceWith(fb);
-          });
-          row.appendChild(img);
-        } else {
-          const fb = document.createElement("span");
-          fb.className = "tab-favicon-fallback";
-          row.appendChild(fb);
-        }
+        // Lazy: the panel renders up to 300 of these at once.
+        row.appendChild(faviconNode(url, true));
 
         const text = document.createElement("div");
         text.className = "entry-text";
@@ -975,7 +992,17 @@
         return row;
       }
 
+      /* Guards against an older query painting over a newer one.
+       *
+       * renderPanel is async and several can be in flight at once, so a slow
+       * request started earlier could resolve last and leave the list showing
+       * results for a query the user has already typed past. Each run takes a
+       * ticket and drops its results if another has started since. */
+      let panelSeq = 0;
+
       async function renderPanel() {
+        const seq = ++panelSeq;
+
         for (const btn of document.querySelectorAll(".seg-btn")) {
           btn.dataset.active = String(btn.dataset.view === panelView);
         }
@@ -992,7 +1019,7 @@
           // Search filters a list; settings is a form. Hiding the box is
           // clearer than leaving a control that silently does nothing.
           el("panel-search").hidden = true;
-          await renderSettings(list);
+          await renderSettings(list, () => seq === panelSeq);
           return;
         }
         el("panel-search").hidden = false;
@@ -1006,6 +1033,7 @@
 
         if (panelView === "history") {
           const rows = (await call("history", { query: query || null, limit: 300 })) || [];
+          if (seq !== panelSeq) return; // a newer render started; this is stale
           if (!rows.length) {
             list.innerHTML = `<div class="panel-empty">${
               query ? "Nothing in history matches that." : "No history yet."
@@ -1024,6 +1052,7 @@
           }
         } else {
           let rows = (await call("bookmarks")) || [];
+          if (seq !== panelSeq) return; // a newer render started; this is stale
           if (query) {
             const q = query.toLowerCase();
             rows = rows.filter(
@@ -1088,13 +1117,21 @@
         return { row: r, control };
       }
 
-      async function renderSettings(list) {
+      /* `stillCurrent` reports whether this render is still the newest one.
+       *
+       * The three calls below are a round trip each, and the list is emptied
+       * before them but appended to after. Two renders overlapping therefore
+       * both cleared, then both appended, and the panel ended up with two
+       * stacked copies of the settings form. Clicking a theme or engine button
+       * triggers a re-render, so two quick clicks were enough to do it. */
+      async function renderSettings(list, stillCurrent = () => true) {
         const [settings, engines, version] = await Promise.all([
           call("get_settings"),
           call("search_engines"),
           call("app_version"),
         ]);
         if (!settings || !engines) return;
+        if (!stillCurrent()) return;
 
         const form = document.createElement("div");
         form.className = "settings";
@@ -1210,7 +1247,7 @@
         check.textContent = "Check for updates";
         check.addEventListener("click", async () => {
           check.disabled = true;
-          status.textContent = "Checkingâ€¦";
+          status.textContent = "Checking...";
           try {
             // The command shows its own dialog for every outcome; this only
             // clears the inline status so the button does not look stuck.
@@ -1246,7 +1283,19 @@
       el("show-history").addEventListener("click", () => openPanel("history"));
       el("show-settings").addEventListener("click", () => openPanel("settings"));
       el("panel-close").addEventListener("click", closePanel);
-      el("panel-search").addEventListener("input", renderPanel);
+      /* Debounced rather than wired straight to `input`.
+       *
+       * Searching history is not a cheap local filter: the store keeps history
+       * as append-only JSONL and has no index, so every query reads the whole
+       * file and parses every line, up to the 20,000-entry cap. Firing that per
+       * keystroke meant typing a six-letter word re-read and re-parsed the file
+       * six times. Bookmarks are filtered in-page and would not need this, but
+       * one path for both keeps the two views behaving the same. */
+      let searchTimer = null;
+      el("panel-search").addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(renderPanel, 120);
+      });
       for (const btn of document.querySelectorAll(".seg-btn")) {
         btn.addEventListener("click", () => {
           panelView = btn.dataset.view;
@@ -1278,9 +1327,14 @@
       // --- events ---------------------------------------------------------
       listen("brume://state", (event) => render(event.payload));
 
-      // Keyboard shortcuts arrive from the native accelerator table, because a
-      // keydown listener here never fires while a page has focus - see
-      // src-tauri/src/shortcuts.rs.
+      // Keyboard shortcuts arrive as events from the Rust side, because a
+      // keydown listener here never fires while a page has focus: the keystroke
+      // goes to the content webview, which holds no capabilities.
+      //
+      // They are global shortcuts registered on window focus, NOT a native
+      // accelerator table. That was tried and does not work in this stack,
+      // because nothing calls TranslateAcceleratorW. See shortcuts.rs, which
+      // says so at length and which this comment used to contradict.
       listen("brume://focus-address", () => {
         urlInput.focus();
         urlInput.select();
