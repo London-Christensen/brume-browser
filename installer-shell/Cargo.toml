@@ -24,6 +24,15 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 winreg = "0.55"
 
+# One function: GetCommandLineW.
+#
+# When the updater runs this exe it appends flags that have to reach NSIS
+# byte-for-byte. Rust's args_os() splits the command line with CommandLineToArgvW
+# rules and drops the quoting, so rebuilding a command line from it can change
+# what NSIS sees. Reading the raw line and forwarding the tail verbatim avoids
+# the round trip entirely. Already in the dependency tree via tauri.
+windows-sys = { version = "0.60", features = ["Win32_System_Environment"] }
+
 [profile.release]
 codegen-units = 1
 lto = true
