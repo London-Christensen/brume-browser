@@ -58,7 +58,7 @@ def png_entry(img):
 
 
 def write_ico(path, images):
-    """<=64px go in as BMP for shell compatibility, 128 and 256 as PNG for size."""
+    """<=64px go in as BMP for shell compatibility, 96 and up as PNG for size."""
     blobs = [(im, bmp_entry(im) if im.size[0] <= 64 else png_entry(im)) for im in images]
     off = 6 + 16 * len(blobs)
     out = bytearray(struct.pack("<HHH", 0, 1, len(blobs)))
@@ -90,13 +90,26 @@ def main():
         render(tmp, f"{PNG}/icons/{k}-48.png", 48)
         n += 1
 
-    # 16 and 24 take the small redraw; 32 and up take the primary geometry.
+    # Small sizes take the small redraw; 32 and up take the primary geometry.
+    #
+    # favicon.ico is for browser tabs, where only 16/32/48 are ever asked for,
+    # so it keeps the shorter ladder rather than carrying shell sizes it will
+    # never be rendered at.
     write_ico(f"{ICO}/favicon.ico", [
         render(f"{GEN}/mark-sm-haar.svg", w=16), render(f"{GEN}/mark-sm-haar.svg", w=24),
         *[render(f"{GEN}/mark-haar.svg", w=s) for s in (32, 48, 64, 128, 256)]])
+
+    # brume.ico is the Windows application icon, so it carries the full ladder
+    # the shell actually requests: 16, 20, 24, 32, 40, 48, 64, 96, 128, 256.
+    #
+    # The three easy ones to omit are 20, 40 and 96, because no size picker
+    # names them - they are what Explorer, the Start menu and the taskbar ask
+    # for at 125%, 250% and Extra Large respectively. Leave them out and Windows
+    # downscales the neighbour, which is why an icon can look soft at one
+    # scaling factor and crisp at the next.
     write_ico(f"{ICO}/brume.ico", [
-        render(f"{GEN}/tile-dark-sm.svg", w=16), render(f"{GEN}/tile-dark-sm.svg", w=24),
-        *[render(f"{GEN}/tile-dark.svg", w=s) for s in (32, 48, 64, 128, 256)]])
+        *[render(f"{GEN}/tile-dark-sm.svg", w=s) for s in (16, 20, 24)],
+        *[render(f"{GEN}/tile-dark.svg", w=s) for s in (32, 40, 48, 64, 96, 128, 256)]])
 
     print(f"{n} PNGs written")
     for f in sorted(os.listdir(ICO)):
