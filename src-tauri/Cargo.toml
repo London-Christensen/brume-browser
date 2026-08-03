@@ -1,6 +1,6 @@
 [package]
 name = "brume"
-version = "0.2.0"
+version = "0.3.0"
 description = "A lightweight Windows web browser built with Tauri and the native WebView2 runtime"
 authors = ["london-christensen"]
 edition = "2021"
