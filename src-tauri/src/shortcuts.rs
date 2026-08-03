@@ -43,6 +43,7 @@ use crate::browser;
 /// Sent to the chrome for actions it owns, such as the address bar caret.
 pub const FOCUS_ADDRESS_EVENT: &str = "brume://focus-address";
 pub const OPEN_PANEL_EVENT: &str = "brume://open-panel";
+pub const OPEN_FIND_EVENT: &str = "brume://open-find";
 
 /// Accelerator string paired with the action it triggers.
 ///
@@ -71,9 +72,16 @@ const BINDINGS: &[(&str, &str)] = &[
     ("F5", "reload"),
     ("Alt+Left", "back"),
     ("Alt+Right", "forward"),
+    ("Alt+Home", "home"),
     ("CmdOrCtrl+D", "bookmark"),
     ("CmdOrCtrl+H", "history"),
     ("CmdOrCtrl+Comma", "settings"),
+    // No Escape binding here on purpose. These are *global* shortcuts while the
+    // window has focus, so registering Escape would take it away from every
+    // page: no dismissing a site's own dialog, no leaving its fullscreen. The
+    // find bar closes on Escape from its own keydown handler in the chrome,
+    // which is where the focus already is while typing in it.
+    ("CmdOrCtrl+F", "find"),
 ];
 
 fn action_for(shortcut: &Shortcut) -> Option<&'static str> {
@@ -170,11 +178,20 @@ pub fn handle(app: &AppHandle, action: &str) {
             let _ = app.emit_to(browser::CHROME_LABEL, FOCUS_ADDRESS_EVENT, ());
         }
 
+        // The chrome opens the bar and focuses the field; opening it resizes a
+        // webview, so the chrome calls set_find_bar rather than doing it here.
+        "find" => {
+            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_FIND_EVENT, ());
+        }
+
         // These only talk to a webview that already exists, so they are safe to
         // run directly.
         "reload" => log(browser::reload(app.clone())),
         "back" => log(browser::go_back(app.clone())),
         "forward" => log(browser::go_forward(app.clone())),
+        // Alt+Home, not Ctrl+Home. Ctrl+Home is "scroll to top of document" in
+        // every browser and belongs to the page, not to us.
+        "home" => log(browser::go_home(app.clone())),
         "bookmark" => log(browser::toggle_bookmark_active(app.clone()).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.

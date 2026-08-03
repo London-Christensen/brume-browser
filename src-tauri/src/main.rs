@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser;
+mod find;
 mod search;
 mod settings;
 mod shortcuts;
@@ -61,6 +62,7 @@ fn main() {
             browser::navigate,
             browser::go_back,
             browser::go_forward,
+            browser::go_home,
             browser::reload,
             browser::stop_loading,
             browser::browser_state,
@@ -68,12 +70,16 @@ fn main() {
             browser::close_tab,
             browser::activate_tab,
             browser::set_panel,
+            browser::set_find_bar,
             browser::toggle_bookmark_active,
             store::history,
             store::clear_history,
             store::bookmarks,
             store::toggle_bookmark,
             store::remove_bookmark,
+            store::downloads,
+            store::clear_downloads,
+            store::reveal_download,
             search::search_engines,
             settings::get_settings,
             settings::set_auto_update,
@@ -81,6 +87,10 @@ fn main() {
             settings::set_homepage,
             settings::set_theme,
             settings::app_version,
+            find::find_start,
+            find::find_next,
+            find::find_previous,
+            find::find_stop,
             updater::check_for_updates,
         ])
         // `generate_context!` reads tauri.conf.json at compile time and bakes the

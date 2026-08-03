@@ -42,8 +42,21 @@ const TAB_STRIP_HEIGHT: f64 = 36.0;
 const TOOLBAR_HEIGHT: f64 = 40.0;
 const CHROME_HEIGHT: f64 = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT;
 
+/// Extra chrome height while the find bar is showing.
+///
+/// The bar grows the chrome and shrinks the page rather than floating over it.
+/// An overlay would need a third webview, and covering the page is the one
+/// thing a find bar must not do: the match it just scrolled to could be
+/// underneath it.
+const FIND_BAR_HEIGHT: f64 = 36.0;
+
 pub const WINDOW_LABEL: &str = "main";
 pub const CHROME_LABEL: &str = "chrome";
+
+/// Nudges the chrome to re-read the downloads list. Carries no payload: the
+/// panel asks for the list itself, so the event only has to say "something
+/// changed" rather than duplicate the state.
+pub const DOWNLOADS_EVENT: &str = "brume://downloads";
 
 /// Fallback landing page.
 ///
@@ -185,6 +198,18 @@ pub struct Browser {
     /// keeps every privileged surface in the one webview that already has
     /// capabilities.
     panel_open: AtomicBool,
+    /// Whether the find bar is showing, which makes the chrome taller.
+    find_open: AtomicBool,
+}
+
+/// How much vertical space the chrome occupies right now.
+///
+/// Not a constant any more: the find bar grows it. Everywhere that positions a
+/// content webview reads this, so the toolbar and the space reserved beneath it
+/// cannot drift apart.
+fn chrome_extent(app: &AppHandle) -> f64 {
+    let find_open = app.state::<Browser>().find_open.load(Ordering::Relaxed);
+    CHROME_HEIGHT + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
 }
 
 impl Default for Browser {
@@ -193,6 +218,7 @@ impl Default for Browser {
             tabs: Mutex::new(Tabs::default()),
             closed: Mutex::new(Vec::new()),
             panel_open: AtomicBool::new(false),
+            find_open: AtomicBool::new(false),
         }
     }
 }
@@ -332,15 +358,18 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
         .panel_open
         .load(Ordering::Relaxed);
 
+    // How tall the chrome is when it is only chrome. Grows with the find bar.
+    let extent = chrome_extent(app);
+
     // With the panel open the chrome takes the whole window and every content
     // webview is hidden. That is what keeps history, bookmarks and settings
     // inside the one webview that holds capabilities, instead of needing a
     // privileged tab alongside arbitrary websites.
-    let chrome_height = if panel_open { size.height } else { CHROME_HEIGHT };
+    let chrome_height = if panel_open { size.height } else { extent };
 
     // A window can be dragged smaller than the chrome mid-resize; clamping stops
     // the content webview being handed a negative height.
-    let content_height = (size.height - CHROME_HEIGHT).max(0.0);
+    let content_height = (size.height - extent).max(0.0);
 
     if let Some(chrome) = app.get_webview(CHROME_LABEL) {
         chrome.set_position(LogicalPosition::new(0.0, 0.0))?;
@@ -373,7 +402,7 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
             if panel_open {
                 let _ = view.hide();
             } else {
-                view.set_position(LogicalPosition::new(0.0, CHROME_HEIGHT))?;
+                view.set_position(LogicalPosition::new(0.0, extent))?;
                 view.set_size(LogicalSize::new(size.width, content_height))?;
                 let _ = view.show();
             }
@@ -398,7 +427,10 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
 
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
-    let content_height = (size.height - CHROME_HEIGHT).max(0.0);
+    // Matches whatever the chrome currently occupies, so a tab opened while the
+    // find bar is up is not born 36px too tall and overlapping it.
+    let extent = chrome_extent(app);
+    let content_height = (size.height - extent).max(0.0);
 
     let parsed = url.parse().unwrap_or_else(|_| {
         // A homepage the user typed by hand can be unparseable; falling back
@@ -412,6 +444,7 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
     let load_handle = app.clone();
     let title_handle = app.clone();
     let newwin_handle = app.clone();
+    let download_handle = app.clone();
 
     window.add_child(
         WebviewBuilder::new(label, WebviewUrl::External(parsed))
@@ -447,6 +480,41 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                 // with no chrome, no tab strip and no address bar - a popup
                 // Brume could neither show the URL of nor close.
                 NewWindowResponse::Deny
+            })
+            // Downloads, so Brume has a record of them.
+            //
+            // WebView2 handles the transfer and its own default dialog either
+            // way; without this Brume simply never heard about it, so there was
+            // nothing to list. The destination is left alone deliberately: the
+            // runtime already puts files where Windows says downloads go, and
+            // overriding that to somewhere Brume invented would be worse.
+            //
+            // The runtime reports started and finished and nothing between, so
+            // there is no byte count to show a progress bar with. Reaching one
+            // means going through ICoreWebView2DownloadOperation directly.
+            .on_download(move |_webview, event| {
+                match event {
+                    tauri::webview::DownloadEvent::Requested { url, destination } => {
+                        let name = destination
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        download_handle
+                            .state::<crate::store::Store>()
+                            .begin_download(url.as_str(), &name);
+                    }
+                    tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                        download_handle
+                            .state::<crate::store::Store>()
+                            .finish_download(url.as_str(), path.as_deref(), success);
+                    }
+                    // The enum is non_exhaustive, so a future variant compiles
+                    // rather than breaking the build.
+                    _ => {}
+                }
+                let _ = download_handle.emit_to(CHROME_LABEL, DOWNLOADS_EVENT, ());
+                // Always allow. Brume is recording, not gatekeeping.
+                true
             })
             .on_navigation(move |url| {
                 // Brume's own UI is served from tauri.localhost, and the asset
@@ -539,7 +607,7 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                 }
                 publish(&title_handle);
             }),
-        LogicalPosition::new(0.0, CHROME_HEIGHT),
+        LogicalPosition::new(0.0, extent),
         LogicalSize::new(size.width, content_height),
     )?;
 
@@ -733,6 +801,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+
+/// The active tab's content webview, for modules that need the raw thing.
+///
+/// find.rs reaches through this to the underlying ICoreWebView2. Exposed rather
+/// than duplicated so there is still one place that knows how a tab maps to a
+/// webview label.
+pub fn active_content_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
+    active_webview(app)
+}
 
 fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
     let label = {
@@ -933,6 +1010,22 @@ pub fn navigate(app: AppHandle, input: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Navigates the active tab to the homepage.
+///
+/// Resolved at press time rather than cached, so changing the homepage or the
+/// search engine in Settings takes effect without a restart. That matters
+/// because an empty homepage means "follow the search engine", so the
+/// destination can change without the homepage setting itself changing.
+#[tauri::command]
+pub fn go_home(app: AppHandle) -> Result<(), String> {
+    let target = home_url(&app);
+    let url = target
+        .parse()
+        .map_err(|_| format!("Homepage is not a valid address: {target}"))?;
+
+    active_webview(&app)?.navigate(url).map_err(|e| e.to_string())
+}
+
 /// Walks the active tab's history by `delta` entries.
 fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
     let target = {
@@ -1093,6 +1186,30 @@ pub async fn set_panel(app: AppHandle, open: bool) -> Result<(), String> {
     app.state::<Browser>()
         .panel_open
         .store(open, Ordering::Relaxed);
+    relayout(&app).map_err(|e| e.to_string())?;
+    publish(&app);
+    Ok(())
+}
+
+/// Shows or hides the find bar, resizing the page to make room.
+///
+/// Async for the same reason `set_panel` is: it re-lays-out webviews.
+///
+/// Closing it also stops the search, so the highlights go with the bar. Leaving
+/// a page full of highlighted matches after the bar is gone would be a state
+/// with no visible way to clear it.
+#[tauri::command]
+pub async fn set_find_bar(app: AppHandle, open: bool) -> Result<(), String> {
+    app.state::<Browser>()
+        .find_open
+        .store(open, Ordering::Relaxed);
+
+    if !open {
+        // Best effort: a tab with no page, or an older runtime with no find
+        // support, should still be able to close the bar.
+        let _ = crate::find::find_stop(app.clone());
+    }
+
     relayout(&app).map_err(|e| e.to_string())?;
     publish(&app);
     Ok(())

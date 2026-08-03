@@ -1,4 +1,4 @@
-//! Local persistence: browsing history and bookmarks.
+//! Local persistence: browsing history, bookmarks and downloads.
 //!
 //! # Why not SQLite
 //!
@@ -49,6 +49,10 @@ use tauri::{AppHandle, Manager, State};
 /// cost this format exists to avoid.
 const HISTORY_CAP: usize = 20_000;
 
+/// Maximum finished downloads kept on disk. Far smaller than history: this is a
+/// list a person actually reads, and a thousand old rows help nobody.
+const DOWNLOAD_CAP: usize = 500;
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -74,13 +78,50 @@ pub struct Bookmark {
     pub added_at: i64,
 }
 
+/// A finished download, kept on disk.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Download {
+    pub url: String,
+    pub filename: String,
+    /// Where it landed. Empty when the runtime did not say.
+    pub path: String,
+    pub finished_at: i64,
+    pub success: bool,
+}
+
+/// A download still running. In memory only.
+///
+/// Not persisted, because a download interrupted by a quit did not finish and
+/// there is nothing useful to resume or report on next launch. Only completed
+/// downloads earn a line on disk.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveDownload {
+    pub url: String,
+    pub filename: String,
+    pub started_at: i64,
+}
+
+/// What the downloads panel renders.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadsView {
+    pub active: Vec<ActiveDownload>,
+    pub finished: Vec<Download>,
+}
+
 pub struct Store {
     history_path: PathBuf,
     bookmarks_path: PathBuf,
+    downloads_path: PathBuf,
     /// Bookmarks live in memory: the list is small, and every read wants all of
     /// it. History is not cached, because it is large and read only when the
     /// user actually opens the panel.
     bookmarks: Mutex<Vec<Bookmark>>,
+    /// Downloads currently running, keyed by nothing in particular: the list is
+    /// never more than a handful long, so a scan is cheaper than a map.
+    active_downloads: Mutex<Vec<ActiveDownload>>,
 }
 
 /// Writes a file atomically.
@@ -118,7 +159,9 @@ impl Store {
         let store = Self {
             history_path: dir.join("history.jsonl"),
             bookmarks_path: dir.join("bookmarks.json"),
+            downloads_path: dir.join("downloads.jsonl"),
             bookmarks: Mutex::new(Vec::new()),
+            active_downloads: Mutex::new(Vec::new()),
         };
 
         let loaded = fs::read_to_string(&store.bookmarks_path)
@@ -128,6 +171,7 @@ impl Store {
         *store.bookmarks.lock().expect("bookmarks mutex poisoned") = loaded;
 
         store.compact_history();
+        store.compact_downloads();
         store
     }
 
@@ -275,6 +319,128 @@ impl Store {
         };
         self.persist_bookmarks(&snapshot)
     }
+
+    // --- downloads ------------------------------------------------------
+
+    /// Records a download starting.
+    pub fn begin_download(&self, url: &str, filename: &str) {
+        let mut active = self
+            .active_downloads
+            .lock()
+            .expect("active downloads mutex poisoned");
+        active.push(ActiveDownload {
+            url: url.to_string(),
+            filename: filename.to_string(),
+            started_at: now_unix(),
+        });
+    }
+
+    /// Moves a download out of the running list and onto disk.
+    ///
+    /// Matched back to its start by URL, taking the oldest match. The runtime
+    /// gives no download id across the two events, and the same URL fetched
+    /// twice is the only ambiguous case; oldest-first at least pairs them in
+    /// the order they were started.
+    pub fn finish_download(&self, url: &str, path: Option<&Path>, success: bool) {
+        let started = {
+            let mut active = self
+                .active_downloads
+                .lock()
+                .expect("active downloads mutex poisoned");
+            active
+                .iter()
+                .position(|d| d.url == url)
+                .map(|i| active.remove(i))
+        };
+
+        // Fall back to the URL's last segment: a download can finish without a
+        // start ever having been seen, and a row with no name is no use.
+        let filename = started
+            .as_ref()
+            .map(|d| d.filename.clone())
+            .filter(|f| !f.is_empty())
+            .or_else(|| {
+                path.and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| filename_from_url(url));
+
+        let record = Download {
+            url: url.to_string(),
+            filename,
+            path: path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            finished_at: now_unix(),
+            success,
+        };
+
+        let Ok(line) = serde_json::to_string(&record) else {
+            return;
+        };
+        if let Some(parent) = self.downloads_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        // Append and stay quiet on failure, same as history: a browser that
+        // refused to download because it could not write a log line would be
+        // the worse bug.
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.downloads_path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+
+    /// Running downloads first, then finished ones newest-first.
+    pub fn downloads(&self, limit: usize) -> DownloadsView {
+        let active = self
+            .active_downloads
+            .lock()
+            .expect("active downloads mutex poisoned")
+            .clone();
+
+        let finished = fs::read_to_string(&self.downloads_path)
+            .map(|raw| {
+                raw.lines()
+                    .rev()
+                    .filter_map(|l| serde_json::from_str::<Download>(l).ok())
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        DownloadsView { active, finished }
+    }
+
+    /// Clears the finished list. Running downloads are left alone.
+    pub fn clear_downloads(&self) -> Result<(), String> {
+        write_atomic(&self.downloads_path, "")
+    }
+
+    /// Trims the downloads log, same reasoning as history.
+    fn compact_downloads(&self) {
+        let Ok(raw) = fs::read_to_string(&self.downloads_path) else {
+            return;
+        };
+        let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.len() <= DOWNLOAD_CAP {
+            return;
+        }
+        let kept = lines[lines.len() - DOWNLOAD_CAP..].join("\n");
+        let _ = write_atomic(&self.downloads_path, &format!("{kept}\n"));
+    }
+}
+
+/// Last path segment of a URL, for when nothing better is available.
+fn filename_from_url(url: &str) -> String {
+    tauri::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()
+                .and_then(|mut s| s.next_back().map(|x| x.to_string()))
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "download".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +480,47 @@ pub fn remove_bookmark(store: State<'_, Store>, id: u64) -> Result<(), String> {
     store.remove_bookmark(id)
 }
 
+#[tauri::command]
+pub fn downloads(store: State<'_, Store>, limit: Option<usize>) -> DownloadsView {
+    store.downloads(limit.unwrap_or(200))
+}
+
+#[tauri::command]
+pub fn clear_downloads(store: State<'_, Store>) -> Result<(), String> {
+    store.clear_downloads()
+}
+
+/// Opens Explorer with the file selected.
+///
+/// Selected rather than opened: running a downloaded file on the user's behalf
+/// is not something a browser should do from a list view, and Explorer showing
+/// it in place is what every browser's "show in folder" does.
+///
+/// The path is checked against the recorded downloads before use. It arrives
+/// over IPC from the chrome, and handing an arbitrary caller-supplied string to
+/// a process launch is how that becomes something worse than it looks.
+#[tauri::command]
+pub fn reveal_download(store: State<'_, Store>, path: String) -> Result<(), String> {
+    let known = store
+        .downloads(usize::MAX)
+        .finished
+        .into_iter()
+        .any(|d| d.path == path && !d.path.is_empty());
+
+    if !known {
+        return Err("That file is not in the downloads list.".into());
+    }
+    if !Path::new(&path).exists() {
+        return Err("That file is no longer there.".into());
+    }
+
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{path}"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open Explorer: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +543,30 @@ mod tests {
 
         assert_eq!(parsed.len(), 1, "the intact line should still be readable");
         assert_eq!(parsed[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn a_filename_is_recovered_from_the_url_when_nothing_else_offers_one() {
+        // Reached when a download finishes without its start being seen and the
+        // runtime reported no path. A row with no name is no use to anyone.
+        assert_eq!(filename_from_url("https://example.com/a/b/report.pdf"), "report.pdf");
+        // The query string is not part of the last segment.
+        assert_eq!(filename_from_url("https://example.com/get.zip?token=abc"), "get.zip");
+        // Percent-encoding is left as-is rather than decoded: this is a label,
+        // and decoding could reintroduce a path separator.
+        assert_eq!(filename_from_url("https://example.com/my%2Ffile.txt"), "my%2Ffile.txt");
+    }
+
+    #[test]
+    fn a_url_with_no_usable_segment_still_produces_a_name() {
+        for url in [
+            "https://example.com/",
+            "https://example.com",
+            "not a url at all",
+            "",
+        ] {
+            assert_eq!(filename_from_url(url), "download", "for {url:?}");
+        }
     }
 
     #[test]

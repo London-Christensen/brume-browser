@@ -231,6 +231,51 @@
         color: var(--fg);
       }
 
+      /* --- find bar ------------------------------------------------------ */
+      /* Height is pinned to 36px because browser.rs adds exactly that to the
+         chrome when the bar opens. The two must agree or the page is left
+         overlapped by the difference. Same contract the tab strip and toolbar
+         already have with TAB_STRIP_HEIGHT and TOOLBAR_HEIGHT. */
+      .findbar {
+        flex: 0 0 36px;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 8px;
+        background: var(--surface);
+        border-top: 1px solid var(--hairline);
+        min-height: 0;
+      }
+
+      #find-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 12.5px;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+
+      /* Tabular figures so "9 of 10" does not shift width as the count ticks. */
+      .find-count {
+        flex: 0 0 auto;
+        padding: 0 8px;
+        font-family: var(--font-ui);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-muted);
+        white-space: nowrap;
+      }
+
+      .find-count[data-none="true"] {
+        color: var(--fg);
+      }
+
       /* --- toolbar ------------------------------------------------------- */
       .toolbar {
         flex: 0 0 var(--toolbar-h);
@@ -286,6 +331,10 @@
       .ico-forward { -webkit-mask-image: url("assets/brand/icons/forward.svg"); mask-image: url("assets/brand/icons/forward.svg"); }
       .ico-reload { -webkit-mask-image: url("assets/brand/icons/reload.svg"); mask-image: url("assets/brand/icons/reload.svg"); }
       .ico-stop { -webkit-mask-image: url("assets/brand/icons/close.svg"); mask-image: url("assets/brand/icons/close.svg"); }
+      .ico-home { -webkit-mask-image: url("assets/brand/icons/home.svg"); mask-image: url("assets/brand/icons/home.svg"); }
+      .ico-download { -webkit-mask-image: url("assets/brand/icons/download.svg"); mask-image: url("assets/brand/icons/download.svg"); }
+      .ico-warning { -webkit-mask-image: url("assets/brand/icons/warning.svg"); mask-image: url("assets/brand/icons/warning.svg"); }
+      .ico-external { -webkit-mask-image: url("assets/brand/icons/external.svg"); mask-image: url("assets/brand/icons/external.svg"); }
       .ico-lock { -webkit-mask-image: url("assets/brand/icons/lock.svg"); mask-image: url("assets/brand/icons/lock.svg"); }
       .ico-search { -webkit-mask-image: url("assets/brand/icons/search.svg"); mask-image: url("assets/brand/icons/search.svg"); }
       .ico-plus { -webkit-mask-image: url("assets/brand/icons/plus.svg"); mask-image: url("assets/brand/icons/plus.svg"); }
@@ -708,6 +757,9 @@
       <button class="btn" id="reload" title="Reload" aria-label="Reload">
         <span class="ico ico-reload" id="reload-icon"></span>
       </button>
+      <button class="btn" id="home" title="Home (Alt+Home)" aria-label="Home">
+        <span class="ico ico-home"></span>
+      </button>
 
       <div class="address">
         <span class="ico scheme ico-search" id="scheme-icon"></span>
@@ -732,6 +784,33 @@
       </button>
     </div>
 
+    <!--
+      The find bar. Hidden by default; showing it grows the chrome webview by
+      exactly its own height on the Rust side, so the page is pushed down rather
+      than covered. A bar floating over the page could sit on top of the match
+      it just scrolled to.
+    -->
+    <div class="findbar" id="findbar" hidden>
+      <span class="ico ico-search"></span>
+      <input
+        type="text"
+        id="find-input"
+        placeholder="Find on page"
+        spellcheck="false"
+        autocomplete="off"
+      />
+      <span class="find-count" id="find-count"></span>
+      <button class="btn" id="find-prev" title="Previous (Shift+Enter)" aria-label="Previous match">
+        <span class="ico ico-back"></span>
+      </button>
+      <button class="btn" id="find-next" title="Next (Enter)" aria-label="Next match">
+        <span class="ico ico-forward"></span>
+      </button>
+      <button class="btn" id="find-close" title="Close (Esc)" aria-label="Close find bar">
+        <span class="ico ico-stop"></span>
+      </button>
+    </div>
+
     <div class="progress" id="progress" data-loading="false"></div>
 
     <!--
@@ -741,9 +820,10 @@
     -->
     <section class="panel" id="panel" hidden>
       <header class="panel-head">
-        <div class="seg" role="tablist">
+        <div class="seg" id="panel-views" role="tablist">
           <button class="seg-btn" data-view="history" role="tab">History</button>
           <button class="seg-btn" data-view="bookmarks" role="tab">Bookmarks</button>
+          <button class="seg-btn" data-view="downloads" role="tab">Downloads</button>
           <button class="seg-btn" data-view="settings" role="tab">Settings</button>
         </div>
         <input
@@ -992,6 +1072,57 @@
         return row;
       }
 
+      /* One row in the downloads list.
+       *
+       * Deliberately not entryNode: a download has a filename rather than a
+       * page title, its secondary line is a filesystem path rather than a URL,
+       * and clicking it should reveal the file rather than navigate. Sharing
+       * the function would have meant a parameter for each of those.
+       *
+       * Everything page-controlled goes through textContent. A filename comes
+       * from a Content-Disposition header, which is to say from the server. */
+      function downloadNode({ filename, detail, url, path, when, state }) {
+        const row = document.createElement("div");
+        row.className = "entry";
+        row.dataset.state = state;
+
+        const icon = document.createElement("span");
+        icon.className = state === "failed" ? "ico ico-warning" : "ico ico-download";
+        icon.style.opacity = state === "running" ? "0.55" : "";
+        row.appendChild(icon);
+
+        const text = document.createElement("div");
+        text.className = "entry-text";
+        const t = document.createElement("div");
+        t.className = "entry-title";
+        t.textContent = filename;
+        const d = document.createElement("div");
+        d.className = "entry-url";
+        d.textContent = detail;
+        text.append(t, d);
+        row.appendChild(text);
+
+        if (when) {
+          const w = document.createElement("div");
+          w.className = "entry-when";
+          w.textContent = when;
+          row.appendChild(w);
+        }
+
+        // Only finished, successful downloads with a recorded path can be
+        // revealed. The backend checks this too, and refuses a path it has no
+        // record of, but there is no reason to offer a button that will fail.
+        if (state === "done" && path) {
+          row.title = "Show in folder";
+          row.addEventListener("click", () => call("reveal_download", { path }));
+        } else {
+          row.title = url;
+          row.style.cursor = "default";
+        }
+
+        return row;
+      }
+
       /* Guards against an older query painting over a newer one.
        *
        * renderPanel is async and several can be in flight at once, so a slow
@@ -1003,14 +1134,21 @@
       async function renderPanel() {
         const seq = ++panelSeq;
 
-        for (const btn of document.querySelectorAll(".seg-btn")) {
+        for (const btn of document.querySelectorAll("#panel-views .seg-btn")) {
           btn.dataset.active = String(btn.dataset.view === panelView);
         }
         el("panel-search").placeholder =
-          panelView === "history" ? "Search history" : "Search bookmarks";
-        // Clearing everything only makes sense for history; bookmarks are
-        // removed one at a time and deleting them all by accident would hurt.
-        el("panel-clear").hidden = panelView !== "history";
+          {
+            history: "Search history",
+            bookmarks: "Search bookmarks",
+            downloads: "Search downloads",
+          }[panelView] || "Search";
+        // Clearing everything makes sense for history and for downloads, which
+        // are both logs. Bookmarks are removed one at a time, because deleting
+        // the lot by accident would actually hurt.
+        el("panel-clear").hidden = !(panelView === "history" || panelView === "downloads");
+        el("panel-clear").title =
+          panelView === "downloads" ? "Clear download list" : "Clear history";
 
         const list = el("panel-list");
         list.textContent = "";
@@ -1030,6 +1168,57 @@
           call("navigate", { input: url });
           closePanel();
         };
+
+        if (panelView === "downloads") {
+          const view = (await call("downloads", { limit: 200 })) || {
+            active: [],
+            finished: [],
+          };
+          if (seq !== panelSeq) return; // a newer render started; this is stale
+
+          const q = query.toLowerCase();
+          const match = (d) =>
+            !q ||
+            d.filename.toLowerCase().includes(q) ||
+            d.url.toLowerCase().includes(q);
+
+          const running = view.active.filter(match);
+          const done = view.finished.filter(match);
+
+          if (!running.length && !done.length) {
+            list.innerHTML = `<div class="panel-empty">${
+              query ? "No downloads match that." : "Nothing downloaded yet."
+            }</div>`;
+            return;
+          }
+
+          // In-flight first. There is no byte count to show, because the
+          // runtime reports started and finished and nothing in between.
+          for (const d of running) {
+            list.appendChild(
+              downloadNode({
+                filename: d.filename || d.url,
+                detail: "Downloading...",
+                url: d.url,
+                when: whenLabel(d.startedAt),
+                state: "running",
+              })
+            );
+          }
+          for (const d of done) {
+            list.appendChild(
+              downloadNode({
+                filename: d.filename || d.url,
+                detail: d.success ? d.path || d.url : "Failed",
+                url: d.url,
+                path: d.path,
+                when: whenLabel(d.finishedAt),
+                state: d.success ? "done" : "failed",
+              })
+            );
+          }
+          return;
+        }
 
         if (panelView === "history") {
           const rows = (await call("history", { query: query || null, limit: 300 })) || [];
@@ -1296,7 +1485,7 @@
         clearTimeout(searchTimer);
         searchTimer = setTimeout(renderPanel, 120);
       });
-      for (const btn of document.querySelectorAll(".seg-btn")) {
+      for (const btn of document.querySelectorAll("#panel-views .seg-btn")) {
         btn.addEventListener("click", () => {
           panelView = btn.dataset.view;
           el("panel-search").value = "";
@@ -1304,8 +1493,18 @@
         });
       }
       el("panel-clear").addEventListener("click", async () => {
-        await call("clear_history");
+        // The button is only shown for the two views that are logs, and it
+        // clears whichever one is in front.
+        await call(panelView === "downloads" ? "clear_downloads" : "clear_history");
         renderPanel();
+      });
+
+      // A download starting or finishing refreshes the list, but only when it
+      // is the view being looked at. Re-rendering history because a file
+      // finished downloading would throw away the user's scroll position for
+      // no reason.
+      listen("brume://downloads", () => {
+        if (!el("panel").hidden && panelView === "downloads") renderPanel();
       });
 
       el("bookmark").addEventListener("click", async () => {
@@ -1351,8 +1550,95 @@
         }
       });
 
+      /* --- find bar --------------------------------------------------------
+       *
+       * The search itself is WebView2's, driven from find.rs. This only owns the
+       * bar: showing it, sending what was typed, and rendering the count.
+       *
+       * Opening and closing go through set_find_bar rather than just toggling
+       * `hidden`, because the Rust side has to resize the page webview to make
+       * room. Flipping the attribute alone would draw the bar over the page.
+       */
+      function showCount(state) {
+        const box = el("find-count");
+        if (!state || !el("find-input").value) {
+          box.textContent = "";
+          box.dataset.none = "false";
+          return;
+        }
+        box.textContent = state.matches ? `${state.active} of ${state.matches}` : "No results";
+        box.dataset.none = String(state.matches === 0);
+      }
+
+      async function openFind() {
+        if (el("findbar").hidden) {
+          el("findbar").hidden = false;
+          await call("set_find_bar", { open: true });
+        }
+        // Selected, not just focused: Ctrl+F on an open bar should let you type
+        // a new term straight over the old one, the way every browser does.
+        el("find-input").focus();
+        el("find-input").select();
+      }
+
+      async function closeFind() {
+        if (el("findbar").hidden) return;
+        el("findbar").hidden = true;
+        el("find-input").value = "";
+        showCount(null);
+        // set_find_bar stops the search too, so the highlights go with the bar.
+        await call("set_find_bar", { open: false });
+      }
+
+      /* Debounced for the same reason the history search is: every keystroke
+       * would otherwise restart a full-document search. Sequence-guarded so a
+       * slower earlier search cannot overwrite the count of a newer one. */
+      let findTimer = null;
+      el("find-input").addEventListener("input", () => {
+        clearTimeout(findTimer);
+        findTimer = setTimeout(() => {
+          const term = el("find-input").value;
+          if (!term) {
+            showCount(null);
+            call("find_stop");
+            return;
+          }
+          call("find_start", { query: term, caseSensitive: false });
+        }, 150);
+      });
+
+      el("find-input").addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeFind();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          // Shift+Enter walks backwards, which is the universal convention.
+          call(event.shiftKey ? "find_previous" : "find_next");
+        }
+      });
+
+      el("find-next").addEventListener("click", () => call("find_next"));
+      el("find-prev").addEventListener("click", () => call("find_previous"));
+      el("find-close").addEventListener("click", closeFind);
+
+      /* The count arrives by event, not as a return value.
+       *
+       * WebView2's Start is asynchronous, so the match count does not exist yet
+       * when find_start returns. The Rust side reads it in the completion
+       * handler and pushes it here. The bar stays blank for the moment in
+       * between, which is honest: the search genuinely has not finished. */
+      listen("brume://find-state", (event) => {
+        // Ignore a late result for a search the user has already closed.
+        if (el("findbar").hidden) return;
+        showCount(event.payload);
+      });
+
+      listen("brume://open-find", openFind);
+
       el("back").addEventListener("click", () => call("go_back"));
       el("forward").addEventListener("click", () => call("go_forward"));
+      el("home").addEventListener("click", () => call("go_home"));
       el("reload").addEventListener("click", () =>
         call(loading ? "stop_loading" : "reload")
       );

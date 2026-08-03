@@ -47,6 +47,16 @@ serde_json = "1"
 # Reads the auto-update preference the installer wrote to HKCU.
 winreg = "0.55"
 
+# Find in page, and nothing else so far.
+#
+# Neither Tauri nor wry surfaces WebView2's Find API, so find.rs reaches the
+# ICoreWebView2 directly. Both crates are already in the tree underneath wry, so
+# naming them here adds no compile cost - it only makes the dependency honest.
+# Versions are pinned to whatever wry resolved, because two copies of the
+# windows crate would mean two incompatible sets of the same COM types.
+webview2-com = "0.38"
+windows-core = "0.61"
+
 [profile.release]
 # Tuned for a small binary rather than raw throughput. A browser shell spends
 # almost all of its time inside WebView2, not inside our Rust code, so trading
