@@ -171,6 +171,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.60.2",
  "winreg",
 ]
 

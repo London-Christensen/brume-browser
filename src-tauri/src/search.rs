@@ -66,7 +66,7 @@ pub struct SearchEngine {
 /// # Custom theming
 ///
 /// `kae=-1` selects a *custom* theme rather than one of the presets, which
-/// unlocks explicit colours. Brume uses this to paint results in its own palette
+/// allows explicit colours. Brume uses this to paint results in its own palette
 /// instead of settling for a generic dark mode:
 ///
 /// | Parameter | Colours                    | Brume token        |

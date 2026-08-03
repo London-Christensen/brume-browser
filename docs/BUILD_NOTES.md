@@ -5,7 +5,7 @@ The point of this file is that future-me can re-read a decision instead of re-li
 
 ---
 
-## Step 0 — Repository setup
+## Step 0: Repository setup
 
 ### Default branch is `main`
 
@@ -23,7 +23,7 @@ libraries the convention is the opposite, which is why this is worth writing dow
 `.gitignore` blocks `*.key`, `*.pem`, `*.pfx`, `*.p12` and `.env*`. The updater's private key
 is the single most damaging thing that could leak from this repo: anyone holding it can sign
 a malicious payload that every existing Brume install will accept as a legitimate update and
-run. The key is stored outside the repository entirely — the `.gitignore` entries are a
+run. The key is stored outside the repository entirely; the `.gitignore` entries are a
 backstop, not the primary control.
 
 The corresponding **public** key is safe to commit and is embedded in `tauri.conf.json`.
@@ -32,7 +32,7 @@ the broader `*.key` rule.
 
 ---
 
-## Step 1 — Environment
+## Step 1: Environment
 
 ### Verified working set
 
@@ -70,13 +70,13 @@ shipped binary or end users.
 ### WebView2 is a runtime dependency, not a bundled one
 
 This is the central decision that makes Brume lightweight. Electron ships an entire Chromium
-build per app — well over 100 MB before any application code. Brume renders through the
+build per app, well over 100 MB before any application code. Brume renders through the
 WebView2 runtime already present on the OS, so the installer carries only the Rust binary and
 the frontend assets.
 
 The tradeoff: WebView2 must exist on the target machine. It ships with Windows 11 and with
 current Windows 10 installs, but is not guaranteed on older Windows 10 builds. Tauri's NSIS
-bundler handles this with a **bootstrapper** — a small downloader invoked during installation
+bundler handles this with a **bootstrapper**, a small downloader invoked during installation
 that pulls the runtime from Microsoft only when it is missing. This keeps the installer small
 in the common case, at the cost of requiring an internet connection during install on the rare
 machine that lacks the runtime. The alternative modes (`embedBootstrapper`, `offlineInstaller`)
@@ -124,8 +124,8 @@ placeholder variable compiled into the executable**. The updater reads that mark
 work out how to apply an update.
 
 The placeholder is consumed the first time it is written. So bundling a binary that was already
-bundled — which happens whenever only the NSIS template or `tauri.conf.json` changed and cargo
-therefore saw no reason to relink — fails with:
+bundled, which happens whenever only the NSIS template or `tauri.conf.json` changed and cargo
+therefore saw no reason to relink, fails with:
 
 ```
 Warn Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable not found in binary.
@@ -133,8 +133,8 @@ Warn Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable not 
 ```
 
 **It is only a warning.** The build succeeds, the installer is produced, everything looks fine,
-and the resulting package may simply refuse to update itself later. That combination — silent,
-non-fatal, and only observable much later during an update — is what makes it worth writing
+and the resulting package may simply refuse to update itself later. That combination of silent,
+non-fatal, and only observable much later during an update is what makes it worth writing
 down.
 
 `tools/build-installer.ps1` runs `cargo clean -p brume --release` before bundling, which forces
@@ -143,7 +143,7 @@ a genuine relink and a fresh placeholder while leaving the dependency tree cache
 **Deleting `target/release/brume.exe` is not enough**, which is worth knowing because it is the
 obvious thing to try and it silently does not work. Cargo links into
 `target/release/deps/brume-<hash>.exe` and hardlinks that to `brume.exe`. The two names are one
-file, so patching one patches both — and deleting the copy merely restores the already-patched
+file, so patching one patches both, and deleting the copy merely restores the already-patched
 original. The giveaway is `Finished \`release\` profile in 1.12s`: no relink happened.
 
 If you ever run `npm run tauri build` by hand and intend to ship the result, check the output
@@ -153,16 +153,16 @@ for that warning first.
 
 ## Browser chrome: two webviews, not one
 
-Brume's window holds **two sibling webviews** — the chrome strip on top, the page beneath it.
+Brume's window holds **two sibling webviews**: the chrome strip on top, the page beneath it.
 
 The tempting alternative is one webview showing our HTML, with pages in an `<iframe>`. It does
 not work. `X-Frame-Options` and CSP `frame-ancestors` let any site refuse to be embedded, and
-most large ones do — including Google and DuckDuckGo. A browser that cannot open a search
+most large ones do, including Google and DuckDuckGo. A browser that cannot open a search
 engine is not a browser.
 
 This requires Tauri's **`unstable` feature**, which is what gates multiple webviews per window.
 That is a real dependency on an API Tauri may change in a minor release, so all of it is
-confined to `browser.rs` — a breaking change upstream has exactly one file to be repaired in.
+confined to `browser.rs`, so a breaking change upstream has exactly one file to be repaired in.
 
 Child webviews take no part in any layout system. They are rectangles positioned by hand, in
 *logical* pixels, which is why `relayout` runs on every resize and scale-factor change: on a
@@ -174,7 +174,7 @@ it disagree.
 Every tab gets its own content webview. Reusing a single webview would mean
 switching tabs reloads the page, loses scroll position and discards form input.
 Inactive tabs are **hidden, not destroyed**, so a background tab keeps running
-and still finishes loading — which is what every real browser does.
+and still finishes loading, which is what every real browser does.
 
 **Any command that creates, closes or reparents a webview must be declared
 `async`.** This is not a style preference, and getting it wrong produces one of
@@ -189,7 +189,7 @@ rx.recv().unwrap()          // blocks the calling thread
 ```
 
 Call that from the main thread and it queues work onto the very thread it then
-blocks. The closure can never run. The result is not an error — **the entire app
+blocks. The closure can never run. The result is not an error: **the entire app
 deadlocks**, with the half-built webview stranded at `about:blank` and every
 subsequent command timing out, including ones that touch no webview at all. There
 is nothing in the logs.
@@ -197,8 +197,8 @@ is nothing in the logs.
 Declaring the command `async` moves it onto the async runtime, so `add_child`
 dispatches to a main thread that is still free to run it.
 
-Worth noting that the obvious "fix" — wrapping the work in `run_on_main_thread`
-yourself — makes it *structurally identical* and deadlocks just the same. The
+The obvious "fix", wrapping the work in `run_on_main_thread` yourself, makes it
+*structurally identical* and deadlocks just the same. The
 requirement is to be **off** the main thread, not on it.
 
 ### Brume owns the session history
@@ -208,7 +208,7 @@ to the webview's own history.
 
 The reason is that **nothing exposes whether a webview can go back**. There is no DOM API for
 it, and Tauri does not surface WebView2's `CanGoBack`. Without that, the back button would
-either always be enabled or need guessing — and a back button that lies is worse than none.
+either always be enabled or need guessing, and a back button that lies is worse than none.
 
 The cost is real and worth stating: going back **re-navigates** rather than restoring from the
 back-forward cache, so scroll position is lost and the page is refetched. A mainstream browser
@@ -225,7 +225,7 @@ the URL that redirected you, and bounce forward again.
 `capabilities/default.json` is scoped to `webviews: ["chrome"]`. This is the single most
 important line in that file. The content webview renders arbitrary websites, and any capability
 granted to it is granted to every page the user visits. Tauri 2 denies by default, so the
-protection is simply never listing it — but it would be easy to "fix" a permissions error by
+protection is simply never listing it. But it would be easy to "fix" a permissions error by
 widening the scope, and that would hand every site on the internet an IPC bridge.
 
 ### The address bar guesses, and one guess is a security decision
@@ -248,7 +248,7 @@ schemes fall through to a search rather than being handed to the webview.
 ```
 
 **Not SQLite**, despite it being the obvious answer. `rusqlite` bundles the
-SQLite C library — roughly 1–1.5 MB on a binary under 5 MB. A ~25% size increase
+SQLite C library, roughly 1 to 1.5 MB on a binary under 5 MB. A ~25% size increase
 to store a list of URLs is hard to justify in a project whose entire premise is
 not being large. `serde_json` was already present for settings, so this cost
 nothing new.
@@ -257,13 +257,13 @@ nothing new.
 growing file that often is exactly the waste that makes people reach for a
 database. Appending one line is O(1) and touches only the tail. JSONL also
 degrades well: a torn write from a crash costs the last line rather than the
-whole file, and the reader skips lines it cannot parse — there is a test for
+whole file, and the reader skips lines it cannot parse. There is a test for
 precisely that.
 
 Bookmarks are small, edited rarely, and need whole-list operations, so a plain
 array is the better fit. Both writes go through a temp-file-and-rename, because
 serialising directly over the destination leaves a truncated file if the process
-dies mid-write — which for bookmarks means losing all of them.
+dies mid-write, which for bookmarks means losing all of them.
 
 Compaction to `HISTORY_CAP` runs **once at startup**, never during a navigation.
 Trimming on write would turn the O(1) append back into an O(n) rewrite, which is
@@ -272,7 +272,7 @@ the entire thing this format exists to avoid.
 ### When to revisit
 
 Every history query loads and parses the file. At the cap that is a few megabytes
-and milliseconds — fine for a personal browser. Full-text search, or ranking by
+and milliseconds, fine for a personal browser. Full-text search, or ranking by
 visit frequency over a much larger corpus, is where SQLite starts earning its
 size. All reads and writes are confined to `store.rs` so that swap stays
 contained.
@@ -303,7 +303,7 @@ homepage is a statement of intent and always wins.
 
 That is why `SearchEngine` carries a `home` field alongside `template`, and why a
 test asserts DuckDuckGo's homepage carries the same theme parameters as its
-results template — a themed results page paired with an unthemed homepage would
+results template. A themed results page paired with an unthemed homepage would
 be a visible seam every time a tab opens.
 
 The engine is stored by **id**, never by URL template. Storing the template would
@@ -313,7 +313,7 @@ fix to a query string would never reach them.
 ### A CSS trap worth remembering
 
 `[hidden]` is only a **user-agent default** of `display: none`. Any element given
-an explicit display wins over it — `.btn { display: grid }` meant the clear-history
+an explicit display wins over it. `.btn { display: grid }` meant the clear-history
 button stayed visible on the Settings tab while `element.hidden` reported `true`,
 which is a confusing thing to debug from either side.
 
@@ -334,13 +334,13 @@ menu bar shows. It is the platform's own mechanism and needs no dependency.
 
 **It does not work in this stack.** muda builds an accelerator table and exposes
 `haccel()`, but translating it requires someone to call `TranslateAcceleratorW`
-in the message loop — and nothing does. Verified two ways: grepping tao, wry and
+in the message loop, and nothing does. Verified two ways: grepping tao, wry and
 tauri-runtime-wry for a non-doc call site (none), and then attaching a menu,
 focusing the window, pressing Ctrl+T and watching nothing happen.
 
 A `keydown` listener in the chrome is not an alternative either. Keystrokes go to
 whichever webview has focus, and while the user is reading a page that is the
-*content* webview — which is deliberately outside every capability and cannot
+*content* webview, which is deliberately outside every capability and cannot
 call a command. The listener would be silent during most of the browser's use.
 
 So shortcuts are **global shortcuts, registered on window focus and released on
@@ -360,11 +360,11 @@ becomes viable and would drop a dependency.
 Choosing light has to move three things, and missing any one leaves a visible
 seam:
 
-1. **The chrome** — every surface colour is a CSS variable, so the light theme is
+1. **The chrome.** Every surface colour is a CSS variable, so the light theme is
    a value swap rather than a second stylesheet.
-2. **The window frame** — drawn by Windows, and only changes if the window is
+2. **The window frame.** Drawn by Windows, and only changes if the window is
    told. Otherwise a light UI keeps a dark title bar bolted to the top.
-3. **The search results page** — `search.rs` carries `template_light` and
+3. **The search results page.** `search.rs` carries `template_light` and
    `home_light`. Without them, choosing light left a dark DuckDuckGo page under a
    light toolbar, which looked broken.
 
@@ -374,6 +374,227 @@ theme in either direction.
 
 "System" is resolved by asking the **window** what the OS gave it, rather than
 guessing from a media query on the Rust side.
+
+---
+
+## 0.3.0: two defaults that were not defaults
+
+Two of the bugs fixed in 0.3.0 shared a shape worth recognising, because the next one will
+look the same. Both were **library defaults that read as "platform behaviour" but were
+actually "feature off"**, and neither produced an error, a warning, or a log line.
+
+### New windows were being cancelled, not opened
+
+`target="_blank"` and `window.open()` did nothing whatsoever. Not "opened in the wrong place".
+Nothing.
+
+wry registers a `NewWindowRequested` handler unconditionally. When no callback is supplied,
+its else-branch is:
+
+```rust
+} else {
+  args.SetHandled(true)?;
+}
+```
+
+`SetHandled(true)` tells WebView2 the host has dealt with the request. Since nothing then
+created a window, the request was simply dropped. The fix is `WebviewBuilder::on_new_window`,
+returning `NewWindowResponse::Deny` and opening a Brume tab instead. `Deny` rather than
+`Allow`, because allowing it produces a bare OS window with no chrome, no address bar and no
+tab strip.
+
+The handler runs on the main thread, so opening the tab **must** be spawned. Calling
+`add_child` there deadlocks exactly as it does from a synchronous command.
+
+### Zoom was switched off
+
+`Ctrl` + scroll and `Ctrl` + `+`/`-` did nothing either. Both wry and tauri-runtime default
+`zoom_hotkeys_enabled` to `false`, and Brume never set it, so what looked like an unset
+option was WebView2's `IsZoomControlEnabled` being actively disabled. Setting it to `true` is
+the entire fix; WebView2 handles both the wheel and the keyboard itself, so there is no
+accelerator to register and nothing for Brume to keep in step.
+
+**The lesson for next time:** when a browser affordance is missing and nothing is logging an
+error, check the dependency's `Default` impl before looking at Brume's own code. Two of these
+were sitting in the same file.
+
+---
+
+## Reload uses the runtime, not injected script
+
+`reload` was `eval("location.reload()")`. That only works on a document that hosts script:
+a PDF in the built-in viewer, a bare image, or one of WebView2's own error pages has no
+`location` worth calling, so reload failed silently on exactly the pages a user is most likely
+to want it on. It is now `Webview::reload()`.
+
+`stop_loading` is still `eval("window.stop()")`, because neither Tauri nor wry surfaces
+WebView2's `Stop()`. There is no `Webview::stop`, so reaching it means going through
+`with_webview` to the `ICoreWebView2` directly, which is worth doing alongside the other
+interop work rather than on its own.
+
+---
+
+## The navigation boundary has its own allowlist
+
+`search.rs` refuses `javascript:` and other schemes for **address bar** input, which is a
+self-XSS defence and documented there. That guard never covered page-initiated navigation,
+because `on_navigation` returned `true` unconditionally.
+
+It now refuses navigation to `tauri.localhost` and `asset.localhost`, Brume's own UI origin
+and its asset protocol. The content webview holds no capabilities, so a page that got there
+could not invoke a command today; the point is that the capability scoping should not be the
+*only* thing standing between a website and Brume's chrome.
+
+**The full address-bar allowlist was deliberately not applied here.** `href="javascript:void(0)"`
+is ubiquitous, and a page that can navigate itself to a `javascript:` URL can already run the
+same script directly, so blocking it buys no security and would break real sites. The hosts
+are matched exactly rather than by suffix, because `ends_with("tauri.localhost")` would also
+accept `nottauri.localhost`.
+
+---
+
+## Window geometry lives in settings.json
+
+Brume opened at a fixed 1200x800, centred, every launch. The geometry now persists.
+
+Three decisions worth recording:
+
+1. **In `settings.json`, not its own file.** It is not a preference and the Settings panel does
+   not show it, but keeping it here inherits that module's BOM-stripping and its refusal to
+   overwrite a file it cannot parse. A second file would need both again.
+2. **Logical pixels, not physical.** A window saved at 150% scaling would reopen at two thirds
+   the size on a 100% display otherwise.
+3. **Saved on close, not on move.** `Moved` and `Resized` fire continuously while a window is
+   dragged, and each one would be a full rewrite of `settings.json`: hundreds of writes to
+   record one final position. The cost is that a hard kill loses the last move.
+
+Restoring a position is guarded by `position_is_on_screen`, which checks the saved top-left
+against every available monitor. Without it, unplugging a second display leaves Brume running
+somewhere the desktop no longer covers, with no way to reach the window. While maximised, the
+previously saved size is kept and only the flag is updated, so un-maximising does not restore
+to full screen forever.
+
+---
+
+## 0.3.0, second pass: five more
+
+### settings.json was written non-atomically
+
+`settings.rs` called `fs::write` straight over the destination while `store.rs`,
+in the same crate, had a `write_atomic` helper and a comment explaining exactly
+why that is wrong. The two had simply drifted. A crash mid-write truncates the
+file and every setting goes at once.
+
+It got worse when window geometry started being saved on close, because that
+write happens precisely when the process is about to exit. Both modules now share
+`store::write_atomic`.
+
+### A failed webview left a tab that broke the toolbar
+
+`open_tab_inner` registers the tab before creating its webview, which it has to:
+the webview's handlers fire during construction and look the tab up by id. But on
+failure the `?` returned with the tab still in the list, and still marked active.
+
+Every later `navigate`, `reload` and `go_back` then resolved to a webview that
+did not exist and failed. The chrome raises a dialog per failed command, so the
+browser became unusable until that tab was closed. It now rolls the tab back out
+and restores the previously active one.
+
+`spawn_tab_webview` also returned `Ok(())` when the window was missing, producing
+the same broken state while reporting success. That is an error now.
+
+### Searching history re-read the whole file per keystroke
+
+The panel's search box was wired straight to `input`. History is append-only
+JSONL with no index, so every query reads the file and parses every line, up to
+the 20,000-entry cap. Typing a six-letter word did that six times.
+
+Debounced now, and each render takes a sequence number and drops its results if a
+newer one has started. Without that, a slow earlier query could resolve last and
+paint results for a query already typed past.
+
+### The installer shell blocked its own event loop
+
+Both of its commands were synchronous, and Tauri runs a synchronous command on
+the main thread:
+
+- `install` waits on the NSIS run, which takes seconds. The UI froze on the
+  "Installing" screen, mid-animation, and Windows greyed the window out.
+- `pick_folder` calls `blocking_pick_folder`, which the dialog plugin documents
+  as "should *NOT* be used when running on the main thread". Its own example puts
+  it in an `async fn`.
+
+This is the `add_child` trap from the other direction. There the symptom is a
+deadlock, here a frozen window, but it is one rule: do not block the main thread.
+The browser learned it and the shell never had it applied. Both are `async` now.
+
+### The release script could pair an installer with the wrong signature
+
+`new-release.ps1` took the newest `*-setup.exe` and, separately, the newest
+`*.sig`, and never checked the two belonged together. That directory is never
+cleaned, so it holds every build ever made.
+
+If signing failed for the current build, the newest `.exe` was the new version
+while the newest `.sig` was still the previous release's, and they were paired
+without complaint. The `if (-not $sig)` guard passes, because a `.sig` does
+exist. The manifest would advertise the new version, link the new installer, and
+carry the old signature, and every client would download it and reject it
+silently. That is the "Clients see it but installation fails" row in
+RELEASING.md, reached by a route the script created itself.
+
+The artifact is now pinned to the version being released, the signature is
+derived from the artifact rather than chosen, and a `.sig` older than the `.exe`
+it signs is refused.
+
+The publish step also checked no exit codes. `$ErrorActionPreference = 'Stop'`
+does not apply to native commands, so a rejected `git push` fell through to
+`gh release create`, which creates the missing tag itself from the default
+branch. The release would then ship built from a different commit than the tag
+names. Each step is checked now.
+
+---
+
+## 0.3.0, third pass: the installer shell could ship the wrong browser
+
+### `rerun-if-changed` on a directory misses in-place rebuilds
+
+`installer-shell/build.rs` embeds the NSIS installer with `include_bytes!` and
+told cargo to watch the bundle **directory**. A directory's mtime moves when an
+entry is added or removed, but not when an existing file is overwritten. Verified
+on this filesystem rather than assumed.
+
+So rebuilding without bumping the version overwrote `Brume_<ver>_x64-setup.exe`
+in place, the directory looked untouched, `build.rs` did not re-run, and the
+stale `payload.exe` already sitting in `OUT_DIR` was the one embedded. The
+shipped `Brume-Setup.exe` then quietly installed the previous build, which is
+maddening to debug because the browser binary itself is correct and only the
+installer is behind.
+
+`build.rs` now also emits `rerun-if-changed` for the payload file itself.
+
+### The payload was chosen by timestamp, not by version
+
+Same shape as the release script's signature bug, in a second place. The bundle
+directory is never cleaned, so "newest wins" could reach across releases. The
+payload is now pinned to `CARGO_PKG_VERSION`, which `new-release.ps1` keeps in
+step with the browser, and a missing match lists what it did find instead.
+
+---
+
+## Two smaller ones worth recording
+
+**A double-encoded string reached the UI.** `status.textContent` read
+`"Checkingâ€¦"`: U+2026 had been through UTF-8, then CP1252, then
+UTF-8 again, which is why the middle byte came back as a euro sign. Users saw
+`Checkingâ€¦` every time they pressed "Check for updates". It is plain dots now.
+This file has been through two encoding accidents already, so the one string a
+user reads mid-action is not worth a non-ASCII character.
+
+**Overlapping settings renders stacked two forms.** `renderSettings` empties the
+list before three IPC round trips and appends after them, so two renders in
+flight both cleared and then both appended. Clicking a theme or engine button
+triggers a re-render, so two quick clicks did it. It now takes the same sequence
+guard the history and bookmark paths use.
 
 ---
 

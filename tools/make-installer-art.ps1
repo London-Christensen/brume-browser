@@ -2,7 +2,7 @@
 #
 # NSIS will only take .bmp for header and sidebar images - not SVG, not PNG - and
 # the dimensions are fixed by MUI2. Both images are therefore composited here
-# from the real brand rasters onto an Ink field, so they sit seamlessly against
+# from the real brand rasters onto an Ink field, so they sit flush against
 # the MUI_BGCOLOR set in installer.nsi rather than floating on a white square.
 #
 #   pwsh tools/make-installer-art.ps1

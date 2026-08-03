@@ -19,12 +19,76 @@ release is public, anyone running Brume may download it on next launch.
 Three artifacts, doing three different jobs. Confusing them is the easiest way to ship a broken
 release.
 
-| Artifact | Who consumes it |
-|---|---|
-| `Brume-Setup.exe` | **Humans.** The custom-UI installer, for a first install. |
-| `Brume_<ver>_x64-setup.exe` | **The updater.** The plain NSIS installer, downloaded in the background. |
-| `Brume_<ver>_x64-setup.exe.sig` | **The updater.** Detached signature for the above. |
-| `latest.json` | **The updater.** The manifest that says a new version exists. |
+| Artifact | Who consumes it | Where it goes |
+|---|---|---|
+| `Brume-Setup.exe` | **Humans** on a first install, **and the updater**. | The release page |
+| `latest.json` | **The updater.** Says a newer version exists and where. | `updates/` in the repo |
+| `Brume_<ver>_x64-setup.exe` | Nothing directly. Embedded inside `Brume-Setup.exe`. | Nowhere |
+| `Brume-Setup.exe.sig` | Nothing. Its contents are copied into `latest.json`. | Nowhere |
+
+**One file is published, and it is the one a person should click.**
+
+That is deliberate. The release page used to list four things when only one of
+them was meant for a human, with nothing to indicate which. Two changes fixed it:
+
+1. **`latest.json` is served from the repository**, at
+   `raw.githubusercontent.com/.../main/updates/latest.json`, rather than being
+   attached to the release.
+2. **`Brume-Setup.exe` is the update payload as well as the human download.** It
+   already carries the NSIS installer inside it, so publishing that separately
+   was shipping a second copy of a file that was already there.
+
+The updater runs whatever it downloads with `/P /R /UPDATE /ARGS`. It decides an
+`.exe` is an NSIS installer by sniffing the file's contents, not its name, so
+`Brume-Setup.exe` qualifies. `installer-shell/src/main.rs` watches for those
+flags and hands straight to the installer it carries instead of drawing its UI.
+
+The cost is that an update downloads about 5 MB rather than 1.9 MB, because the
+shell and its assets come along with the payload.
+
+GitHub attaches **Source code (zip)** and **Source code (tar.gz)** to every
+release automatically and there is no way to suppress them, so a release page
+shows three entries in total.
+
+### The signature covers Brume-Setup.exe now
+
+Tauri signs the NSIS installer automatically, but that is no longer the file
+being advertised. The signature in the manifest has to cover the exact bytes a
+client downloads, so `new-release.ps1` signs `Brume-Setup.exe` itself with
+`npx tauri signer sign` after stage 2 and reads that `.sig` into the manifest.
+`bundle.createUpdaterArtifacts` stays enabled regardless, because it is also
+what stamps the bundle-type marker the updater reads at runtime.
+
+### The one-release bridge for old installs
+
+Installs from 0.2.0 and earlier have the previous endpoint compiled in:
+
+```
+https://github.com/London-Christensen/brume-browser/releases/latest/download/latest.json
+```
+
+They cannot be told the address changed. So the **first** release under the new
+scheme is published with `-AttachLegacyFeed`, which attaches `latest.json` to it
+as well:
+
+```bash
+pwsh tools/new-release.ps1 -Version 0.3.0 -Notes "..." -Publish -AttachLegacyFeed
+```
+
+An old install resolves that URL against the newest release, finds the manifest,
+updates to the new version, and reads from the repository from then on. That
+release page carries two files instead of one, for that release only.
+
+**Do not pass it again.** Once a later release omits the asset the old URL 404s,
+which is harmless because nothing is still pointing at it.
+
+### Order matters when publishing
+
+`latest.json` names a download URL on a release that has to exist first. The
+script therefore creates the GitHub release, and only then commits and pushes
+`updates/latest.json`. Doing it the other way round advertises a version whose
+installer is not there yet, and every client checking in that window reports a
+failed download.
 
 Both `.exe` files are installers, which is confusing until you know why: the first is the styled
 shell a person double-clicks, the second is what it wraps. Updates use the inner one directly.
@@ -34,7 +98,7 @@ shell a person double-clicks, the second is what it wraps. Updates use the inner
 > `tools/new-release.ps1` is where the filename pattern lives.
 
 Note what is *not* in the update path: the pretty installer shell. Updates run the NSIS
-installer directly, passively, with no UI. That is by design — see
+installer directly, passively, with no UI. That is by design; see
 [INSTALLER.md](INSTALLER.md).
 
 ---
@@ -60,12 +124,12 @@ and execute**.
 ### Why the key must have a password on Windows
 
 This is not a preference. Tauri prompts for the key password on stdin unless
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set — and **Windows cannot represent an empty
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is set, and **Windows cannot represent an empty
 environment variable.** Both `$env:X = ''` and `[Environment]::SetEnvironmentVariable(X, '')`
 delete the variable outright, and the child process sees nothing.
 
 So a passwordless key cannot be used in an unattended build at all. The build compiles, bundles,
-reaches the signing step, and then hangs forever on a prompt no one can answer — *after*
+reaches the signing step, and then hangs forever on a prompt no one can answer, *after*
 everything appeared to succeed. It looks exactly like a stalled build.
 
 `tools/build-installer.ps1` now fails fast with an explanation if the key is present but the
@@ -78,10 +142,10 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\brume-updater.key" -p <pas
 ```
 
 Then put the new public key into `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` and
-save the new password to `brume-updater.pass`. **Read the next section first** — rotating after
+save the new password to `brume-updater.pass`. **Read the next section first.** Rotating after
 anything has shipped strands every existing install.
 
-### ⚠️ Losing this key is unrecoverable
+### Losing this key is unrecoverable
 
 The public key is compiled into every copy of Brume that ships. A client only accepts updates
 signed by the key matching the public key *it* carries. So if the private key is lost:
@@ -90,7 +154,7 @@ signed by the key matching the public key *it* carries. So if the private key is
 - Every install already in the wild will reject every future update, silently, forever.
 - The only fix is asking each user to manually download and reinstall.
 
-Back it up somewhere you would not lose — a password manager's secure-note field is a
+Back it up somewhere you would not lose; a password manager's secure-note field is a
 reasonable home for it.
 
 ### For CI
@@ -104,7 +168,7 @@ code change:
 | `TAURI_SIGNING_PRIVATE_KEY` | The **contents** of the `.key` file, not a path |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The contents of the `.pass` file |
 
-Both are required — see above for why the password cannot be omitted. Never commit either.
+Both are required; see above for why the password cannot be omitted. Never commit either.
 
 ---
 
@@ -114,32 +178,37 @@ Both are required — see above for why the password cannot be omitted. Never co
    `src-tauri/tauri.conf.json`:
 
    ```
-   https://github.com/London-Christensen/brume-browser/releases/latest/download/latest.json
+   https://raw.githubusercontent.com/London-Christensen/brume-browser/main/updates/latest.json
    ```
 
-   `releases/latest/download/<asset>` is a GitHub redirect to that asset on the newest
-   published release, which is why the manifest never needs a hardcoded version in its URL.
+   A plain file in the repository. **This URL is compiled into every shipped copy and can
+   never change**: an install already in the wild keeps asking this exact address forever, so
+   moving or renaming the file strands it as surely as losing the signing key would.
 
 2. If `latest.json` advertises a version higher than the running one, Brume shows a prompt with
    the version number and release notes. **It never installs silently.**
 
-3. On confirm, it downloads the `.nsis.zip`, verifies the signature against the compiled-in
-   public key, and runs the installer passively.
+3. On confirm, it downloads `Brume-Setup.exe` from the release the manifest names and verifies
+   the signature against the compiled-in public key.
 
-4. Windows cannot replace a running executable, so the app exits during install and reopens
+4. It runs that file with `/P /R /UPDATE /ARGS`. `Brume-Setup.exe` sees `/UPDATE`, skips its own
+   UI, and hands the same flags to the NSIS installer it carries. See
+   `installer-shell/src/main.rs`.
+
+5. Windows cannot replace a running executable, so the app exits during install and reopens
    afterwards. The prompt says so before it happens, rather than appearing to vanish.
 
 ### The repository must stay public
 
 The endpoint is an unauthenticated GitHub URL. Releases on a private repository are private
-too, so making this repo private breaks auto-update for everyone — the request 404s and the
+too, so making this repo private breaks auto-update for everyone: the request 404s and the
 check fails silently. If it ever needs to be private, the manifest and artifacts have to move
 to some other public host.
 
 ### There is no update until there is a second release
 
 With only `v0.1.0` published, a `v0.1.0` client checks, finds `0.1.0`, and correctly concludes
-it is up to date. Auto-update cannot be meaningfully tested until a *newer* release exists —
+it is up to date. Auto-update cannot be meaningfully tested until a *newer* release exists,
 which is what step 10 of the build plan does.
 
 ---
@@ -162,10 +231,10 @@ working with no error anywhere.
 
 ### 3. Builds and signs
 
-Via `tools/build-installer.ps1`, which also runs `cargo clean -p brume` first — see the
+Via `tools/build-installer.ps1`, which also runs `cargo clean -p brume` first; see the
 bundle-type marker note in [BUILD_NOTES.md](BUILD_NOTES.md) for why that is not optional.
 
-### 4. Writes `dist/latest.json`
+### 4. Signs `Brume-Setup.exe` and writes the manifest
 
 ```json
 {
@@ -174,12 +243,15 @@ bundle-type marker note in [BUILD_NOTES.md](BUILD_NOTES.md) for why that is not 
   "pub_date": "2026-07-30T12:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "<contents of the .sig file>",
-      "url": "https://github.com/London-Christensen/brume-browser/releases/download/v0.2.0/Brume_0.2.0_x64-setup.exe"
+      "signature": "<contents of dist/Brume-Setup.exe.sig>",
+      "url": "https://github.com/London-Christensen/brume-browser/releases/download/v0.2.0/Brume-Setup.exe"
     }
   }
 }
 ```
+
+Written to `dist/latest.json` first. The copy that clients actually read is
+`updates/latest.json`, committed after the release exists.
 
 The download URL is pinned to the **tag**, not to `/latest`. A `/latest` URL inside the manifest
 would make every historical release advertise whichever build happens to be newest at download
@@ -197,27 +269,34 @@ If the script is unavailable or you want to understand each step:
 # 2. Build and sign.
 pwsh tools/build-installer.ps1
 
-# 3. Collect from src-tauri/target/release/bundle/nsis/
-#      Brume_<ver>_x64-setup.exe
-#      Brume_<ver>_x64-setup.exe.sig
+# 3. Sign the file that will be published. Tauri signed the NSIS installer, but
+#    that one is only embedded, so its signature is not the one clients check.
+npx tauri signer sign dist/Brume-Setup.exe
 
-# 4. Write latest.json in the shape above, pasting the .sig contents verbatim
-#    into "signature".
+# 4. Write latest.json in the shape above, pasting dist/Brume-Setup.exe.sig
+#    verbatim into "signature". Do not edit it afterwards: the signature covers
+#    exact bytes and a mismatch is rejected silently.
 
-# 5. Tag and publish.
+# 5. Tag and publish. The tag must be annotated (-a): git push --follow-tags
+#    silently ignores lightweight ones, leaving it local, and gh then refuses to
+#    build a release from a tag the remote has never seen.
 git commit -am "Release 0.2.0"
-git tag v0.2.0
+git tag -a v0.2.0 -m "Brume 0.2.0"
 git push --follow-tags
 
 gh release create v0.2.0 --title "Brume 0.2.0" --notes "..." \
-  dist/Brume-Setup.exe \
-  src-tauri/target/release/bundle/nsis/Brume_0.2.0_x64-setup.exe \
-  src-tauri/target/release/bundle/nsis/Brume_0.2.0_x64-setup.exe.sig \
-  dist/latest.json
+  dist/Brume-Setup.exe
+
+# 6. LAST, and only once the release exists. The manifest names a URL on it, so
+#    pushing this first advertises an installer that is not there yet.
+cp dist/latest.json updates/latest.json
+git add updates/latest.json
+git commit -m "Point the update feed at 0.2.0"
+git push
 ```
 
-`latest.json` **must** be attached to the release as an asset — that is what the endpoint URL
-resolves to.
+`updates/latest.json` is **not** a release asset. It is a tracked file, served over
+`raw.githubusercontent.com`, and that path is compiled into every shipped copy.
 
 ---
 
@@ -252,5 +331,5 @@ laptop having the right toolchain and the right key.
 | `gh release create` says the tag "has not been pushed" | The tag was lightweight. `git push --follow-tags` only pushes **annotated** tags, so it stayed local. Use `git tag -a`, or push the tag by name. |
 | `new-release.ps1` errors that no `.nsis.zip` was produced | `bundle.createUpdaterArtifacts` is not `true`, or signing failed. |
 | Clients never see the update | `latest.json` not attached to the release; repo went private; or the version in the manifest is not higher than the client's. |
-| Clients see it but installation fails | Signature mismatch — the artifact was signed with a different key than the public key compiled into that client. |
+| Clients see it but installation fails | Signature mismatch: the artifact was signed with a different key than the public key compiled into that client. |
 | `Failed to add bundler type to the binary` during build | The binary was not relinked. See [BUILD_NOTES.md](BUILD_NOTES.md); the package may refuse to update. |

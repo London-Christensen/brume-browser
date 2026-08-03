@@ -6,7 +6,7 @@ steals focus mid-keystroke, `SetCursorPos` moves the real pointer, and `SendKeys
 types into whatever is focused if the timing slips by 200ms.
 
 Brume does not need any of that. WebView2 exposes the same DevTools Protocol
-Chrome does, so the app can be driven over a local socket instead — precisely,
+Chrome does, so the app can be driven over a local socket instead. Precisely,
 with no focus, and with the window parked off-screen.
 
 ## Quick start
@@ -26,7 +26,7 @@ screenshots; it simply never appears on your desktop.
 
 ## Driving the UI
 
-Anything the user can do, the chrome's own JavaScript can do — so a test presses
+Anything the user can do, the chrome's own JavaScript can do, so a test presses
 buttons by dispatching events rather than by clicking pixels:
 
 ```powershell
@@ -53,7 +53,7 @@ the window is behind something else.
 `Get-BrumeShot` uses CDP's `Page.captureScreenshot`, which renders the webview
 directly. It needs neither focus nor visibility.
 
-The one thing it cannot capture is the composite OS window — title bar plus both
+The one thing it cannot capture is the composite OS window: title bar plus both
 webviews together. For that, capture the two webviews separately, or use
 `PrintWindow` with `PW_RENDERFULLCONTENT`, which reads a window's pixels without
 raising it. `CopyFromScreen` is the function to avoid: it captures whatever is
@@ -90,7 +90,7 @@ That leaves `%LOCALAPPDATA%\Brume` untouched. The registry handoff still writes 
 the key afterwards to reset.
 
 The installer shell is itself a Tauri app, so it can be driven the same way by
-launching `Brume-Setup.exe` with the same environment variable — no clicking
+launching `Brume-Setup.exe` with the same environment variable, with no clicking
 through its dialogs by hand.
 
 ## Rust tests

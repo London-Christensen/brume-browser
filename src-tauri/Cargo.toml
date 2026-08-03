@@ -18,7 +18,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Deliberately minimal. Every dependency added here shows up in the shipped
 # binary, and staying small is the entire premise of this project.
-# The "unstable" feature is what unlocks multiple webviews inside one window.
+# The "unstable" feature is what allows multiple webviews inside one window.
 #
 # It is not optional for a browser: the chrome and the page have to be separate
 # webviews. The obvious alternative - rendering pages in an <iframe> inside the

@@ -11,7 +11,7 @@ These are the variable weight axis (300–700), subset by Google Fonts:
 
 ## Why these are committed
 
-The brand kit deliberately ships no font files — its wordmark travels as baked outlines in
+The brand kit deliberately ships no font files. Its wordmark travels as baked outlines in
 `../../tools/wordmark.json` so the kit can rebuild with no fonts and no network access. That
 works for the logo, but not for UI text.
 
