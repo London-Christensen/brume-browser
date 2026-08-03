@@ -573,6 +573,11 @@ fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str) -> tauri:
                     load_handle
                         .state::<crate::store::Store>()
                         .record_visit(&url, &title);
+
+                    // The tab has settled somewhere new, so the saved session is
+                    // stale. Written here rather than only at quit, so an
+                    // unexpected exit still has something to restore.
+                    save_session(&load_handle);
                 }
 
                 publish(&load_handle);
@@ -671,6 +676,50 @@ fn save_geometry(app: &AppHandle) {
     });
 }
 
+/// Records the open tabs so the next launch can rebuild them.
+///
+/// Called whenever the set of tabs changes, not only at quit. Saving on close
+/// alone meant a crash or a kill lost the session, which is the one case
+/// restoring it is actually for. The write is small and atomic, and it happens
+/// far less often than the history append that already runs on every page load.
+///
+/// Only URLs. Restoring each tab's own back history would mean persisting a
+/// stack per tab, and since history.rs handed traversal to WebView2 there is no
+/// such stack to persist - the runtime's history dies with the webview.
+/// Reopening where you were is the part worth keeping.
+fn save_session(app: &AppHandle) {
+    let (urls, active) = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+
+        let urls: Vec<String> = tabs
+            .items
+            .iter()
+            .filter_map(|t| t.nav.current().cloned())
+            // A tab still sitting on about:blank has nowhere to be restored to.
+            .filter(|u| !u.starts_with("about:"))
+            .collect();
+
+        // Position within the filtered list, not the tab id.
+        let active = tabs
+            .items
+            .iter()
+            .filter(|t| {
+                t.nav
+                    .current()
+                    .is_some_and(|u| !u.starts_with("about:"))
+            })
+            .position(|t| t.id == tabs.active)
+            .unwrap_or(0);
+
+        (urls, active)
+    };
+
+    let _ = app
+        .state::<crate::settings::SettingsState>()
+        .set_session(urls, active);
+}
+
 /// Builds the window, the chrome, and the first tab.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let saved = app.state::<crate::settings::SettingsState>().window();
@@ -757,7 +806,37 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         LogicalSize::new(size.width, CHROME_HEIGHT),
     )?;
 
-    open_tab_inner(app, None)?;
+    // Rebuild last session's tabs, or open the homepage if there is none.
+    //
+    // Restored in order, then the previously active one is brought to the front.
+    // A tab that fails to build is skipped rather than aborting the launch: one
+    // bad saved URL should not leave the browser with no window worth looking at.
+    let (session, session_active) = app
+        .state::<crate::settings::SettingsState>()
+        .session();
+
+    if session.is_empty() {
+        open_tab_inner(app, None)?;
+    } else {
+        for url in &session {
+            if let Err(e) = open_tab_inner(app, Some(url.clone())) {
+                eprintln!("[browser] could not restore {url}: {e}");
+            }
+        }
+        // Every restore left its tab active, so the last one is in front.
+        if let Some(id) = tab_id_at(app, session_active) {
+            let browser = app.state::<Browser>();
+            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            tabs.active = id;
+        }
+        // Nothing restored, so there is no tab at all. Fall back rather than
+        // leave an empty window.
+        if tab_id_at(app, 0).is_none() {
+            open_tab_inner(app, None)?;
+        }
+        relayout(app)?;
+        publish(app);
+    }
 
     let event_handle = app.clone();
     window.on_window_event(move |event| match event {
@@ -778,6 +857,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         // last move, which is a fair trade for not thrashing the disk.
         WindowEvent::CloseRequested { .. } => {
             save_geometry(&event_handle);
+            save_session(&event_handle);
         }
         _ => {}
     });
@@ -965,6 +1045,7 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
     }
 
     relayout(app).map_err(|e| e.to_string())?;
+    save_session(app);
     publish(app);
     Ok(())
 }

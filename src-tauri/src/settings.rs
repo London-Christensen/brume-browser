@@ -58,6 +58,15 @@ pub struct Settings {
     /// said what they want and it is left alone.
     pub homepage: String,
 
+    /// Tabs open when Brume last closed, restored on the next launch.
+    ///
+    /// Empty means "open the homepage", which is both the first-run case and
+    /// what happens after every tab was closed by hand.
+    pub session: Vec<String>,
+
+    /// Index into `session` of the tab that was in front.
+    pub session_active: usize,
+
     /// Last window geometry, or `None` until the first window closes.
     ///
     /// Kept here rather than in its own file so it inherits this module's
@@ -90,6 +99,8 @@ impl Default for Settings {
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
             theme: "dark".to_string(),
             homepage: String::new(),
+            session: Vec::new(),
+            session_active: 0,
             window: None,
         }
     }
@@ -244,6 +255,19 @@ impl SettingsState {
 
     pub fn set_window(&self, geometry: WindowGeometry) -> Result<(), String> {
         self.update(|s| s.window = Some(geometry))
+    }
+
+    /// Records the open tabs and which was in front.
+    pub fn set_session(&self, urls: Vec<String>, active: usize) -> Result<(), String> {
+        self.update(|s| {
+            s.session = urls;
+            s.session_active = active;
+        })
+    }
+
+    pub fn session(&self) -> (Vec<String>, usize) {
+        let current = self.get();
+        (current.session, current.session_active)
     }
 
     pub fn window(&self) -> Option<WindowGeometry> {
