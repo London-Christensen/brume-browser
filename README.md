@@ -129,4 +129,15 @@ hex value anywhere in the UI is a bug.
 
 ## Licence
 
-Not yet chosen.
+Code is under the **Apache License 2.0**. See [LICENSE](LICENSE).
+
+Apache-2.0 rather than MIT for two reasons that matter for a browser: it carries an
+explicit patent grant, and it explicitly grants no trademark rights. The dependency
+tree is `Apache-2.0 OR MIT` throughout, so this is also the least friction.
+
+**The brand is not covered.** Everything under `brand/` is reserved: the Brume
+name, the mark, the wordmark and the brand specification. Fork the code freely,
+but ship it under your own name and your own marks. The 24px UI icon set is the
+one exception and may be reused with the code.
+
+See [NOTICE](NOTICE) for the full statement, including third-party components.

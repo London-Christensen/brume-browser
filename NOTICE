@@ -1,0 +1,39 @@
+Brume
+Copyright (c) London Christensen
+
+This product includes software developed by London Christensen.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+--------------------------------------------------------------------------------
+Brand assets are not covered by that licence
+--------------------------------------------------------------------------------
+
+Everything under brand/, and the copies derived from it in src/assets/brand/ and
+installer-shell/ui/assets/brand/, is excluded from the Apache License and is
+reserved. That covers the Brume name, the mark, the wordmark, the icon set and
+the brand specification.
+
+The Apache License grants no trademark rights (section 6), and none are granted
+here by any other route. A fork is free to use the code and must use its own name
+and its own marks.
+
+The one exception is the UI icon set drawn on a 24px grid, which may be reused
+under the Apache License along with the code. The name, the mark and the wordmark
+may not.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+Brume renders pages with the Microsoft Edge WebView2 runtime, which is not
+redistributed here and remains subject to its own terms.
+
+The Rust dependency tree is predominantly Apache-2.0 or MIT. It also includes
+components under the Mozilla Public License 2.0, currently cssparser,
+cssparser-macros, dtoa-short, option-ext and selectors. MPL-2.0 is file-level
+copyleft: those files stay under MPL-2.0 and their source is available from
+crates.io. None of them are modified here.
+
+Archivo is bundled under the SIL Open Font License 1.1. See
+brand/assets/fonts/README.md.
