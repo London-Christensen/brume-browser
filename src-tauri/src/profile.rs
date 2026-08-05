@@ -28,11 +28,19 @@ type ClearResult = Result<bool, windows_core::Error>;
 /// waits for it. A control that returns before the work is done invites a second
 /// press, and the honest thing is to finish before saying so.
 ///
+/// **This command must stay `async`**, unlike the ones in find.rs and history.rs.
+/// Those only read and return; this one waits for a completion handler, and that
+/// handler runs on the main thread. As a sync command it ran on the main thread
+/// itself and then blocked it waiting for a callback that needed it, so the
+/// clear did happen but the command always reported a timeout, with the UI
+/// frozen for the full 30 seconds first. Async puts the wait on a worker and
+/// leaves the main thread free to deliver the callback.
+///
 /// Note this does not touch history or bookmarks. Those are Brume's own records
 /// and are cleared from their own panel, which keeps "what the sites left" and
 /// "what I chose to keep" as separate decisions.
 #[tauri::command]
-pub fn clear_site_data(app: AppHandle) -> Result<(), String> {
+pub async fn clear_site_data(app: AppHandle) -> Result<(), String> {
     // Any tab will do: they all share one profile unless they are private, and
     // a private tab's partition is discarded with its webview anyway.
     let webview = crate::browser::active_content_webview(&app)?;
