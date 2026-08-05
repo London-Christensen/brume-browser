@@ -1,11 +1,11 @@
 {
-    "version":  "0.3.0",
-    "notes":  "Links that open a new window now open a tab instead of doing nothing. Ctrl+scroll and Ctrl+plus/minus zoom pages again. Adds Ctrl+Shift+T to reopen a closed tab and Ctrl+1-9 to switch between them. The window remembers its size and position. History search no longer stalls while typing, and reload works on PDFs and error pages.",
-    "pub_date":  "2026-08-03T02:49:11Z",
+    "version":  "0.4.0",
+    "notes":  "Find in page with Ctrl+F, and downloads now show real progress.\n\nBack and forward go through the browser\u0027s own history, so a page comes back from\ncache with its scroll position instead of being fetched again. Open tabs are\nrestored when you relaunch.\n\nNew in this release: private tabs, clear site data, print, fullscreen, a home\nbutton, a zoom indicator, pinned tabs, a tab context menu, and a bookmarks bar\non Ctrl+Shift+B. The icon set has been redrawn.\n\nFixed: opening a new tab or searching while Settings or History was open left\nthe new page hidden behind the panel.",
+    "pub_date":  "2026-08-05T04:11:56Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1VPRWs3ZlIrbkVjN05VdjhGSEdTcFRjT282dGcrNUhqcnFiUWFFZ1NTQjBnd2VwK2xuanVMUjAyMHpaTHdjUEJGTGJhMXUxZXRzYUl1U1FaUFdiQWcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NzI1MzM0CWZpbGU6QnJ1bWUtU2V0dXAuZXhlCktHWWR4RnNkbjNXWktyTEtxek0xaFZiZUI3aEMzZHB6NlVLWHFJV3k4MEVBckRtaXhneUY0TjB0VWpPdEx2c0JQb1IxZndGSERnV0ZoZzZvNnliOUNRPT0K",
-                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.3.0/Brume-Setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1VhanlJSjlHVHZLUEIyUXl5VjZ3L3VaNitVR2hiYTZRZ1dreVpyWDI5ajY0OC9PN2dJb0NST0VmM1FoZ0RKdGViRW9oeE1oRm9WYUFIWjJGWm52RkFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1OTAzMTE2CWZpbGU6QnJ1bWUtU2V0dXAuZXhlCnRJaWIxVllNTzlReUhISjZRTWg2UGJjejVuc0dwMlgrb3NYMkNHQ1pyZVpNRmxIaWZqV1ZVaDBvMit6WnV5YXVBK0hoblhoV0dUMVNTcmFSTTVqRkRRPT0K",
+                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.4.0/Brume-Setup.exe"
                                          }
                   }
 }
