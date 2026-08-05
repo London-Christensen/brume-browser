@@ -584,9 +584,9 @@ step with the browser, and a missing match lists what it did find instead.
 ## Two smaller ones worth recording
 
 **A double-encoded string reached the UI.** `status.textContent` read
-`"Checkingâ€¦"`: U+2026 had been through UTF-8, then CP1252, then
+`"Checking???????"`: U+2026 had been through UTF-8, then CP1252, then
 UTF-8 again, which is why the middle byte came back as a euro sign. Users saw
-`Checkingâ€¦` every time they pressed "Check for updates". It is plain dots now.
+`Checking???????` every time they pressed "Check for updates". It is plain dots now.
 This file has been through two encoding accidents already, so the one string a
 user reads mid-action is not worth a non-ASCII character.
 
@@ -655,6 +655,9 @@ the match it just scrolled to.
 positions a content webview reads `chrome_extent()`. The 36px in the CSS and the
 `FIND_BAR_HEIGHT` constant have the same contract the tab strip and toolbar
 already had: disagree and the page is overlapped by the difference.
+
+The bookmarks bar later became a second one of these, so `chrome_extent()` sums
+its terms rather than branching on which bar is open. See below.
 
 ---
 
@@ -809,6 +812,86 @@ name and an old file simply starts with no session.
 
 Worth remembering for the next schema change: `#[serde(default)]` on the
 container rescues a *missing* field, not a mistyped one.
+
+---
+
+## The bookmarks bar is the second consumer of `chrome_extent()`
+
+The find bar was the first thing to grow the chrome, and while it was the only
+one, `chrome_extent()` could get away with a floor plus one conditional. Two rows
+that can be open at the same time is where that shape stops working, so the
+function sums its terms:
+
+```rust
+CHROME_HEIGHT
+    + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
+    + if bookmarks_bar { BOOKMARKS_BAR_HEIGHT } else { 0.0 }
+```
+
+A third row later is one more term rather than a rewrite. The arithmetic is split
+into `extent_for(find_open, bookmarks_bar)` so it can be tested without a running
+app, and the test spells out all four heights as literals: 76, 108, 112, 144. It
+deliberately does not recompute them from the constants, because a test that says
+`CHROME_HEIGHT + FIND_BAR_HEIGHT` passes just as happily after someone changes a
+constant and forgets index.html.
+
+Measured against a running browser: 76 to 108 when the bar opens, with the page
+going 724 to 692, and 144 with both bars up and the find bar sitting at y=108
+directly under the bookmarks bar.
+
+### Where the "is it showing" flag lives
+
+In settings, not in `Browser`. It is a preference that has to survive a restart,
+so it was going to be written there regardless, and a mirrored copy in the
+process is the thing that eventually disagrees with the file after a failed
+write. `chrome_extent()` reads it through a field accessor rather than
+`SettingsState::get()`, which clones the whole struct including the session tab
+list, and this is on the path taken every time a webview is positioned.
+
+### Why the list is not in `BrowserState`
+
+`BrowserState` is published on every navigation, title change and load-progress
+tick. The bookmark list changes when someone presses Ctrl+D. Carrying every
+bookmark in every one of those would re-serialise the list dozens of times per
+page load to catch an event that happens by hand.
+
+`brume://bookmarks` follows what `brume://downloads` already does: no payload,
+only "this changed", and the two listeners fetch the list themselves. It is
+emitted from all three places that mutate the list, including the two store
+commands, so a removal from the panel reaches the bar without either knowing
+about the other.
+
+### Overflow is measured, not counted
+
+How many bookmarks fit depends on the font, the titles and the window width,
+so there is no count that works. Everything is rendered, then walked left to
+right against the available width minus the overflow button, and what does not
+fit is hidden and put in a menu.
+
+Once one item overflows, so does everything after it, even if a later one would
+have fit in the gap. Packing would reorder the bar on every resize, and a
+bookmark bar is useful precisely because a thing stays where it was last seen.
+
+The re-measure hangs off a `ResizeObserver` on the bar rather than a window
+resize listener: this webview is positioned and sized by the Rust side, so what
+changes is the element.
+
+Checked at three widths: 7 items visible at 1200px, 4 at 700px, 10 at 1600px,
+and back to exactly 7 on return. The overflow menu's contents matched the hidden
+items exactly, in bar order.
+
+### One context menu, two callers
+
+The tab strip's menu already had the placement and clamping logic, and the
+bookmarks bar needs the same thing, so `openMenu(at, build)` now holds it and
+both callers pass only their own items. `at` needs nothing but `clientX` and
+`clientY`, which lets the overflow button open a menu under itself with a plain
+point instead of a pointer event.
+
+The one trap: the overflow button opens on a left click, and the document-level
+listener that dismisses menus sees the same click. It needs
+`stopPropagation`, or the menu closes in the tick it opened. The tab menu never
+hit this because it opens on `contextmenu`.
 
 ---
 

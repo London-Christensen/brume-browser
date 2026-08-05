@@ -39,7 +39,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Maximum history entries kept on disk.
 ///
@@ -466,18 +466,33 @@ pub fn bookmarks(store: State<'_, Store>) -> Vec<Bookmark> {
     store.bookmarks()
 }
 
+/// Tells the chrome the bookmark list changed.
+///
+/// Done here rather than left to whoever called the command, because the
+/// bookmarks bar renders the list and has no other way to hear about a removal
+/// from the panel. Best effort: a failed emit is a stale bar, not a lost
+/// bookmark, and the bookmark is already on disk by this point.
+fn notify_bookmarks(app: &AppHandle) {
+    let _ = app.emit_to(crate::browser::CHROME_LABEL, crate::browser::BOOKMARKS_EVENT, ());
+}
+
 #[tauri::command]
 pub fn toggle_bookmark(
+    app: AppHandle,
     store: State<'_, Store>,
     url: String,
     title: String,
 ) -> Result<bool, String> {
-    store.toggle_bookmark(&url, &title)
+    let bookmarked = store.toggle_bookmark(&url, &title)?;
+    notify_bookmarks(&app);
+    Ok(bookmarked)
 }
 
 #[tauri::command]
-pub fn remove_bookmark(store: State<'_, Store>, id: u64) -> Result<(), String> {
-    store.remove_bookmark(id)
+pub fn remove_bookmark(app: AppHandle, store: State<'_, Store>, id: u64) -> Result<(), String> {
+    store.remove_bookmark(id)?;
+    notify_bookmarks(&app);
+    Ok(())
 }
 
 #[tauri::command]

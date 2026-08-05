@@ -5,10 +5,11 @@
     <title>Brume</title>
 
     <!--
-      This document is the browser chrome, not a page. It occupies a fixed strip
-      at the top of the window - 36px of tab strip over 40px of toolbar - and the
-      page the user is looking at is a separate sibling webview underneath, one
-      per tab. See src-tauri/src/browser.rs.
+      This document is the browser chrome, not a page. It occupies a strip at the
+      top of the window - 36px of tab strip over 40px of toolbar, plus the
+      bookmarks bar and the find bar when either is open - and the page the user
+      is looking at is a separate sibling webview underneath, one per tab. See
+      src-tauri/src/browser.rs.
 
       The heights here and the constants in browser.rs must agree.
     -->
@@ -42,6 +43,7 @@
 
         --tab-strip-h: 36px;
         --toolbar-h: 40px;
+        --bookmarks-bar-h: 32px;
       }
 
       :root[data-theme="light"],
@@ -282,6 +284,11 @@
       .ctxmenu button {
         display: block;
         width: 100%;
+        /* Capped and truncated for the overflow menu, whose labels are page
+           titles. The tab menu's own labels are short fixed strings and never
+           reach this. */
+        max-width: 320px;
+        overflow: hidden;
         padding: 6px 10px;
         border: 0;
         border-radius: 3px;
@@ -289,6 +296,8 @@
         color: var(--fg);
         font-family: var(--font-ui);
         font-size: 12px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
         text-align: left;
         cursor: default;
       }
@@ -363,6 +372,71 @@
         color: var(--fg);
       }
 
+      /* --- bookmarks bar -------------------------------------------------- */
+      /* The same contract as the find bar, at 32px: browser.rs adds exactly
+         BOOKMARKS_BAR_HEIGHT to the chrome while this is showing, and if the two
+         disagree the page is left overlapped by the difference.
+
+         `overflow: hidden` is a backstop, not the mechanism. Items that do not
+         fit are moved into the overflow menu by measurement in JS, because a row
+         silently clipping the last bookmark mid-word looks like a rendering bug
+         and gives no way to reach it. */
+      .bookmarks {
+        flex: 0 0 var(--bookmarks-bar-h);
+        display: flex;
+        align-items: center;
+        gap: 1px;
+        padding: 0 6px;
+        background: var(--surface);
+        border-top: 1px solid var(--hairline);
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .bm {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        /* Capped so one bookmark with a long title cannot take the whole bar.
+           Short titles still size to their content. */
+        max-width: 172px;
+        height: 22px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 3px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+        white-space: nowrap;
+        cursor: default;
+        transition: background 110ms ease;
+      }
+      .bm:hover {
+        background: var(--elev-1);
+      }
+      .bm:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+
+      .bm-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* Pushed to the right edge, where it stays put as the row fills up. */
+      .bm-more {
+        margin-left: auto;
+      }
+
+      .bm-empty {
+        padding: 0 8px;
+        color: var(--fg-muted);
+        font-size: 11.5px;
+      }
+
       /* --- toolbar ------------------------------------------------------- */
       .toolbar {
         flex: 0 0 var(--toolbar-h);
@@ -430,6 +504,7 @@
       .ico-trash { -webkit-mask-image: url("assets/brand/icons/trash.svg"); mask-image: url("assets/brand/icons/trash.svg"); }
       .ico-settings { -webkit-mask-image: url("assets/brand/icons/settings.svg"); mask-image: url("assets/brand/icons/settings.svg"); }
       .ico-check { -webkit-mask-image: url("assets/brand/icons/check.svg"); mask-image: url("assets/brand/icons/check.svg"); }
+      .ico-chevron-right { -webkit-mask-image: url("assets/brand/icons/chevron-right.svg"); mask-image: url("assets/brand/icons/chevron-right.svg"); }
 
       /* The star fills in when the page is bookmarked. Lamplight is the accent
          the brand allows once per screen, and this is where it earns it: a
@@ -880,6 +955,19 @@
     </div>
 
     <!--
+      The bookmarks bar. Off by default and toggled with Ctrl+Shift+B or the
+      switch in Settings; the preference is stored, so it survives a restart.
+
+      Above the find bar rather than below it: this one is part of the permanent
+      chrome, while the find bar is transient and belongs against the page it is
+      searching.
+
+      Filled in by renderBookmarksBar - the items are not in the markup because
+      the list comes from disk.
+    -->
+    <div class="bookmarks" id="bookmarks" hidden></div>
+
+    <!--
       The find bar. Hidden by default; showing it grows the chrome webview by
       exactly its own height on the Rust side, so the page is pushed down rather
       than covered. A bar floating over the page could sit on top of the match
@@ -907,11 +995,12 @@
     </div>
 
     <!--
-      Tab context menu. Positioned in JS at the pointer, and populated per tab
-      because the pin item has to read Pin or Unpin, and the close items are
-      pointless on the only tab.
+      Context menu, shared by the tab strip and the bookmarks bar. Positioned in
+      JS at the pointer and populated per click, because the items depend on what
+      was clicked: pin reads Pin or Unpin, and the close items are pointless on
+      the only tab.
     -->
-    <div class="ctxmenu" id="tab-menu" hidden></div>
+    <div class="ctxmenu" id="ctx-menu" hidden></div>
 
     <div class="progress" id="progress" data-loading="false"></div>
 
@@ -1041,23 +1130,30 @@
         return img;
       }
 
-      /* --- tab context menu ------------------------------------------------
+      /* --- context menus ---------------------------------------------------
        *
-       * Built fresh on each open rather than kept in the DOM, because every item
-       * depends on which tab was clicked: pin reads Pin or Unpin, and the close
+       * One element, two callers: the tab strip and the bookmarks bar. Built
+       * fresh on each open rather than kept in the DOM, because every item
+       * depends on what was clicked - pin reads Pin or Unpin, and the close
        * items are meaningless when there is nothing else to close.
        */
-      function closeTabMenu() {
-        el("tab-menu").hidden = true;
+      function closeMenu() {
+        el("ctx-menu").hidden = true;
       }
 
-      function openTabMenu(event, tab, allTabs) {
-        const menu = el("tab-menu");
+      /* Builds a menu and places it at the pointer.
+       *
+       * `build` receives `add(label, enabled, run)` and `separator()`, so a
+       * caller writes only its own items. The placement below is the part worth
+       * sharing: it is fiddly, and two copies would drift.
+       *
+       * `at` only has to carry clientX and clientY, so a caller with no pointer
+       * event - the overflow button, which opens under itself - can pass a plain
+       * point instead.
+       */
+      function openMenu(at, build) {
+        const menu = el("ctx-menu");
         menu.textContent = "";
-
-        const closable = allTabs.filter((t) => !t.pinned);
-        const index = allTabs.findIndex((t) => t.id === tab.id);
-        const toRight = allTabs.slice(index + 1).filter((t) => !t.pinned).length;
 
         const add = (label, enabled, run) => {
           const b = document.createElement("button");
@@ -1065,47 +1161,58 @@
           b.disabled = !enabled;
           if (enabled) {
             b.addEventListener("click", () => {
-              closeTabMenu();
+              closeMenu();
               run();
             });
           }
           menu.appendChild(b);
         };
+        const separator = () => menu.appendChild(document.createElement("hr"));
 
-        add("Duplicate", true, () => call("duplicate_tab", { id: tab.id }));
-        add(tab.pinned ? "Unpin tab" : "Pin tab", true, () =>
-          call("set_tab_pinned", { id: tab.id, pinned: !tab.pinned })
-        );
-        menu.appendChild(document.createElement("hr"));
-        // A pinned tab cannot be closed, so offer nothing that pretends it can.
-        add("Close tab", !tab.pinned, () => call("close_tab", { id: tab.id }));
-        add(
-          "Close other tabs",
-          closable.some((t) => t.id !== tab.id),
-          () => call("close_other_tabs", { id: tab.id })
-        );
-        add("Close tabs to the right", toRight > 0, () =>
-          call("close_tabs_to_right", { id: tab.id })
-        );
+        build(add, separator);
 
         // Shown before measuring: a hidden element has no dimensions to clamp
         // against, so it would be positioned off the right edge every time.
         menu.hidden = false;
         const rect = menu.getBoundingClientRect();
-        const x = Math.min(event.clientX, window.innerWidth - rect.width - 4);
-        const y = Math.min(event.clientY, window.innerHeight - rect.height - 4);
+        const x = Math.min(at.clientX, window.innerWidth - rect.width - 4);
+        const y = Math.min(at.clientY, window.innerHeight - rect.height - 4);
         menu.style.left = `${Math.max(4, x)}px`;
         menu.style.top = `${Math.max(4, y)}px`;
+      }
+
+      function openTabMenu(event, tab, allTabs) {
+        const closable = allTabs.filter((t) => !t.pinned);
+        const index = allTabs.findIndex((t) => t.id === tab.id);
+        const toRight = allTabs.slice(index + 1).filter((t) => !t.pinned).length;
+
+        openMenu(event, (add, separator) => {
+          add("Duplicate", true, () => call("duplicate_tab", { id: tab.id }));
+          add(tab.pinned ? "Unpin tab" : "Pin tab", true, () =>
+            call("set_tab_pinned", { id: tab.id, pinned: !tab.pinned })
+          );
+          separator();
+          // A pinned tab cannot be closed, so offer nothing that pretends it can.
+          add("Close tab", !tab.pinned, () => call("close_tab", { id: tab.id }));
+          add(
+            "Close other tabs",
+            closable.some((t) => t.id !== tab.id),
+            () => call("close_other_tabs", { id: tab.id })
+          );
+          add("Close tabs to the right", toRight > 0, () =>
+            call("close_tabs_to_right", { id: tab.id })
+          );
+        });
       }
 
       // Any click elsewhere dismisses it, and so does Escape. The chrome has
       // focus while the menu is open, so this keydown does fire, unlike one
       // aimed at the page.
       document.addEventListener("click", (event) => {
-        if (!el("tab-menu").contains(event.target)) closeTabMenu();
+        if (!el("ctx-menu").contains(event.target)) closeMenu();
       });
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeTabMenu();
+        if (event.key === "Escape") closeMenu();
       });
 
       // --- tab strip ------------------------------------------------------
@@ -1185,6 +1292,15 @@
           ? "Remove bookmark"
           : "Bookmark this page";
 
+        // The bar's visibility rides the same update that resized the page for
+        // it, so the row and the space for it can never be out of step. Rendered
+        // only on the way in, not on every state event: those arrive dozens of
+        // times per page load, and the list has not changed in any of them.
+        const bar = el("bookmarks");
+        const wasShowing = !bar.hidden;
+        bar.hidden = !state.bookmarksBar;
+        if (state.bookmarksBar && !wasShowing) renderBookmarksBar();
+
         // Rounded, because WebView2 steps zoom in fractions that do not land on
         // whole percentages: 1.100000023841858 should read as 110%.
         const pct = Math.round((state.zoom ?? 1) * 100);
@@ -1205,6 +1321,181 @@
             ? "ico scheme ico-lock"
             : "ico scheme ico-search";
         }
+      }
+
+      /* --- bookmarks bar ---------------------------------------------------
+       *
+       * The row under the toolbar. Showing it grows the chrome webview by
+       * exactly its own height on the Rust side, so the page moves down instead
+       * of being covered.
+       *
+       * The list is fetched here rather than carried in brume://state. State is
+       * published on every navigation, title change and load tick; the bookmarks
+       * change when someone presses Ctrl+D. Putting the whole list in every one
+       * of those would be a lot of copies of a thing that rarely moves, so
+       * brume://bookmarks says when to re-read it instead.
+       */
+      let bookmarkItems = [];
+
+      /** The ones currently in the overflow menu, in bar order. */
+      let bookmarkOverflow = [];
+
+      function openBookmark(bookmark, newTab) {
+        if (newTab) {
+          call("open_tab", { url: bookmark.url });
+        } else {
+          call("navigate", { input: bookmark.url });
+        }
+      }
+
+      function openBookmarkMenu(at, bookmark) {
+        openMenu(at, (add, separator) => {
+          add("Open", true, () => openBookmark(bookmark, false));
+          add("Open in new tab", true, () => openBookmark(bookmark, true));
+          separator();
+          // No re-render here: remove_bookmark emits brume://bookmarks, so the
+          // bar and the panel both refresh through the one path every change to
+          // the list already takes.
+          add("Remove", true, () => call("remove_bookmark", { id: bookmark.id }));
+        });
+      }
+
+      function bookmarkNode(bookmark, index) {
+        const node = document.createElement("button");
+        node.className = "bm";
+        // Where layout looks the bookmark back up after measuring.
+        node.dataset.index = String(index);
+        // Both lines: the title is truncated to fit the bar, and the URL is the
+        // part that says where this actually goes.
+        node.title = `${bookmark.title || bookmark.url}\n${bookmark.url}`;
+        node.appendChild(faviconNode(bookmark.url, false));
+
+        const title = document.createElement("span");
+        title.className = "bm-title";
+        // A page bookmarked before its title arrived has none; the URL is at
+        // least something to read.
+        title.textContent = bookmark.title || bookmark.url;
+        node.appendChild(title);
+
+        node.addEventListener("click", () => openBookmark(bookmark, false));
+        // Middle click opens in a new tab, as it does on any link.
+        node.addEventListener("auxclick", (event) => {
+          if (event.button !== 1) return;
+          event.preventDefault();
+          openBookmark(bookmark, true);
+        });
+        node.addEventListener("mousedown", (event) => {
+          // Or the middle button starts an autoscroll over the chrome instead.
+          if (event.button === 1) event.preventDefault();
+        });
+        node.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          openBookmarkMenu(event, bookmark);
+        });
+        return node;
+      }
+
+      function openBookmarkOverflow(event) {
+        // Without this the click carries on to the document listener that
+        // dismisses menus, and this one closes in the tick it opened.
+        event.stopPropagation();
+        const rect = el("bm-more").getBoundingClientRect();
+        openMenu({ clientX: rect.left, clientY: rect.bottom + 2 }, (add) => {
+          for (const bookmark of bookmarkOverflow) {
+            add(bookmark.title || bookmark.url, true, () =>
+              openBookmark(bookmark, false)
+            );
+          }
+        });
+      }
+
+      async function renderBookmarksBar() {
+        const bar = el("bookmarks");
+        if (bar.hidden) return; // nothing to measure while it is off
+
+        bookmarkItems = (await call("bookmarks")) || [];
+        bar.textContent = "";
+        bookmarkOverflow = [];
+
+        if (!bookmarkItems.length) {
+          const hint = document.createElement("span");
+          hint.className = "bm-empty";
+          hint.textContent = "Bookmarks you save with Ctrl+D appear here.";
+          bar.appendChild(hint);
+          return;
+        }
+
+        // Insertion order, oldest first. The store appends, and a bar that
+        // reordered itself every time a page was saved would be hard to use -
+        // the whole value of a bookmark bar is that a thing stays where you last
+        // saw it. The panel sorts newest first, which is right for a list you
+        // read rather than one you aim at.
+        bookmarkItems.forEach((bookmark, index) =>
+          bar.appendChild(bookmarkNode(bookmark, index))
+        );
+
+        const more = document.createElement("button");
+        more.className = "bm bm-more";
+        more.id = "bm-more";
+        more.title = "More bookmarks";
+        more.setAttribute("aria-label", "More bookmarks");
+        more.innerHTML = '<span class="ico ico-chevron-right"></span>';
+        more.addEventListener("click", openBookmarkOverflow);
+        bar.appendChild(more);
+
+        layoutBookmarksBar();
+      }
+
+      /* Moves whatever does not fit into the overflow menu.
+       *
+       * Measured rather than counted: how many bookmarks fit depends on the
+       * font, the titles and the window width, so there is no number that works.
+       * Runs after every render and on every resize.
+       */
+      function layoutBookmarksBar() {
+        const bar = el("bookmarks");
+        const more = el("bm-more");
+        if (bar.hidden || !more) return;
+
+        // Everything shown first. A hidden element measures zero, so anything
+        // already moved out would stay out as the window grew.
+        const items = [...bar.querySelectorAll(".bm:not(.bm-more)")];
+        for (const node of items) node.hidden = false;
+        more.hidden = false;
+        bookmarkOverflow = [];
+
+        const style = getComputedStyle(bar);
+        const gap = parseFloat(style.columnGap) || 0;
+        const inner =
+          bar.clientWidth -
+          parseFloat(style.paddingLeft) -
+          parseFloat(style.paddingRight);
+
+        const widths = items.map((node) => node.offsetWidth);
+        const total = widths.reduce((sum, w) => sum + w + gap, 0) - gap;
+
+        if (total <= inner) {
+          // It all fits, so there is nothing behind the button and it goes away.
+          more.hidden = true;
+          return;
+        }
+
+        // The button is staying, so it comes out of the space available.
+        const budget = inner - more.offsetWidth - gap;
+        let used = 0;
+        let overflowing = false;
+
+        items.forEach((node, i) => {
+          used += widths[i] + (i ? gap : 0);
+          // Once one item has been pushed out, so is everything after it. The
+          // bar keeps its order rather than slotting in a narrower later
+          // bookmark, which would shuffle on every resize.
+          if (overflowing || used > budget) {
+            overflowing = true;
+            node.hidden = true;
+            bookmarkOverflow.push(bookmarkItems[Number(node.dataset.index)]);
+          }
+        });
       }
 
       // --- panel ----------------------------------------------------------
@@ -1456,10 +1747,10 @@
                 url: b.url,
                 when: whenLabel(b.added_at),
                 onOpen: () => open(b.url),
-                onRemove: async () => {
-                  await call("remove_bookmark", { id: b.id });
-                  renderPanel();
-                },
+                // No re-render here. remove_bookmark emits brume://bookmarks
+                // and the listener refreshes both this list and the bar, which
+                // is the one path every change to the list takes.
+                onRemove: () => call("remove_bookmark", { id: b.id }),
               })
             );
           }
@@ -1496,6 +1787,26 @@
         control.className = "row-control";
         r.append(label, control);
         return { row: r, control };
+      }
+
+      /* An on/off switch for a settings row.
+       *
+       * The state lives in aria-checked rather than in a variable, so what the
+       * screen reader is told and what the CSS draws cannot disagree - the
+       * stylesheet keys off that same attribute.
+       */
+      function switchControl(checked, label, onChange) {
+        const toggle = document.createElement("button");
+        toggle.className = "switch";
+        toggle.setAttribute("role", "switch");
+        toggle.setAttribute("aria-checked", String(checked));
+        toggle.setAttribute("aria-label", label);
+        toggle.addEventListener("click", async () => {
+          const next = toggle.getAttribute("aria-checked") !== "true";
+          await onChange(next);
+          toggle.setAttribute("aria-checked", String(next));
+        });
+        return toggle;
       }
 
       /* `stillCurrent` reports whether this render is still the newest one.
@@ -1562,6 +1873,19 @@
         }
         theme.control.appendChild(themeSeg);
         general.appendChild(theme.row);
+
+        const bookmarksBar = row(
+          "Bookmarks bar",
+          "A row of saved pages under the toolbar. Ctrl+Shift+B toggles it."
+        );
+        bookmarksBar.control.appendChild(
+          switchControl(
+            settings.show_bookmarks_bar,
+            "Show the bookmarks bar",
+            (next) => call("set_bookmarks_bar", { show: next })
+          )
+        );
+        general.appendChild(bookmarksBar.row);
 
         form.appendChild(general);
 
@@ -1634,17 +1958,13 @@
           "Check for updates on launch",
           "Brume asks before installing. Updates are never applied silently."
         );
-        const toggle = document.createElement("button");
-        toggle.className = "switch";
-        toggle.setAttribute("role", "switch");
-        toggle.setAttribute("aria-checked", String(settings.auto_update));
-        toggle.setAttribute("aria-label", "Check for updates on launch");
-        toggle.addEventListener("click", async () => {
-          const next = toggle.getAttribute("aria-checked") !== "true";
-          await call("set_auto_update", { enabled: next });
-          toggle.setAttribute("aria-checked", String(next));
-        });
-        auto.control.appendChild(toggle);
+        auto.control.appendChild(
+          switchControl(
+            settings.auto_update,
+            "Check for updates on launch",
+            (next) => call("set_auto_update", { enabled: next })
+          )
+        );
         updates.appendChild(auto.row);
 
         const manual = row(
@@ -1728,6 +2048,19 @@
       listen("brume://downloads", () => {
         if (!el("panel").hidden && panelView === "downloads") renderPanel();
       });
+
+      // Every change to the bookmark list comes back through here, whether it
+      // started at the star, at Ctrl+D, or at Remove in the panel. One path, so
+      // the bar cannot be left showing a bookmark that is gone.
+      listen("brume://bookmarks", () => {
+        renderBookmarksBar();
+        if (!el("panel").hidden && panelView === "bookmarks") renderPanel();
+      });
+
+      // The bar re-measures when the window width changes. A window listener
+      // would not do: this webview is positioned and sized by the Rust side, so
+      // what changes is the element, not the window.
+      new ResizeObserver(() => layoutBookmarksBar()).observe(el("bookmarks"));
 
       el("bookmark").addEventListener("click", async () => {
         await call("toggle_bookmark_active");

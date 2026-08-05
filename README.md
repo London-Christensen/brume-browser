@@ -85,6 +85,7 @@ way.
 | `Alt`+`←` / `Alt`+`→` | Back / forward |
 | `Alt`+`Home` | Homepage |
 | `Ctrl`+`D` | Bookmark this page |
+| `Ctrl`+`Shift`+`B` | Show or hide the bookmarks bar |
 | `Ctrl`+`H` | History |
 | `Ctrl`+`,` | Settings |
 | `Ctrl`+`P` | Print |

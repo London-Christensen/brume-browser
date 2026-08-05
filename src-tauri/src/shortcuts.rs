@@ -74,6 +74,7 @@ const BINDINGS: &[(&str, &str)] = &[
     ("Alt+Right", "forward"),
     ("Alt+Home", "home"),
     ("CmdOrCtrl+D", "bookmark"),
+    ("CmdOrCtrl+Shift+B", "bookmarks_bar"),
     ("CmdOrCtrl+H", "history"),
     ("CmdOrCtrl+Comma", "settings"),
     // No Escape binding here on purpose. These are *global* shortcuts while the
@@ -201,8 +202,11 @@ pub fn handle(app: &AppHandle, action: &str) {
         "home" => log(browser::go_home(app.clone())),
         "print" => log(browser::print_page(app.clone())),
 
-        // Resizes webviews, so it goes through spawn like the tab commands.
+        // Resize webviews, so they go through spawn like the tab commands.
         "fullscreen" => spawn(app, |app| async move { browser::toggle_fullscreen(app).await }),
+        "bookmarks_bar" => spawn(app, |app| async move {
+            browser::toggle_bookmarks_bar(app).await
+        }),
         "bookmark" => log(browser::toggle_bookmark_active(app.clone()).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.

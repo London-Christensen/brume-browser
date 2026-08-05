@@ -82,6 +82,8 @@ fn main() {
             browser::close_other_tabs,
             browser::close_tabs_to_right,
             browser::toggle_bookmark_active,
+            browser::set_bookmarks_bar,
+            browser::toggle_bookmarks_bar,
             store::history,
             store::clear_history,
             store::bookmarks,

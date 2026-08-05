@@ -58,6 +58,20 @@ pub struct Settings {
     /// said what they want and it is left alone.
     pub homepage: String,
 
+    /// Whether the bookmarks bar sits under the toolbar.
+    ///
+    /// Off by default. On first run there is nothing to put in it, and an empty
+    /// strip costs the page 32px to say so. Ctrl+Shift+B and the Settings switch
+    /// both turn it on, and it is remembered here rather than per session
+    /// because a bar you asked for should still be there next launch.
+    ///
+    /// Its own key rather than a field on some wider "chrome" object, for the
+    /// reason `session_tabs` records: serde rejects a field of the wrong type
+    /// outright, and an unparseable settings file is moved aside wholesale, so
+    /// changing the shape of an existing key costs the user every other setting.
+    /// Adding one is free, and an older build ignores it.
+    pub show_bookmarks_bar: bool,
+
     /// Tabs open when Brume last closed, restored on the next launch.
     ///
     /// Empty means "open the homepage", which is both the first-run case and
@@ -116,6 +130,7 @@ impl Default for Settings {
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
             theme: "dark".to_string(),
             homepage: String::new(),
+            show_bookmarks_bar: false,
             session_tabs: Vec::new(),
             session_active: 0,
             window: None,
@@ -268,6 +283,22 @@ impl SettingsState {
         }
         .to_string();
         self.update(|s| s.theme = normalised)
+    }
+
+    /// Whether the bookmarks bar is showing.
+    ///
+    /// A field read rather than `get().show_bookmarks_bar`, because `get` clones
+    /// the whole struct - session tab list included - and this is on the layout
+    /// path, read every time a content webview is positioned.
+    pub fn show_bookmarks_bar(&self) -> bool {
+        self.current
+            .lock()
+            .expect("settings mutex poisoned")
+            .show_bookmarks_bar
+    }
+
+    pub fn set_show_bookmarks_bar(&self, show: bool) -> Result<(), String> {
+        self.update(|s| s.show_bookmarks_bar = show)
     }
 
     pub fn set_window(&self, geometry: WindowGeometry) -> Result<(), String> {

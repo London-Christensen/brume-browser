@@ -50,6 +50,13 @@ const CHROME_HEIGHT: f64 = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT;
 /// underneath it.
 const FIND_BAR_HEIGHT: f64 = 36.0;
 
+/// Extra chrome height while the bookmarks bar is showing.
+///
+/// Shorter than the find bar, which has to hold a text field at a comfortable
+/// size. This holds a row of small labels, and every pixel of it is one the page
+/// does not get for as long as the bar is on.
+const BOOKMARKS_BAR_HEIGHT: f64 = 32.0;
+
 pub const WINDOW_LABEL: &str = "main";
 pub const CHROME_LABEL: &str = "chrome";
 
@@ -57,6 +64,15 @@ pub const CHROME_LABEL: &str = "chrome";
 /// panel asks for the list itself, so the event only has to say "something
 /// changed" rather than duplicate the state.
 pub const DOWNLOADS_EVENT: &str = "brume://downloads";
+
+/// Same idea for bookmarks, and it has two listeners rather than one: the panel
+/// and the bar both render the list, so both have to hear that it moved.
+///
+/// The list is not folded into `BrowserState` instead. That is published on
+/// every navigation, title change and load-progress tick, and putting every
+/// bookmark in it would re-serialise the whole list dozens of times per page for
+/// a thing that changes when the user presses Ctrl+D.
+pub const BOOKMARKS_EVENT: &str = "brume://bookmarks";
 
 /// Fallback landing page.
 ///
@@ -221,12 +237,34 @@ pub struct Browser {
 
 /// How much vertical space the chrome occupies right now.
 ///
-/// Not a constant any more: the find bar grows it. Everywhere that positions a
-/// content webview reads this, so the toolbar and the space reserved beneath it
-/// cannot drift apart.
+/// Not a constant any more: the find bar and the bookmarks bar each add their
+/// own height, and both can be open at once. Everywhere that positions a content
+/// webview reads this, so the toolbar and the space reserved beneath it cannot
+/// drift apart.
+///
+/// Summed rather than branched, so a third row later is one more term and not a
+/// rewrite of the arithmetic.
 fn chrome_extent(app: &AppHandle) -> f64 {
     let find_open = app.state::<Browser>().find_open.load(Ordering::Relaxed);
-    CHROME_HEIGHT + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
+    // Read from settings rather than mirrored into `Browser`. One source of
+    // truth: a copy here would be the thing that eventually disagrees with the
+    // file after a failed write.
+    let bookmarks_bar = app
+        .state::<crate::settings::SettingsState>()
+        .show_bookmarks_bar();
+
+    extent_for(find_open, bookmarks_bar)
+}
+
+/// The arithmetic on its own, so it can be tested.
+///
+/// Split out from `chrome_extent` because that needs an `AppHandle` and a
+/// running app, while this is the part that has to agree with the CSS. The
+/// numbers it returns are asserted in the tests at the bottom of this file.
+fn extent_for(find_open: bool, bookmarks_bar: bool) -> f64 {
+    CHROME_HEIGHT
+        + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
+        + if bookmarks_bar { BOOKMARKS_BAR_HEIGHT } else { 0.0 }
 }
 
 impl Default for Browser {
@@ -268,13 +306,19 @@ pub struct BrowserState {
     /// Whether the active tab's URL is bookmarked, so the star reflects reality
     /// rather than the frontend having to track it separately and drift.
     pub bookmarked: bool,
+    /// Whether the bookmarks bar is showing.
+    ///
+    /// Published rather than left for the chrome to read from settings, so the
+    /// row appearing and the page being resized to make room come off the same
+    /// update instead of two that can land in either order.
+    pub bookmarks_bar: bool,
     pub panel_open: bool,
     /// Zoom of the active tab. 1.0 is 100%; the chrome hides the control at
     /// that value rather than showing "100%" permanently.
     pub zoom: f64,
 }
 
-fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
+fn snapshot(tabs: &Tabs, bookmarked: bool, bookmarks_bar: bool, panel_open: bool) -> BrowserState {
     let active = tabs.active_tab();
 
     BrowserState {
@@ -298,6 +342,7 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
         can_go_forward: active.is_some_and(|t| t.nav.can_forward),
         loading: active.is_some_and(|t| t.nav.loading),
         bookmarked,
+        bookmarks_bar,
         panel_open,
         zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
     }
@@ -307,7 +352,8 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
 ///
 /// Split out because the bookmark lookup needs its own lock, and taking it while
 /// holding the tabs lock is exactly the pattern that turns into a deadlock the
-/// first time something calls in the other order.
+/// first time something calls in the other order. The settings read below is
+/// there for the same reason and is deliberately done before the tabs lock too.
 fn current_state(app: &AppHandle) -> BrowserState {
     let active_url = {
         let browser = app.state::<Browser>();
@@ -318,11 +364,14 @@ fn current_state(app: &AppHandle) -> BrowserState {
     };
 
     let bookmarked = app.state::<crate::store::Store>().is_bookmarked(&active_url);
+    let bookmarks_bar = app
+        .state::<crate::settings::SettingsState>()
+        .show_bookmarks_bar();
 
     let browser = app.state::<Browser>();
     let panel_open = browser.panel_open.load(Ordering::Relaxed);
     let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-    snapshot(&tabs, bookmarked, panel_open)
+    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open)
 }
 
 /// Pushes current state to the chrome.
@@ -1553,6 +1602,32 @@ pub async fn set_find_bar(app: AppHandle, open: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows or hides the bookmarks bar, resizing the page to make room.
+///
+/// Async for the same reason `set_find_bar` is: it re-lays-out webviews.
+///
+/// The preference goes to settings rather than to an in-memory flag, so the bar
+/// is still there next launch. That also makes settings the one place holding
+/// it, which is what `chrome_extent` reads.
+#[tauri::command]
+pub async fn set_bookmarks_bar(app: AppHandle, show: bool) -> Result<(), String> {
+    app.state::<crate::settings::SettingsState>()
+        .set_show_bookmarks_bar(show)?;
+
+    relayout(&app).map_err(|e| e.to_string())?;
+    publish(&app);
+    Ok(())
+}
+
+/// Flips the bookmarks bar. Ctrl+Shift+B, and nothing else needs a toggle.
+#[tauri::command]
+pub async fn toggle_bookmarks_bar(app: AppHandle) -> Result<(), String> {
+    let showing = app
+        .state::<crate::settings::SettingsState>()
+        .show_bookmarks_bar();
+    set_bookmarks_bar(app, !showing).await
+}
+
 /// Bookmarks or un-bookmarks the active tab, and republishes so the star updates.
 #[tauri::command]
 pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
@@ -1571,6 +1646,10 @@ pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
     let bookmarked = app
         .state::<crate::store::Store>()
         .toggle_bookmark(&url, &title)?;
+
+    // The star comes back through publish, but the bar renders the whole list
+    // and would otherwise not hear that it just gained or lost a row.
+    let _ = app.emit_to(CHROME_LABEL, BOOKMARKS_EVENT, ());
     publish(&app);
     Ok(bookmarked)
 }
@@ -1625,5 +1704,21 @@ mod tests {
 
         tab.title = "Real Page Title".into();
         assert_eq!(tab.display_title(), "Real Page Title");
+    }
+
+    /// The four heights the chrome can be, spelled out.
+    ///
+    /// These are a contract with src/index.html, where the same numbers are CSS.
+    /// Nothing can check the two agree at build time, so the values are written
+    /// out here rather than recomputed from the constants: a test that says
+    /// `CHROME_HEIGHT + FIND_BAR_HEIGHT` would pass just as happily after
+    /// someone changed one of them and forgot the stylesheet.
+    #[test]
+    fn the_chrome_grows_by_each_open_bar() {
+        assert_eq!(extent_for(false, false), 76.0, "tab strip plus toolbar");
+        assert_eq!(extent_for(true, false), 112.0, "plus the find bar");
+        assert_eq!(extent_for(false, true), 108.0, "plus the bookmarks bar");
+        // Both at once is the case a branch instead of a sum would get wrong.
+        assert_eq!(extent_for(true, true), 144.0, "plus both");
     }
 }
