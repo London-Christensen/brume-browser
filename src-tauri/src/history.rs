@@ -25,8 +25,8 @@
 use std::sync::mpsc;
 
 use tauri::{AppHandle, Manager};
-use webview2_com::{HistoryChangedEventHandler, ZoomFactorChangedEventHandler};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+use webview2_com::{HistoryChangedEventHandler, ZoomFactorChangedEventHandler};
 
 /// Runs `f` against a webview's `ICoreWebView2`.
 ///

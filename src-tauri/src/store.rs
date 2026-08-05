@@ -251,7 +251,9 @@ impl Store {
             return Vec::new();
         };
 
-        let needle = query.map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+        let needle = query
+            .map(|q| q.trim().to_lowercase())
+            .filter(|q| !q.is_empty());
 
         let mut out: Vec<Visit> = raw
             .lines()
@@ -261,9 +263,7 @@ impl Store {
             .filter_map(|line| serde_json::from_str::<Visit>(line).ok())
             .filter(|v| match &needle {
                 None => true,
-                Some(q) => {
-                    v.url.to_lowercase().contains(q) || v.title.to_lowercase().contains(q)
-                }
+                Some(q) => v.url.to_lowercase().contains(q) || v.title.to_lowercase().contains(q),
             })
             .take(limit)
             .collect();
@@ -426,7 +426,9 @@ impl Store {
         let record = Download {
             url: url.to_string(),
             filename,
-            path: path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            path: path
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             finished_at: now_unix(),
             success,
         };
@@ -506,11 +508,7 @@ fn filename_from_url(url: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn history(
-    store: State<'_, Store>,
-    query: Option<String>,
-    limit: Option<usize>,
-) -> Vec<Visit> {
+pub fn history(store: State<'_, Store>, query: Option<String>, limit: Option<usize>) -> Vec<Visit> {
     store.history(query.as_deref(), limit.unwrap_or(300))
 }
 
@@ -531,7 +529,11 @@ pub fn bookmarks(store: State<'_, Store>) -> Vec<Bookmark> {
 /// from the panel. Best effort: a failed emit is a stale bar, not a lost
 /// bookmark, and the bookmark is already on disk by this point.
 fn notify_bookmarks(app: &AppHandle) {
-    let _ = app.emit_to(crate::browser::CHROME_LABEL, crate::browser::BOOKMARKS_EVENT, ());
+    let _ = app.emit_to(
+        crate::browser::CHROME_LABEL,
+        crate::browser::BOOKMARKS_EVENT,
+        (),
+    );
 }
 
 #[tauri::command]
@@ -622,12 +624,21 @@ mod tests {
     fn a_filename_is_recovered_from_the_url_when_nothing_else_offers_one() {
         // Reached when a download finishes without its start being seen and the
         // runtime reported no path. A row with no name is no use to anyone.
-        assert_eq!(filename_from_url("https://example.com/a/b/report.pdf"), "report.pdf");
+        assert_eq!(
+            filename_from_url("https://example.com/a/b/report.pdf"),
+            "report.pdf"
+        );
         // The query string is not part of the last segment.
-        assert_eq!(filename_from_url("https://example.com/get.zip?token=abc"), "get.zip");
+        assert_eq!(
+            filename_from_url("https://example.com/get.zip?token=abc"),
+            "get.zip"
+        );
         // Percent-encoding is left as-is rather than decoded: this is a label,
         // and decoding could reintroduce a path separator.
-        assert_eq!(filename_from_url("https://example.com/my%2Ffile.txt"), "my%2Ffile.txt");
+        assert_eq!(
+            filename_from_url("https://example.com/my%2Ffile.txt"),
+            "my%2Ffile.txt"
+        );
     }
 
     #[test]

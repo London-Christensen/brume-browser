@@ -206,7 +206,10 @@ impl SettingsState {
                     path.display(),
                     backup.display()
                 ),
-                Err(e) => eprintln!("[settings] could not parse or preserve {}: {e}", path.display()),
+                Err(e) => eprintln!(
+                    "[settings] could not parse or preserve {}: {e}",
+                    path.display()
+                ),
             }
         }
 
@@ -241,7 +244,10 @@ impl SettingsState {
     }
 
     pub fn get(&self) -> Settings {
-        self.current.lock().expect("settings mutex poisoned").clone()
+        self.current
+            .lock()
+            .expect("settings mutex poisoned")
+            .clone()
     }
 
     /// Applies a change and writes it out.

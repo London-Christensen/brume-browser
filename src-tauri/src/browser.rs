@@ -176,7 +176,10 @@ impl Tab {
         self.nav
             .current()
             .and_then(|u| tauri::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h.trim_start_matches("www.").to_string())
+            })
             .unwrap_or_else(|| "New tab".to_string())
     }
 }
@@ -264,7 +267,11 @@ fn chrome_extent(app: &AppHandle) -> f64 {
 fn extent_for(find_open: bool, bookmarks_bar: bool) -> f64 {
     CHROME_HEIGHT
         + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
-        + if bookmarks_bar { BOOKMARKS_BAR_HEIGHT } else { 0.0 }
+        + if bookmarks_bar {
+            BOOKMARKS_BAR_HEIGHT
+        } else {
+            0.0
+        }
 }
 
 impl Default for Browser {
@@ -363,7 +370,9 @@ fn current_state(app: &AppHandle) -> BrowserState {
             .unwrap_or_default()
     };
 
-    let bookmarked = app.state::<crate::store::Store>().is_bookmarked(&active_url);
+    let bookmarked = app
+        .state::<crate::store::Store>()
+        .is_bookmarked(&active_url);
     let bookmarks_bar = app
         .state::<crate::settings::SettingsState>()
         .show_bookmarks_bar();
@@ -415,7 +424,9 @@ fn publish(app: &AppHandle) {
         let raw_title = {
             let browser = app.state::<Browser>();
             let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-            tabs.active_tab().map(|t| t.title.clone()).unwrap_or_default()
+            tabs.active_tab()
+                .map(|t| t.title.clone())
+                .unwrap_or_default()
         };
 
         let title = match raw_title.trim() {
@@ -444,10 +455,7 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
 
-    let panel_open = app
-        .state::<Browser>()
-        .panel_open
-        .load(Ordering::Relaxed);
+    let panel_open = app.state::<Browser>().panel_open.load(Ordering::Relaxed);
 
     // How tall the chrome is when it is only chrome. Grows with the find bar.
     let extent = chrome_extent(app);
@@ -508,7 +516,13 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Creates a content webview for one tab and registers its event handlers.
-fn spawn_tab_webview(app: &AppHandle, id: u32, label: &str, url: &str, private: bool) -> tauri::Result<()> {
+fn spawn_tab_webview(
+    app: &AppHandle,
+    id: u32,
+    label: &str,
+    url: &str,
+    private: bool,
+) -> tauri::Result<()> {
     // An error, not a silent Ok. Returning Ok here registered a tab that had no
     // webview behind it and reported success, which is the worst of both: the
     // tab strip grew a row that rendered nothing and nothing anywhere said why.
@@ -826,11 +840,7 @@ fn save_session(app: &AppHandle) {
         let active = tabs
             .items
             .iter()
-            .filter(|t| {
-                t.nav
-                    .current()
-                    .is_some_and(|u| !u.starts_with("about:"))
-            })
+            .filter(|t| t.nav.current().is_some_and(|u| !u.starts_with("about:")))
             .position(|t| t.id == tabs.active)
             .unwrap_or(0);
 
@@ -933,9 +943,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     // Restored in order, then the previously active one is brought to the front.
     // A tab that fails to build is skipped rather than aborting the launch: one
     // bad saved URL should not leave the browser with no window worth looking at.
-    let (session, session_active) = app
-        .state::<crate::settings::SettingsState>()
-        .session();
+    let (session, session_active) = app.state::<crate::settings::SettingsState>().session();
 
     if session.is_empty() {
         open_tab_inner(app, None, false)?;
@@ -1317,7 +1325,9 @@ pub async fn go_home(app: AppHandle) -> Result<(), String> {
         .map_err(|_| format!("Homepage is not a valid address: {target}"))?;
 
     show_page(&app)?;
-    active_webview(&app)?.navigate(url).map_err(|e| e.to_string())
+    active_webview(&app)?
+        .navigate(url)
+        .map_err(|e| e.to_string())
 }
 
 /// Walks the active tab's history by `delta` entries.
@@ -1727,7 +1737,11 @@ mod tests {
     fn an_empty_url_is_not_a_url() {
         let mut nav = NavState::default();
         nav.set_url(String::new());
-        assert_eq!(nav.current(), None, "empty should read as nowhere, not as \"\"");
+        assert_eq!(
+            nav.current(),
+            None,
+            "empty should read as nowhere, not as \"\""
+        );
 
         nav.set_url("https://a.test/".into());
         assert_eq!(nav.current().map(String::as_str), Some("https://a.test/"));
@@ -1750,7 +1764,11 @@ mod tests {
         assert_eq!(tab.display_title(), "example.com");
 
         tab.title = "  ".into();
-        assert_eq!(tab.display_title(), "example.com", "blank title is not a title");
+        assert_eq!(
+            tab.display_title(),
+            "example.com",
+            "blank title is not a title"
+        );
 
         tab.title = "Real Page Title".into();
         assert_eq!(tab.display_title(), "Real Page Title");

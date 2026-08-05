@@ -124,8 +124,7 @@ async fn install(dir: String, auto_update: bool) -> Result<(), String> {
         return Err("Choose a folder to install into.".into());
     }
 
-    let installer =
-        stage_payload().map_err(|e| format!("Could not unpack the installer: {e}"))?;
+    let installer = stage_payload().map_err(|e| format!("Could not unpack the installer: {e}"))?;
 
     let mut cmd = Command::new(&installer);
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -310,10 +309,7 @@ mod tests {
 
     #[test]
     fn an_unquoted_program_name_is_dropped() {
-        assert_eq!(
-            strip_program_name(r"C:\tmp\Brume-Setup.exe /S"),
-            "/S"
-        );
+        assert_eq!(strip_program_name(r"C:\tmp\Brume-Setup.exe /S"), "/S");
     }
 
     #[test]

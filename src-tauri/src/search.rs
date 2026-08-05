@@ -212,7 +212,9 @@ fn looks_like_url(input: &str) -> bool {
     if let Some(colon) = lower.find(':') {
         let scheme = &lower[..colon];
         if !scheme.is_empty()
-            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
             && lower[colon..].starts_with("//")
         {
             return false;
@@ -235,9 +237,7 @@ fn looks_like_url(input: &str) -> bool {
     // characters after the final dot keeps "1.5" and "v2.0" as searches.
     match host.rsplit_once('.') {
         Some((before, tld)) => {
-            !before.is_empty()
-                && tld.len() >= 2
-                && tld.chars().all(|c| c.is_ascii_alphabetic())
+            !before.is_empty() && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
         }
         None => false,
     }
@@ -302,7 +302,10 @@ mod tests {
 
     #[test]
     fn full_urls_pass_through_untouched() {
-        assert_eq!(ddg("https://example.com/a?b=c"), "https://example.com/a?b=c");
+        assert_eq!(
+            ddg("https://example.com/a?b=c"),
+            "https://example.com/a?b=c"
+        );
         assert_eq!(ddg("http://example.com"), "http://example.com");
     }
 
@@ -379,17 +382,18 @@ mod tests {
 
         // Parameter -> the token it is supposed to be painted with.
         let bindings = [
-            ("k7", "--brume-ink"),     // page background
-            ("kj", "--brume-ink"),     // header background
-            ("k9", "--brume-paper"),   // result titles
-            ("k8", "--brume-haar-dark"), // result body text
+            ("k7", "--brume-ink"),        // page background
+            ("kj", "--brume-ink"),        // header background
+            ("k9", "--brume-paper"),      // result titles
+            ("k8", "--brume-haar-dark"),  // result body text
             ("kaa", "--brume-haar-dark"), // result URLs
         ];
 
         for (param, token) in bindings {
             let expected = token_hex(token);
             assert!(
-                url.to_ascii_lowercase().contains(&format!("{param}={expected}")),
+                url.to_ascii_lowercase()
+                    .contains(&format!("{param}={expected}")),
                 "search theme has drifted from the brand: expected {param}={expected} \
                  (from {token} in tokens.css)\nURL: {url}"
             );
@@ -434,7 +438,10 @@ mod tests {
             "got {url}"
         );
         // Nothing to switch off, so nothing should have been bolted on.
-        assert!(!url.contains("k1="), "lite should need no ad parameter: {url}");
+        assert!(
+            !url.contains("k1="),
+            "lite should need no ad parameter: {url}"
+        );
     }
 
     #[test]
@@ -443,7 +450,13 @@ mod tests {
         // A themed results page paired with an unthemed homepage would be an
         // obvious visual seam every time a tab opens.
         for param in [
-            "kae=-1", "k7=101418", "k8=9db2c0", "k9=f3f4f5", "kj=101418", "k1=-1", "kak=-1",
+            "kae=-1",
+            "k7=101418",
+            "k8=9db2c0",
+            "k9=f3f4f5",
+            "kj=101418",
+            "k1=-1",
+            "kak=-1",
         ] {
             assert!(home.contains(param), "homepage missing {param}: {home}");
         }
@@ -455,7 +468,10 @@ mod tests {
         // Paper page, Ink titles - the dark values must not survive.
         assert!(light.contains("k7=f3f4f5"), "page not Paper: {light}");
         assert!(light.contains("k9=101418"), "titles not Ink: {light}");
-        assert!(!light.contains("k7=101418"), "dark page colour leaked: {light}");
+        assert!(
+            !light.contains("k7=101418"),
+            "dark page colour leaked: {light}"
+        );
 
         // Ad and promo suppression is not a theme concern and must persist.
         for param in ["k1=-1", "kak=-1", "kax=-1"] {

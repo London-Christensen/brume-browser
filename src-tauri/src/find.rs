@@ -37,10 +37,10 @@ use std::sync::mpsc;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+use webview2_com::FindStartCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Environment15, ICoreWebView2Find, ICoreWebView2_2, ICoreWebView2_28,
 };
-use webview2_com::FindStartCompletedHandler;
 use windows_core::Interface;
 
 /// Carries the match count to the find bar.
@@ -112,7 +112,8 @@ where
 /// on its own reads as gibberish.
 fn describe(e: windows_core::Error) -> String {
     if e.code() == windows_core::HRESULT(0x8000_4002u32 as i32) {
-        return "This version of the WebView2 runtime has no find support. Update Edge WebView2.".into();
+        return "This version of the WebView2 runtime has no find support. Update Edge WebView2."
+            .into();
     }
     format!("Find failed: {e}")
 }
@@ -155,7 +156,9 @@ pub fn find_start(app: AppHandle, query: String, case_sensitive: bool) -> Result
                 let core = platform.controller().CoreWebView2()?;
 
                 let env = core.cast::<ICoreWebView2_2>()?.Environment()?;
-                let options = env.cast::<ICoreWebView2Environment15>()?.CreateFindOptions()?;
+                let options = env
+                    .cast::<ICoreWebView2Environment15>()?
+                    .CreateFindOptions()?;
                 options.SetFindTerm(&windows_core::HSTRING::from(query.as_str()))?;
                 options.SetIsCaseSensitive(case_sensitive)?;
                 options.SetShouldHighlightAllMatches(true)?;

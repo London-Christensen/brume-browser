@@ -141,15 +141,23 @@ pub fn set_active(app: &AppHandle, active: bool) {
 /// Runs the action behind a binding.
 pub fn handle(app: &AppHandle, action: &str) {
     match action {
-        "new_tab" => spawn(app, |app| async move { browser::open_tab(app, None, None).await }),
+        "new_tab" => spawn(app, |app| async move {
+            browser::open_tab(app, None, None).await
+        }),
 
         "close_tab" => {
             if let Some(tab) = browser::active_tab_id(app) {
-                spawn(app, move |app| async move { browser::close_tab(app, tab).await });
+                spawn(
+                    app,
+                    move |app| async move { browser::close_tab(app, tab).await },
+                );
             }
         }
 
-        "reopen_tab" => spawn(app, |app| async move { browser::reopen_closed_tab(app).await }),
+        "reopen_tab" => spawn(
+            app,
+            |app| async move { browser::reopen_closed_tab(app).await },
+        ),
 
         "private_tab" => spawn(app, |app| async move {
             browser::open_tab(app, None, Some(true)).await
@@ -158,7 +166,9 @@ pub fn handle(app: &AppHandle, action: &str) {
         "next_tab" | "prev_tab" => {
             let forward = action == "next_tab";
             if let Some(tab) = browser::neighbour_tab_id(app, forward) {
-                spawn(app, move |app| async move { browser::activate_tab(app, tab).await });
+                spawn(app, move |app| async move {
+                    browser::activate_tab(app, tab).await
+                });
             }
         }
 
@@ -171,13 +181,17 @@ pub fn handle(app: &AppHandle, action: &str) {
                 return;
             };
             if let Some(tab) = browser::tab_id_at(app, n - 1) {
-                spawn(app, move |app| async move { browser::activate_tab(app, tab).await });
+                spawn(app, move |app| async move {
+                    browser::activate_tab(app, tab).await
+                });
             }
         }
 
         "last_tab" => {
             if let Some(tab) = browser::last_tab_id(app) {
-                spawn(app, move |app| async move { browser::activate_tab(app, tab).await });
+                spawn(app, move |app| async move {
+                    browser::activate_tab(app, tab).await
+                });
             }
         }
 
@@ -204,7 +218,10 @@ pub fn handle(app: &AppHandle, action: &str) {
         "print" => log(browser::print_page(app.clone())),
 
         // Resize webviews, so they go through spawn like the tab commands.
-        "fullscreen" => spawn(app, |app| async move { browser::toggle_fullscreen(app).await }),
+        "fullscreen" => spawn(
+            app,
+            |app| async move { browser::toggle_fullscreen(app).await },
+        ),
         "bookmarks_bar" => spawn(app, |app| async move {
             browser::toggle_bookmarks_bar(app).await
         }),
@@ -249,7 +266,9 @@ mod tests {
         // read side by side to notice.
         let mut seen = HashSet::new();
         for (accel, _) in BINDINGS {
-            let parsed = accel.parse::<Shortcut>().expect("checked by the test above");
+            let parsed = accel
+                .parse::<Shortcut>()
+                .expect("checked by the test above");
             assert!(seen.insert(parsed), "{accel} is bound more than once");
         }
     }

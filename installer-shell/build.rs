@@ -39,7 +39,8 @@ fn main() {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
                 && p.file_name()
                     .map(|n| n.to_string_lossy().to_lowercase().contains("setup"))
                     .unwrap_or(false)
@@ -77,7 +78,10 @@ fn main() {
             println!("cargo:rerun-if-changed={}", src.display());
 
             fs::copy(&src, &dest).expect("failed to stage the NSIS payload for embedding");
-            println!("cargo:warning=embedding installer payload: {}", src.display());
+            println!(
+                "cargo:warning=embedding installer payload: {}",
+                src.display()
+            );
         }
         None => {
             let seen = if candidates.is_empty() {
@@ -85,7 +89,12 @@ fn main() {
             } else {
                 candidates
                     .iter()
-                    .map(|p| format!("        {}", p.file_name().unwrap_or_default().to_string_lossy()))
+                    .map(|p| {
+                        format!(
+                            "        {}",
+                            p.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             };
