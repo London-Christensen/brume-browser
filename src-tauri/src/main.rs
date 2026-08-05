@@ -17,6 +17,7 @@ mod browser;
 mod downloads;
 mod find;
 mod overlay;
+mod permissions;
 mod history;
 mod profile;
 mod search;
@@ -91,13 +92,16 @@ fn main() {
             store::remove_visit,
             store::bookmarks,
             store::suggest,
-            browser::set_suggest_overlay,
+            browser::set_chrome_overlay,
             store::toggle_bookmark,
             store::remove_bookmark,
             store::downloads,
             store::clear_downloads,
             store::reveal_download,
             profile::clear_site_data,
+            permissions::answer_permission,
+            permissions::list_permissions,
+            permissions::set_permission,
             search::search_engines,
             settings::get_settings,
             settings::set_auto_update,

@@ -1004,6 +1004,113 @@
         font-size: 11.5px;
       }
 
+      /* --- permission prompt ---------------------------------------------- */
+      /* Same overlay mechanism as the suggestions dropdown: the chrome grows and
+         is raised above the page, so the prompt covers the top of the page
+         rather than pushing it down. Anchored to the left of the address bar,
+         where the padlock is, because that is the part of the chrome that
+         already means "about this site". */
+      .permission {
+        position: absolute;
+        top: calc(var(--tab-strip-h) + var(--toolbar-h));
+        z-index: 45;
+        width: 380px;
+        max-width: calc(100% - 24px);
+        padding: 14px 15px 12px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+      }
+
+      .perm-origin {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .perm-ask {
+        margin-top: 5px;
+        font-size: 13px;
+        line-height: 18px;
+        color: var(--fg);
+      }
+      /* Shown only when the page asked without anyone clicking anything. A site
+         reaching for the camera unprompted is worth saying out loud. */
+      .perm-note {
+        margin-top: 7px;
+        font-size: 11.5px;
+        line-height: 16px;
+        color: var(--fg-muted);
+      }
+      .perm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 13px;
+      }
+      .perm-btn {
+        padding: 6px 13px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 12.5px;
+        cursor: default;
+      }
+      .perm-btn:hover {
+        background: var(--elev-1);
+      }
+      /* Block is the wider default: it is the safer of the two, and it is what
+         dismissing the prompt does anyway. */
+      .perm-btn[data-kind="block"] {
+        border-color: var(--border-strong);
+      }
+      .perm-btn[data-kind="allow"] {
+        border-color: var(--brume-lamplight);
+        color: var(--brume-lamplight);
+      }
+
+      /* Site permission rows in Settings. */
+      .perm-list {
+        margin: 2px 0 6px;
+      }
+      .perm-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 10px;
+        border-radius: var(--radius);
+        font-size: 12px;
+      }
+      .perm-line:hover {
+        background: var(--surface);
+      }
+      .perm-line-origin {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+      }
+      .perm-line-kind {
+        flex: 0 0 auto;
+        color: var(--fg-muted);
+      }
+      .perm-line-state {
+        flex: 0 0 auto;
+        min-width: 58px;
+        text-align: right;
+      }
+      .perm-line-state[data-state="allow"] {
+        color: var(--brume-lamplight);
+      }
+      .perm-line-state[data-state="block"] {
+        color: var(--fg-muted);
+      }
+
       /* --- download progress --------------------------------------------- */
       /* A 3px rule under the filename. Enough to read at a glance without
          turning a list row into a widget. */
@@ -1136,6 +1243,13 @@
       the chrome by exactly that much. Filled from history and bookmarks.
     -->
     <div class="suggest" id="suggest" hidden></div>
+
+    <!--
+      Permission prompt. One at a time: a site that asks for the camera and the
+      microphone at once gets two prompts in turn, which is easier to answer
+      honestly than one combined question.
+    -->
+    <div class="permission" id="permission" hidden></div>
 
     <!--
       The bookmarks bar. Off by default and toggled with Ctrl+Shift+B or the
@@ -1402,7 +1516,13 @@
         if (!el("ctx-menu").contains(event.target)) closeMenu();
       });
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeMenu();
+        if (event.key !== "Escape") return;
+        closeMenu();
+        // Dismissing a permission prompt is still an answer. The runtime is
+        // holding the page open on a deferral, so walking away from it without
+        // replying would leave the site waiting forever. Block, but do not
+        // remember: not answering is not the same as saying no.
+        if (!el("permission").hidden) answerPermission(false, false);
       });
 
       // --- tab strip ------------------------------------------------------
@@ -2194,6 +2314,61 @@
         });
         siteData.control.append(clearStatus, clearBtn);
         privacy.appendChild(siteData.row);
+
+        /* Site permissions.
+         *
+         * Read from the runtime, not from anything Brume stored. Only sites you
+         * have actually answered for appear: everything else is still at the
+         * default, which is "ask", and listing every origin that has never
+         * asked would be a list of nothing. */
+        const perms = await call("list_permissions");
+        const permRow = row(
+          "Site permissions",
+          perms && perms.length
+            ? "Sites you have answered for. Reset one to be asked again."
+            : "Nothing decided yet. You will be asked the first time a site wants your camera, microphone or location."
+        );
+        privacy.appendChild(permRow.row);
+
+        if (perms && perms.length) {
+          const list = document.createElement("div");
+          list.className = "perm-list";
+          // Grouped by origin so a site with three answers reads as one site.
+          const byOrigin = {};
+          for (const p of perms) (byOrigin[p.origin] ||= []).push(p);
+
+          for (const [origin, entries] of Object.entries(byOrigin)) {
+            for (const p of entries) {
+              const line = document.createElement("div");
+              line.className = "perm-line";
+              const who = document.createElement("span");
+              who.className = "perm-line-origin";
+              who.textContent = origin;
+              const what = document.createElement("span");
+              what.className = "perm-line-kind";
+              what.textContent = p.kind;
+              const state = document.createElement("span");
+              state.className = "perm-line-state";
+              state.dataset.state = p.state;
+              state.textContent = p.state === "allow" ? "Allowed" : "Blocked";
+              const reset = document.createElement("button");
+              reset.className = "action";
+              reset.textContent = "Reset";
+              reset.addEventListener("click", async () => {
+                await call("set_permission", {
+                  origin,
+                  kind: p.kind,
+                  state: "default",
+                });
+                renderPanel();
+              });
+              line.append(who, what, state, reset);
+              list.appendChild(line);
+            }
+          }
+          privacy.appendChild(list);
+        }
+
         form.appendChild(privacy);
 
         // --- updates ---
@@ -2488,6 +2663,97 @@
         call(loading ? "stop_loading" : "reload")
       );
 
+      /* --- permission prompts ----------------------------------------------
+       *
+       * The runtime is holding the page open on a deferral while this is up, so
+       * every path out of here has to answer. Dismissing counts as an answer:
+       * block once, without remembering it.
+       *
+       * Queued rather than stacked. A site asking for the camera and the
+       * microphone raises two events, and two prompts on screen at once is a
+       * question nobody reads properly.
+       */
+      const permissionQueue = [];
+
+      const PERMISSION_WORDING = {
+        camera: "use your camera",
+        microphone: "use your microphone",
+        location: "know your location",
+        notifications: "send you notifications",
+        sensors: "read your device's motion sensors",
+        clipboard: "read your clipboard",
+        downloads: "download several files at once",
+        fonts: "see the fonts installed on your computer",
+        windows: "manage windows across your screens",
+        other: "use a capability of your device",
+      };
+
+      async function showNextPermission() {
+        const box = el("permission");
+        const req = permissionQueue[0];
+        if (!req) {
+          if (!box.hidden) {
+            box.hidden = true;
+            box.textContent = "";
+            await syncOverlay();
+          }
+          return;
+        }
+
+        box.textContent = "";
+        const origin = document.createElement("div");
+        origin.className = "perm-origin";
+        origin.textContent = req.origin;
+        const ask = document.createElement("div");
+        ask.className = "perm-ask";
+        ask.textContent = `wants to ${PERMISSION_WORDING[req.kind] || PERMISSION_WORDING.other}.`;
+        box.append(origin, ask);
+
+        if (!req.userInitiated) {
+          const note = document.createElement("div");
+          note.className = "perm-note";
+          note.textContent = "You did not click anything to ask for this.";
+          box.appendChild(note);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "perm-actions";
+        for (const [label, kind, allow] of [
+          ["Block", "block", false],
+          ["Allow", "allow", true],
+        ]) {
+          const b = document.createElement("button");
+          b.className = "perm-btn";
+          b.dataset.kind = kind;
+          b.textContent = label;
+          // Both are remembered. An answer you have to give again every visit
+          // trains people to click whatever makes the prompt go away.
+          b.addEventListener("click", () => answerPermission(allow, true));
+          actions.appendChild(b);
+        }
+        box.appendChild(actions);
+
+        // Under the padlock, which is the part of the chrome that already means
+        // "about this site".
+        const bar = document.querySelector(".address").getBoundingClientRect();
+        box.style.left = `${Math.round(bar.left)}px`;
+        box.hidden = false;
+        await syncOverlay();
+      }
+
+      async function answerPermission(allow, remember) {
+        const req = permissionQueue.shift();
+        if (!req) return;
+        await call("answer_permission", { id: req.id, allow, remember });
+        await showNextPermission();
+      }
+
+      listen("brume://permission", (event) => {
+        permissionQueue.push(event.payload);
+        // Only draw when this is the one at the front; otherwise it waits.
+        if (permissionQueue.length === 1) showNextPermission();
+      });
+
       /* --- address bar suggestions -----------------------------------------
        *
        * The list is an overlay, not another bar. The Rust side grows the chrome
@@ -2503,6 +2769,21 @@
       let suggestIndex = -1;
       let suggestSeq = 0;
 
+      /* Tells the Rust side how far down the lowest open overlay reaches.
+       *
+       * One number for every overlay, because only one of them can be the
+       * lowest and only this document knows what it drew. The bottom edge
+       * rather than a height, so the bar heights stay in browser.rs and this
+       * file never needs its own copy of them to subtract. */
+      async function syncOverlay() {
+        const open = [el("suggest"), el("permission")].filter((b) => !b.hidden);
+        const bottom = open.reduce(
+          (low, b) => Math.max(low, Math.ceil(b.getBoundingClientRect().bottom)),
+          0
+        );
+        await call("set_chrome_overlay", { bottom: bottom ? bottom + 6 : 0 });
+      }
+
       async function closeSuggest() {
         suggestRows = [];
         suggestIndex = -1;
@@ -2510,7 +2791,7 @@
         if (box.hidden) return;
         box.hidden = true;
         box.textContent = "";
-        await call("set_suggest_overlay", { height: 0 });
+        await syncOverlay();
       }
 
       function paintSuggest() {
@@ -2570,8 +2851,7 @@
 
         // Measured after showing: a hidden element has no height to report, and
         // guessing a row height here would be a second contract to keep in step.
-        const height = Math.ceil(box.getBoundingClientRect().height) + 6;
-        await call("set_suggest_overlay", { height });
+        await syncOverlay();
       }
 
       function commitSuggest(index) {

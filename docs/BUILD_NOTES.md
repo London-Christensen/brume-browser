@@ -1168,6 +1168,77 @@ argument for having written it.
 
 ---
 
+## Site permissions, and an API that remembers when you ask it not to
+
+Brume never handled `PermissionRequested`, so every decision about a camera, a
+microphone or a location was WebView2's default: its own prompt, in its own
+styling, with no record Brume could show and no way to change your mind
+afterwards. For a browser that leads with privacy, having no opinion about the
+camera was a strange place to have none.
+
+### The runtime does the remembering, deliberately
+
+`ICoreWebView2Profile4::SetPermissionState` persists a decision against an
+origin, and once set the runtime stops raising the event for it. So Brume stores
+nothing of its own: no permissions.json, and `GetNonDefaultPermissionSettings`
+reads back exactly what the engine is enforcing.
+
+That is worth more than it looks. A list Brume kept itself could say "blocked"
+while the engine allowed it, and nothing on screen would tell you which one was
+lying.
+
+### `remember` works backwards
+
+**Setting `State` to ALLOW or DENY on the event args already persists it.**
+Measured rather than assumed: answering with `remember: false` and then reading
+`GetNonDefaultPermissionSettings` came back with the decision sitting in the
+profile. The documentation advertises `SetPermissionState` as "a persistent
+version of the State property", which reads as though the event-args version is
+not persistent. It is.
+
+So remembering an answer takes no work, and *forgetting* one takes an extra call:
+after the deferral completes, the setting is put back to DEFAULT. That is what
+makes a dismissed prompt mean "no, this time" instead of "no, forever".
+
+DEFAULT is deliberately not used to answer the request itself, because it means
+"do whatever the browser would have done", and what WebView2 would have done is
+show its own prompt.
+
+### The deferral never leaves the main thread
+
+A prompt is answered by a human, so the event is deferred rather than answered
+inline. `ICoreWebView2Deferral` and the event args are COM objects and are **not
+`Send`**, so they cannot be parked in the `Mutex<HashMap<..>>` the rest of
+Brume's state lives in.
+
+The usual workaround is `unsafe impl Send` and a promise to behave. This does
+not do that. Pending requests sit in a `thread_local!` on the main thread keyed
+by a plain integer, and `answer_permission` hops back with `run_on_main_thread`
+carrying only that integer and two bools. Nothing crossing a thread boundary is a
+COM pointer, so there is no promise to break.
+
+**This is also the answer to the download-cancel problem**, which was deferred
+in 0.4.0 for exactly this reason: holding `ICoreWebView2DownloadOperation` to
+cancel it later has the same shape and the same fix.
+
+### Denied first, then overwritten
+
+The handler sets DENY before doing anything else and only then takes the
+deferral. If any step afterwards fails, or the window closes with the prompt
+still up, the request resolves as denied rather than as whatever the runtime
+would otherwise have decided.
+
+Prompts queue rather than stack: a site asking for the camera and the microphone
+raises two events, and two prompts at once is a question nobody reads properly.
+
+Verified end to end against a real page calling `getCurrentPosition`: the page
+sat at "waiting" while the prompt was up, came back `denied:1` the instant Block
+was pressed, the decision survived a full restart with no second prompt, Reset
+in Settings brought the asking back, and dismissing with Escape answered the page
+while leaving nothing behind.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

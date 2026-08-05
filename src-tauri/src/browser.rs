@@ -236,15 +236,20 @@ pub struct Browser {
     panel_open: AtomicBool,
     /// Whether the find bar is showing, which makes the chrome taller.
     find_open: AtomicBool,
-    /// Height of the address bar dropdown, in whole logical pixels. 0 is closed.
+    /// How far down the chrome document an open overlay reaches, in whole
+    /// logical pixels from its top. 0 means nothing is overlaying.
+    ///
+    /// The chrome sends the **bottom edge**, not a height, so that the bar
+    /// heights stay in one place. A height would have to be measured against
+    /// `chrome_extent`, which the chrome would then need its own copy of, and
+    /// the find bar contract already shows where duplicated constants end up.
     ///
     /// Deliberately **not** part of `chrome_extent`. Every other bar takes space
-    /// away from the page; this one is an overlay that covers the top of it, so
-    /// the page neither moves nor resizes while someone types. See overlay.rs.
+    /// away from the page; an overlay covers the top of it instead, so the page
+    /// neither moves nor resizes while it is open. See overlay.rs.
     ///
-    /// An integer because there is no atomic f64, and a dropdown is a whole
-    /// number of rows tall anyway.
-    suggest_height: AtomicU32,
+    /// An integer because there is no atomic f64 and a pixel is a pixel.
+    overlay_bottom: AtomicU32,
 }
 
 /// How much vertical space the chrome occupies right now.
@@ -290,7 +295,7 @@ impl Default for Browser {
             closed: Mutex::new(Vec::new()),
             panel_open: AtomicBool::new(false),
             find_open: AtomicBool::new(false),
-            suggest_height: AtomicU32::new(0),
+            overlay_bottom: AtomicU32::new(0),
         }
     }
 }
@@ -470,12 +475,12 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     // How tall the chrome is when it is only chrome. Grows with the find bar.
     let extent = chrome_extent(app);
 
-    // The dropdown grows the chrome without taking anything from the page. It
-    // is an overlay: overlay.rs raises the chrome above the content webview so
-    // the extra height covers the top of the page instead of pushing it down.
-    let suggest = app
+    // An overlay grows the chrome without taking anything from the page.
+    // overlay.rs raises the chrome above the content webview so the extra height
+    // covers the top of the page instead of pushing it down.
+    let overlay = app
         .state::<Browser>()
-        .suggest_height
+        .overlay_bottom
         .load(Ordering::Relaxed) as f64;
 
     // With the panel open the chrome takes the whole window and every content
@@ -485,7 +490,8 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     let chrome_height = if panel_open {
         size.height
     } else {
-        (extent + suggest).min(size.height)
+        // Whichever is lower: the bars, or the bottom of an open overlay.
+        extent.max(overlay).min(size.height)
     };
 
     // A window can be dragged smaller than the chrome mid-resize; clamping stops
@@ -1119,6 +1125,9 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
         // Progress only. The start and finish records still come from
         // `on_download` above; this adds the byte count in between.
         crate::downloads::watch(app, &label);
+        // Without this the runtime answers permission requests with its own
+        // prompt, and Brume neither hears about it nor can change it later.
+        crate::permissions::watch(app, &label);
     }
 
     if let Err(e) = spawned {
@@ -1701,38 +1710,38 @@ pub async fn set_bookmarks_bar(app: AppHandle, show: bool) -> Result<(), String>
     Ok(())
 }
 
-/// Sizes the address bar dropdown, or closes it with a height of 0.
+/// Says how far down an open overlay reaches, or 0 when none is open.
+///
+/// Used by the address bar dropdown and the permission prompt. The chrome sends
+/// one number for all of them, because only the chrome knows what it drew and
+/// only one of them can be the lowest.
 ///
 /// Async because it re-lays-out webviews, same as `set_panel`.
-///
-/// The height comes from the chrome rather than being computed here: only the
-/// chrome knows how many suggestions it ended up rendering, and hard-coding a
-/// row height in two languages is how the find bar contract nearly went wrong.
 ///
 /// Raising the chrome is what makes this an overlay rather than another bar. The
 /// page is not moved and not hidden; see overlay.rs for why that needs a Win32
 /// call at all.
 #[tauri::command]
-pub async fn set_suggest_overlay(app: AppHandle, height: f64) -> Result<(), String> {
-    // Clamped: the chrome asks for whatever its list measured, and a runaway
-    // value would cover the whole window with no way back to the page.
-    let height = height.clamp(0.0, 640.0).round() as u32;
+pub async fn set_chrome_overlay(app: AppHandle, bottom: f64) -> Result<(), String> {
+    // Clamped: the chrome asks for whatever it measured, and a runaway value
+    // would cover the whole window with no visible way back to the page.
+    let bottom = bottom.clamp(0.0, 720.0).round() as u32;
     let previous = app
         .state::<Browser>()
-        .suggest_height
-        .swap(height, Ordering::Relaxed);
+        .overlay_bottom
+        .swap(bottom, Ordering::Relaxed);
 
-    if previous == height {
+    if previous == bottom {
         return Ok(());
     }
 
     // Raise before laying out, drop after. Growing the chrome while it is still
-    // underneath would paint the dropdown behind the page for one frame.
-    if height > 0 {
+    // underneath would paint the overlay behind the page for one frame.
+    if bottom > 0 {
         crate::overlay::set_chrome_on_top(&app, true);
     }
     relayout(&app).map_err(|e| e.to_string())?;
-    if height == 0 {
+    if bottom == 0 {
         crate::overlay::set_chrome_on_top(&app, false);
     }
     Ok(())
