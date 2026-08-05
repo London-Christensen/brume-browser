@@ -76,11 +76,34 @@ powershell tools/new-release.ps1 -Version 0.3.0 -Notes "..." -Publish -AttachLeg
 ```
 
 An old install resolves that URL against the newest release, finds the manifest,
-updates to the new version, and reads from the repository from then on. That
-release page carries two files instead of one, for that release only.
+updates to the new version, and reads from the repository from then on.
 
-**Do not pass it again.** Once a later release omits the asset the old URL 404s,
-which is harmless because nothing is still pointing at it.
+### That rule was wrong, and 0.4.0 proved it
+
+The original text here said to pass `-AttachLegacyFeed` for one release and never
+again, on the grounds that a later 404 is "harmless because nothing is still
+pointing at it". **That premise is only true once every pre-0.3.0 install has
+actually taken the bridge, and there is no way to know that.**
+
+0.4.0 shipped without the asset, exactly as instructed. A 0.2.0 install that had
+never successfully updated then asked
+`releases/latest/download/latest.json`, resolved it against v0.4.0, got a 404,
+and reported that it could not fetch a valid manifest. The install was stranded
+with no route forward and no way to be told the address had moved.
+
+**So: attach `latest.json` to every release.** It costs one extra file on the
+release page and a line of confusion in the "what are the other files?" section,
+and it removes an entire class of silent, permanent stranding. Stop only when you
+are certain no pre-0.3.0 install exists, which in practice means never.
+
+The asset was re-uploaded to v0.4.0 after the fact with:
+
+```bash
+gh release upload v0.4.0 dist/latest.json --clobber
+```
+
+That works and is the repair if it is ever forgotten again, but passing the
+switch at release time is better.
 
 ### Order matters when publishing
 

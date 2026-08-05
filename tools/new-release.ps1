@@ -33,9 +33,16 @@ param(
     # asset, they find it, update, and the version they land on reads from the
     # repository from then on.
     #
-    # It is a one-release bridge. Pass it for that release and never again: once
-    # a later release omits the asset the old URL 404s, which is harmless because
-    # nothing is left pointing at it.
+    # This was documented as a one-release bridge, to be passed once and never
+    # again, because a later 404 was "harmless - nothing is still pointing at it".
+    #
+    # That was wrong, and 0.4.0 proved it. The premise holds only once every
+    # pre-0.3.0 install has actually taken the bridge, and nothing can establish
+    # that. 0.4.0 shipped without the asset and a 0.2.0 install that had never
+    # updated was left asking a URL that now 404s, with no way to be told the
+    # address had moved.
+    #
+    # PASS IT EVERY TIME. It costs one file on the release page. See RELEASING.md.
     [switch]$AttachLegacyFeed
 )
 
