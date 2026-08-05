@@ -163,6 +163,12 @@ struct Tab {
     /// refuse to close. Refusing is the point: a pinned tab is one you have said
     /// you want kept, so Ctrl+W landing on it would defeat the pinning.
     pinned: bool,
+    /// Whether the page is making noise, and whether it has been silenced.
+    ///
+    /// Both mirrored from the runtime by audio.rs, like `can_back` and `zoom`.
+    /// Nothing here works either of them out.
+    audible: bool,
+    muted: bool,
 }
 
 impl Tab {
@@ -314,6 +320,8 @@ pub struct TabView {
     pub loading: bool,
     pub private: bool,
     pub pinned: bool,
+    pub audible: bool,
+    pub muted: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -355,6 +363,8 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, bookmarks_bar: bool, panel_open: bool
                 loading: t.nav.loading,
                 private: t.private,
                 pinned: t.pinned,
+                audible: t.audible,
+                muted: t.muted,
             })
             .collect(),
         url: active
@@ -1101,6 +1111,11 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
             nav: NavState::default(),
             private,
             pinned: false,
+            // Both start false and are corrected by audio.rs the moment the
+            // runtime has anything to say. A tab cannot be audible before it
+            // has loaded a page.
+            audible: false,
+            muted: false,
         });
         tabs.active = id;
 
@@ -1128,6 +1143,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
         // Without this the runtime answers permission requests with its own
         // prompt, and Brume neither hears about it nor can change it later.
         crate::permissions::watch(app, &label);
+        crate::audio::watch(app, id, &label);
     }
 
     if let Err(e) = spawned {
@@ -1382,6 +1398,34 @@ fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
 /// Compared with a small epsilon rather than `==`: the factor is a float that
 /// WebView2 steps in fractions, and an exact match would republish on every
 /// event even when nothing visible changed.
+/// Records what the runtime says about a tab's audio, and republishes.
+///
+/// Called from audio.rs. Skips the publish when nothing the strip renders has
+/// changed, for the same reason `update_traverse` does: these events fire freely
+/// and republishing on every one of them would rebuild the tab strip constantly.
+pub fn update_audio(app: &AppHandle, tab_id: u32, audible: bool, muted: bool) {
+    {
+        let browser = app.state::<Browser>();
+        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let Some(tab) = tabs.tab_mut(tab_id) else {
+            return;
+        };
+        if tab.audible == audible && tab.muted == muted {
+            return;
+        }
+        tab.audible = audible;
+        tab.muted = muted;
+    }
+    publish(app);
+}
+
+/// The webview label for a tab id, for modules that need to reach one.
+pub fn tab_label(app: &AppHandle, id: u32) -> Option<String> {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    tabs.items.iter().find(|t| t.id == id).map(|t| t.label.clone())
+}
+
 pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
     {
         let browser = app.state::<Browser>();
@@ -1824,6 +1868,8 @@ mod tests {
             nav: NavState::default(),
             private: false,
             pinned: false,
+            audible: false,
+            muted: false,
         };
         assert_eq!(tab.display_title(), "New tab");
 

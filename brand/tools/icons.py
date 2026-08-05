@@ -78,7 +78,8 @@ def render(name, cleave_sm=None):
 # end until someone files it in the right group.
 ORDER = [
     "back", "forward", "reload", "home",
-    "tab", "tab-new", "tab-pin", "tab-audio", "split", "sidebar",
+    "tab", "tab-new", "tab-pin", "tab-audio", "tab-audio-muted", "split",
+    "sidebar",
     "lock", "shield", "shield-off", "info", "warning", "private",
     "download", "upload", "bookmark", "history", "extensions", "menu", "more",
     "settings", "search", "zoom-in", "zoom-out", "print",

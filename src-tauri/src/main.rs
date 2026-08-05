@@ -13,6 +13,7 @@
 // launching a browser should not get a stray black terminal window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod browser;
 mod downloads;
 mod find;
@@ -81,6 +82,7 @@ fn main() {
             browser::reset_zoom,
             browser::set_zoom,
             browser::set_tab_pinned,
+            audio::set_tab_muted,
             browser::duplicate_tab,
             browser::close_other_tabs,
             browser::close_tabs_to_right,
@@ -96,6 +98,7 @@ fn main() {
             store::toggle_bookmark,
             store::remove_bookmark,
             store::downloads,
+            downloads::cancel_download,
             store::clear_downloads,
             store::reveal_download,
             profile::clear_site_data,

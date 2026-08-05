@@ -1239,6 +1239,64 @@ while leaving nothing behind.
 
 ---
 
+## Cancelling a download, and the pattern that unblocked it
+
+Deferred in 0.4.0 because `ICoreWebView2DownloadOperation` is not `Send`, so it
+could not be parked in the `Mutex<HashMap<..>>` the rest of Brume's state uses.
+permissions.rs settled the pattern and it applies unchanged: the operation stays
+in a `thread_local!` on the main thread, the key is a plain `String`, and
+`cancel_download` hops back with `run_on_main_thread` carrying only that key. No
+`unsafe impl Send`, so there is no promise to break.
+
+Keyed by URL, which is what `finish_download` already matches on. Two downloads
+of one URL at once are ambiguous here exactly as they are there.
+
+**Nothing is written to the store when cancelling.** The runtime finishes the
+transfer as interrupted, which fires wry's own `Finished` with `success: false`,
+and the existing bookkeeping moves the row to the finished list. One path for a
+download ending, however it ended.
+
+A `StateChanged` handler removes the operation from the map once the transfer
+leaves IN_PROGRESS, so the map holds exactly the downloads a cancel button is
+showing for.
+
+Verified: a 100 MB transfer cancelled at 30.9% emptied the active list, recorded
+`success: false` with no path, and left no partial file behind.
+
+---
+
+## Tab audio: half of it works, and the half that does not is documented
+
+`ICoreWebView2_8` carries both `IsMuted`/`SetIsMuted` and
+`IsDocumentPlayingAudio`, with change events for each.
+
+**Muting works.** `IsMutedChanged` fires, the value reaches the tab strip through
+the same mirror-from-the-runtime pattern as `can_back` and `zoom`, and the
+indicator switches to the struck-through speaker.
+
+**`IsDocumentPlayingAudio` has never been observed to report true.** Tried on
+2026-08-05 against WebView2 150.0.4078.105, tab both muted and unmuted: a Web
+Audio oscillator, an `<audio>` element on a `data:` WAV, and an `<audio>` element
+on a remote `.ogg`, at volumes 0.02, 0.1 and 0.15. `audible` stayed false
+throughout.
+
+The read is not the problem: the same `publish` call reports `muted` correctly
+from the same interface in the same breath. Either the change event never fires
+or the runtime does not count any of that as playing audio.
+
+That mattered for the design rather than just being a curiosity. The obvious
+control is an indicator in the tab strip, but it can only appear once a tab is
+*already* audible or muted, so with the audible half silent it could never appear
+in the first place: a control that does not exist. **The tab context menu is the
+real entry point**, and the strip indicator is what shows a muted tab and offers
+the way back.
+
+The watcher code is kept rather than removed. It is correct against the
+documented API, costs nothing while the event stays quiet, and starts working the
+day the runtime reports it.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

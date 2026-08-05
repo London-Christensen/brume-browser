@@ -56,6 +56,7 @@ $MAP = [ordered]@{
     'tab-new'         = 'square-plus'
     'tab-pin'         = 'pin'
     'tab-audio'       = 'volume-2'
+    'tab-audio-muted' = 'volume-x'
     'split'           = 'columns-2'
     'sidebar'         = 'panel-left'
 

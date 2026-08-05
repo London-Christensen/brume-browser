@@ -335,6 +335,33 @@
         border-top: 1px solid var(--hairline);
       }
 
+      /* The audio indicator doubles as the mute control, which is why it is a
+         button rather than a decoration. Sits before the close button so the
+         close button stays where it always is. */
+      .tab-audio {
+        flex: 0 0 auto;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border: 0;
+        border-radius: 2px;
+        background: currentColor;
+        color: var(--fg-muted);
+        cursor: default;
+        -webkit-mask: url("assets/brand/icons/tab-audio.svg") no-repeat center / 14px;
+        mask: url("assets/brand/icons/tab-audio.svg") no-repeat center / 14px;
+      }
+      .tab-audio:hover {
+        color: var(--fg);
+      }
+      /* Muted is the state worth calling out, so it gets the struck-through
+         speaker and drops to the dimmest colour: silenced, still there. */
+      .tab-audio[data-muted="true"] {
+        opacity: 0.55;
+        -webkit-mask-image: url("assets/brand/icons/tab-audio-muted.svg");
+        mask-image: url("assets/brand/icons/tab-audio-muted.svg");
+      }
+
       /* A pinned tab is icon-only: no title, no close button, and narrow enough
          that several fit without crowding the rest of the strip. */
       .tab[data-pinned="true"] {
@@ -1495,6 +1522,13 @@
           add(tab.pinned ? "Unpin tab" : "Pin tab", true, () =>
             call("set_tab_pinned", { id: tab.id, pinned: !tab.pinned })
           );
+          // The only reliable way in. The strip indicator would be the obvious
+          // one, but it can only appear once a tab is already audible or muted,
+          // and IsDocumentPlayingAudio has never been observed to report true
+          // on this runtime - see audio.rs. Without this, muting is unreachable.
+          add(tab.muted ? "Unmute tab" : "Mute tab", true, () =>
+            call("set_tab_muted", { id: tab.id, muted: !tab.muted })
+          );
           separator();
           // A pinned tab cannot be closed, so offer nothing that pretends it can.
           add("Close tab", !tab.pinned, () => call("close_tab", { id: tab.id }));
@@ -1541,6 +1575,22 @@
           node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
 
           node.dataset.pinned = String(!!tab.pinned);
+
+          // Audio indicator, and the control for it. Shown while a tab is making
+          // noise and while it is muted, because a muted tab needs a way back.
+          if (tab.audible || tab.muted) {
+            const sound = document.createElement("button");
+            sound.className = "tab-audio";
+            sound.dataset.muted = String(!!tab.muted);
+            sound.title = tab.muted ? "Unmute tab" : "Mute tab";
+            sound.setAttribute("aria-label", sound.title);
+            sound.addEventListener("click", (event) => {
+              // Or muting a background tab would also switch to it.
+              event.stopPropagation();
+              call("set_tab_muted", { id: tab.id, muted: !tab.muted });
+            });
+            node.appendChild(sound);
+          }
           node.addEventListener("contextmenu", (event) => {
             event.preventDefault();
             openTabMenu(event, tab, tabs);
@@ -1941,6 +1991,24 @@
           w.className = "entry-when";
           w.textContent = when;
           row.appendChild(w);
+        }
+
+        // Only while it is running. A finished download has nothing to stop,
+        // and the row's own click reveals it in Explorer instead.
+        if (state === "running") {
+          const stop = document.createElement("button");
+          stop.className = "entry-remove";
+          stop.title = "Cancel download";
+          stop.setAttribute("aria-label", "Cancel download");
+          stop.innerHTML = '<span class="ico ico-stop"></span>';
+          stop.addEventListener("click", (event) => {
+            event.stopPropagation();
+            // No re-render here: cancelling makes the runtime finish the
+            // transfer as interrupted, which emits brume://downloads like any
+            // other ending, and the listener redraws from that.
+            call("cancel_download", { url });
+          });
+          row.appendChild(stop);
         }
 
         // Only finished, successful downloads with a recorded path can be
@@ -2685,6 +2753,7 @@
         downloads: "download several files at once",
         fonts: "see the fonts installed on your computer",
         windows: "manage windows across your screens",
+        autoplay: "play sound without you pressing play",
         other: "use a capability of your device",
       };
 

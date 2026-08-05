@@ -32,12 +32,36 @@
 //! `finish_download` already matches on, so this introduces no second notion of
 //! which download is which.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use tauri::{AppHandle, Emitter, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2DownloadOperation, ICoreWebView2_4,
+    ICoreWebView2DownloadOperation, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE,
+    COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
-use webview2_com::{take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler};
+use webview2_com::{
+    take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
+    StateChangedEventHandler,
+};
 use windows_core::Interface;
+
+thread_local! {
+    /// Downloads still running, so one can be cancelled later.
+    ///
+    /// `ICoreWebView2DownloadOperation` is not `Send`, which is why cancelling
+    /// was deferred in 0.4.0. permissions.rs settled the pattern: the operation
+    /// never leaves the thread that created it, the key is a plain `String`, and
+    /// the command hops back with `run_on_main_thread` carrying only the key.
+    /// No `unsafe impl Send`, so there is no promise to break.
+    ///
+    /// Keyed by URL, the same thing `finish_download` matches on. Two downloads
+    /// of one URL at once are ambiguous here exactly as they are there, and the
+    /// answer is the same: it is the rare case, and cancelling the first of them
+    /// is not a wrong answer.
+    static RUNNING: RefCell<HashMap<String, ICoreWebView2DownloadOperation>> =
+        RefCell::new(HashMap::new());
+}
 
 /// Subscribes to downloads for one tab.
 ///
@@ -96,6 +120,29 @@ fn watch_operation(app: &AppHandle, operation: &ICoreWebView2DownloadOperation) 
     };
     let handle = app.clone();
 
+    // Held so `cancel_download` has something to call Cancel on. Removed again
+    // when the runtime says the transfer left IN_PROGRESS, so the map holds
+    // exactly the downloads a cancel button is showing for.
+    RUNNING.with(|r| r.borrow_mut().insert(url.clone(), operation.clone()));
+
+    let done_url = url.clone();
+    let _ = unsafe {
+        let mut state_token = 0i64;
+        operation.add_StateChanged(
+            &StateChangedEventHandler::create(Box::new(move |sender, _args| {
+                if let Some(op) = sender.as_ref() {
+                    let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                    if op.State(&mut state).is_ok() && state != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS
+                    {
+                        RUNNING.with(|r| r.borrow_mut().remove(&done_url));
+                    }
+                }
+                Ok(())
+            })),
+            &mut state_token,
+        )
+    };
+
     let _ = unsafe {
         let mut token = 0i64;
         operation.add_BytesReceivedChanged(
@@ -128,6 +175,33 @@ fn watch_operation(app: &AppHandle, operation: &ICoreWebView2DownloadOperation) 
             &mut token,
         )
     };
+}
+
+/// Stops a running download.
+///
+/// Async, then straight onto the main thread, for the reason in the `RUNNING`
+/// docs: the operation cannot leave the thread that made it, so only the URL
+/// crosses over.
+///
+/// Nothing is written to the store here. Cancelling makes the runtime finish the
+/// transfer as interrupted, which fires wry's own `Finished` with
+/// `success: false`, and the existing bookkeeping in browser.rs moves the row
+/// to the finished list. One path for a download ending, however it ended.
+#[tauri::command]
+pub async fn cancel_download(app: AppHandle, url: String) -> Result<(), String> {
+    app.run_on_main_thread(move || {
+        // Removed as well as cancelled: the state change that would normally
+        // clear it is not guaranteed to arrive if the webview is going away.
+        let operation = RUNNING.with(|r| r.borrow_mut().remove(&url));
+        if let Some(operation) = operation {
+            unsafe {
+                if let Err(e) = operation.Cancel() {
+                    eprintln!("[downloads] could not cancel {url}: {e}");
+                }
+            }
+        }
+    })
+    .map_err(|e| format!("Could not cancel the download: {e}"))
 }
 
 /// The download's source URL, as an owned `String`.
