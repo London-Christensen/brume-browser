@@ -16,6 +16,7 @@
 mod browser;
 mod downloads;
 mod find;
+mod overlay;
 mod history;
 mod profile;
 mod search;
@@ -88,6 +89,8 @@ fn main() {
             store::history,
             store::clear_history,
             store::bookmarks,
+            store::suggest,
+            browser::set_suggest_overlay,
             store::toggle_bookmark,
             store::remove_bookmark,
             store::downloads,

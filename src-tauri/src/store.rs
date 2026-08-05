@@ -110,6 +110,22 @@ pub struct ActiveDownload {
     pub total: i64,
 }
 
+/// One row in the address bar dropdown.
+///
+/// Flattened from two different records on purpose. The chrome should not have
+/// to merge a bookmark list and a history list and get the ordering right; it
+/// renders whatever order this arrives in.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Suggestion {
+    /// "bookmark" or "history". Only used to pick the icon.
+    pub kind: &'static str,
+    pub title: String,
+    pub url: String,
+    /// Unix seconds: when it was bookmarked, or last visited.
+    pub at: i64,
+}
+
 /// What the downloads panel renders.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -339,6 +355,102 @@ impl Store {
         self.persist_bookmarks(&snapshot)
     }
 
+    // --- address bar suggestions ----------------------------------------
+
+    /// What to offer for a partly typed address.
+    ///
+    /// Ranking, decided deliberately and cheap enough to run per keystroke:
+    ///
+    ///   1. Bookmarks before history. A bookmark is a page someone said they
+    ///      wanted back; a history row is only a page they happened to open.
+    ///   2. Within each, a prefix match before a substring match. Typing "git"
+    ///      should offer github before a page with "git" buried in its title.
+    ///   3. Within that, most recent first.
+    ///
+    /// Deliberately not frecency. History is append-only JSONL with no index, so
+    /// counting visits means either a full scan per keystroke or real storage;
+    /// store.rs already records that as the point where SQLite earns its size.
+    /// Recency answers most of the same question for none of the cost.
+    ///
+    /// Deduplicated by URL, because a page visited twenty times is twenty lines
+    /// in history and one useful suggestion.
+    pub fn suggest(&self, query: &str, limit: usize) -> Vec<Suggestion> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+
+        // How well one candidate matches, or None for not at all. Lower is
+        // better, so this sorts naturally.
+        let rank = |url: &str, title: &str| -> Option<u8> {
+            let url_l = url.to_lowercase();
+            let title_l = title.to_lowercase();
+            // The scheme is noise when matching what someone typed: nobody
+            // types "https://" to find github.
+            let bare = url_l
+                .strip_prefix("https://")
+                .or_else(|| url_l.strip_prefix("http://"))
+                .unwrap_or(&url_l);
+            let bare = bare.strip_prefix("www.").unwrap_or(bare);
+
+            if bare.starts_with(&needle) {
+                Some(0)
+            } else if title_l.starts_with(&needle) {
+                Some(1)
+            } else if bare.contains(&needle) || title_l.contains(&needle) {
+                Some(2)
+            } else {
+                None
+            }
+        };
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut scored: Vec<(u8, u8, i64, Suggestion)> = Vec::new();
+
+        for b in self.bookmarks.lock().expect("bookmarks mutex poisoned").iter() {
+            if let Some(r) = rank(&b.url, &b.title) {
+                if seen.insert(b.url.clone()) {
+                    scored.push((
+                        0,
+                        r,
+                        b.added_at,
+                        Suggestion {
+                            kind: "bookmark",
+                            title: b.title.clone(),
+                            url: b.url.clone(),
+                            at: b.added_at,
+                        },
+                    ));
+                }
+            }
+        }
+
+        // `history` already returns newest first and filters by query, so this
+        // reads the file once rather than once per candidate. The cap is
+        // generous because dedup and ranking happen after it.
+        for v in self.history(Some(query), 400) {
+            if let Some(r) = rank(&v.url, &v.title) {
+                if seen.insert(v.url.clone()) {
+                    scored.push((
+                        1,
+                        r,
+                        v.visited_at,
+                        Suggestion {
+                            kind: "history",
+                            title: v.title.clone(),
+                            url: v.url.clone(),
+                            at: v.visited_at,
+                        },
+                    ));
+                }
+            }
+        }
+
+        // Kind, then match quality, then newest first.
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.cmp(&a.2)));
+        scored.into_iter().take(limit).map(|s| s.3).collect()
+    }
+
     // --- downloads ------------------------------------------------------
 
     /// Records a download starting.
@@ -520,6 +632,12 @@ pub fn clear_history(store: State<'_, Store>) -> Result<(), String> {
 #[tauri::command]
 pub fn bookmarks(store: State<'_, Store>) -> Vec<Bookmark> {
     store.bookmarks()
+}
+
+/// Suggestions for the address bar. Runs per keystroke, so it is kept cheap.
+#[tauri::command]
+pub fn suggest(store: State<'_, Store>, query: String, limit: Option<usize>) -> Vec<Suggestion> {
+    store.suggest(&query, limit.unwrap_or(8))
 }
 
 /// Tells the chrome the bookmark list changed.

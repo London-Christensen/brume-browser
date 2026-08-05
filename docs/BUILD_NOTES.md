@@ -1031,6 +1031,97 @@ the Rust side has already laid the page back out.
 
 ---
 
+## 0.5.0: the chrome cannot cover the page, and that shapes everything
+
+The address bar had no suggestions at all, and the obvious way to add them ran
+straight into an architectural fact nobody had written down.
+
+**The content webview sits ABOVE the chrome in Win32 z-order.** Measured on
+2026-08-05 by walking `GetTopWindow` and `GW_HWNDNEXT` over the window's
+children, with the page deliberately left visible under a full-window chrome:
+
+```text
+  0. WRY_WEBVIEW  1920x981    <- the content webview, TOPMOST
+  1. WRY_WEBVIEW  1920x1057   <- the chrome, underneath
+```
+
+So the chrome cannot cover a page by being made bigger. **That is why the panel
+hides every content webview** rather than drawing over them: hiding is the only
+thing that works, and it was never a stylistic choice.
+
+A dropdown cannot use that trick. Making the page vanish on every keystroke is
+worse than having no suggestions, and growing the chrome the way the find bar
+does reflows the page down and back on every character typed.
+
+`overlay.rs` therefore raises the chrome's hosting HWND above the page for as
+long as an overlay is open and drops it back afterwards, with one `SetWindowPos`
+call. The HWND comes from `ICoreWebView2Controller::ParentWindow`, which is how
+wry reaches for it too. `SWP_NOACTIVATE` is load-bearing: without it, raising the
+chrome steals focus from the address bar the user is typing into.
+
+The page is never moved and never hidden. `suggest_height` is deliberately **not**
+part of `chrome_extent`, because every other bar takes space from the page and
+this one does not.
+
+Measured after the change: chrome 76 to 188 with the dropdown open, page viewport
+unchanged at 981, chrome topmost while open and the page topmost again after.
+
+### Ranking is recency with prefix promotion, not frecency
+
+Bookmarks before history, prefix match before substring, newest first within
+each, deduplicated by URL. The scheme is stripped before matching, because nobody
+types `https://` to find github.
+
+Frecency was considered and rejected for now. History is append-only JSONL with
+no index, so counting visits means either a full scan per keystroke or real
+storage, and this file already records that as the point where SQLite earns its
+size. Recency answers most of the same question for none of the cost.
+
+---
+
+## The tab strip lost tabs, and the new tab button with them
+
+Tabs are `flex: 1 1 0` with a 44px floor, inside a strip with `overflow: hidden`.
+Past the floor they simply stopped being reachable.
+
+Measured at 1920px with 50 tabs, before the fix: eight tabs clipped off the right
+edge, and the new tab button sitting at x=2259 against a strip ending at 1920. On
+a 1200px window that begins at about 26 tabs, which is ordinary use. Ctrl+Tab and
+Ctrl+9 could still reach the lost tabs; nothing else could, including closing
+them.
+
+The strip is now two parts: a scrolling run of tabs, and the new tab button
+outside it. The button is reachable at any tab count by construction rather than
+by luck. The active tab is scrolled into view after every render, or switching
+with Ctrl+Tab past the visible run would leave the strip disagreeing with which
+page is showing. Scroll position is preserved across renders, because state is
+republished on every load tick of every tab and the strip would otherwise jump
+back to the left constantly.
+
+---
+
+## The loading indicator had never once rendered
+
+`.progress` was `flex: 0 0 2px` in the body's flex column, after the toolbar. The
+chrome webview is exactly tab strip plus toolbar tall, so the row began at the
+first pixel below the viewport and `body { overflow: hidden }` clipped all of it.
+Measured 2026-08-04: `top: 76` in a 76px viewport.
+
+It is absolutely positioned now, pinned to the bottom edge of the toolbar at
+`top: calc(tab-strip + toolbar - 2px)`. Pinned to the toolbar rather than to the
+bottom of the chrome because the chrome's height moves: the find bar, the
+bookmarks bar and the address dropdown all change it, and an indicator that
+wandered with them would be worse than one that never appeared.
+
+Costs the page nothing, which is the reason it is an overlay rather than another
+2px term in `chrome_extent`.
+
+Verified: `top: 74, height: 2` in a 76px viewport, fully visible, with the sweep
+animation running on a 614px fill, and `loading` confirmed reaching the chrome as
+`true` over `brume://state` during a real navigation.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

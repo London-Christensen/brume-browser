@@ -24,7 +24,7 @@
 //! This is the only module that touches Tauri's `unstable` multiwebview API, so
 //! that a breaking change upstream has exactly one place to be repaired.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -236,6 +236,15 @@ pub struct Browser {
     panel_open: AtomicBool,
     /// Whether the find bar is showing, which makes the chrome taller.
     find_open: AtomicBool,
+    /// Height of the address bar dropdown, in whole logical pixels. 0 is closed.
+    ///
+    /// Deliberately **not** part of `chrome_extent`. Every other bar takes space
+    /// away from the page; this one is an overlay that covers the top of it, so
+    /// the page neither moves nor resizes while someone types. See overlay.rs.
+    ///
+    /// An integer because there is no atomic f64, and a dropdown is a whole
+    /// number of rows tall anyway.
+    suggest_height: AtomicU32,
 }
 
 /// How much vertical space the chrome occupies right now.
@@ -281,6 +290,7 @@ impl Default for Browser {
             closed: Mutex::new(Vec::new()),
             panel_open: AtomicBool::new(false),
             find_open: AtomicBool::new(false),
+            suggest_height: AtomicU32::new(0),
         }
     }
 }
@@ -460,11 +470,23 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     // How tall the chrome is when it is only chrome. Grows with the find bar.
     let extent = chrome_extent(app);
 
+    // The dropdown grows the chrome without taking anything from the page. It
+    // is an overlay: overlay.rs raises the chrome above the content webview so
+    // the extra height covers the top of the page instead of pushing it down.
+    let suggest = app
+        .state::<Browser>()
+        .suggest_height
+        .load(Ordering::Relaxed) as f64;
+
     // With the panel open the chrome takes the whole window and every content
     // webview is hidden. That is what keeps history, bookmarks and settings
     // inside the one webview that holds capabilities, instead of needing a
     // privileged tab alongside arbitrary websites.
-    let chrome_height = if panel_open { size.height } else { extent };
+    let chrome_height = if panel_open {
+        size.height
+    } else {
+        (extent + suggest).min(size.height)
+    };
 
     // A window can be dragged smaller than the chrome mid-resize; clamping stops
     // the content webview being handed a negative height.
@@ -1676,6 +1698,43 @@ pub async fn set_bookmarks_bar(app: AppHandle, show: bool) -> Result<(), String>
 
     relayout(&app).map_err(|e| e.to_string())?;
     publish(&app);
+    Ok(())
+}
+
+/// Sizes the address bar dropdown, or closes it with a height of 0.
+///
+/// Async because it re-lays-out webviews, same as `set_panel`.
+///
+/// The height comes from the chrome rather than being computed here: only the
+/// chrome knows how many suggestions it ended up rendering, and hard-coding a
+/// row height in two languages is how the find bar contract nearly went wrong.
+///
+/// Raising the chrome is what makes this an overlay rather than another bar. The
+/// page is not moved and not hidden; see overlay.rs for why that needs a Win32
+/// call at all.
+#[tauri::command]
+pub async fn set_suggest_overlay(app: AppHandle, height: f64) -> Result<(), String> {
+    // Clamped: the chrome asks for whatever its list measured, and a runaway
+    // value would cover the whole window with no way back to the page.
+    let height = height.clamp(0.0, 640.0).round() as u32;
+    let previous = app
+        .state::<Browser>()
+        .suggest_height
+        .swap(height, Ordering::Relaxed);
+
+    if previous == height {
+        return Ok(());
+    }
+
+    // Raise before laying out, drop after. Growing the chrome while it is still
+    // underneath would paint the dropdown behind the page for one frame.
+    if height > 0 {
+        crate::overlay::set_chrome_on_top(&app, true);
+    }
+    relayout(&app).map_err(|e| e.to_string())?;
+    if height == 0 {
+        crate::overlay::set_chrome_on_top(&app, false);
+    }
     Ok(())
 }
 

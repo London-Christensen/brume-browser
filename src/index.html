@@ -116,14 +116,35 @@
       }
 
       /* --- tab strip ----------------------------------------------------- */
+      /* Two parts, and the split is the whole point: the tabs scroll, the new
+         tab button does not. Measured before the split, at 1920px with 50 tabs:
+         tabs bottomed out at their 44px floor, eight of them were clipped off
+         the right edge with no way to reach them, and the new tab button sat at
+         x=2259 against a strip ending at 1920. On a 1200px window that starts
+         at about 26 tabs, which is ordinary use. */
       .tabs {
         flex: 0 0 var(--tab-strip-h);
         display: flex;
         align-items: stretch;
-        gap: 1px;
         padding: 5px 6px 0;
         min-width: 0;
         overflow: hidden;
+      }
+
+      .tab-scroll {
+        flex: 1 1 auto;
+        display: flex;
+        align-items: stretch;
+        gap: 1px;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        /* No visible scrollbar. The strip is 36px tall and a scrollbar would
+           eat a third of it; the wheel and the arrow keys reach everything. */
+        scrollbar-width: none;
+      }
+      .tab-scroll::-webkit-scrollbar {
+        display: none;
       }
 
       .tab {
@@ -882,6 +903,86 @@
         font-size: 13px;
       }
 
+      /* --- address bar suggestions ---------------------------------------- */
+      /* Absolutely positioned rather than a flex row, because this is an
+         overlay: the Rust side grows the chrome webview and raises it above the
+         page, so the dropdown covers the top of the page instead of pushing it
+         down. Taking part in the flex column would move the bookmarks bar every
+         time someone typed a character. See src-tauri/src/overlay.rs. */
+      .suggest {
+        position: absolute;
+        top: calc(var(--tab-strip-h) + var(--toolbar-h));
+        z-index: 40;
+        padding: 4px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+        overflow: hidden;
+      }
+
+      .sug {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 32px;
+        padding: 0 9px;
+        border-radius: 3px;
+        cursor: default;
+      }
+      /* Keyboard selection and hover are the same state deliberately: two
+         different highlights in one list is a way to lose track of which one
+         Enter will take. */
+      .sug[data-on="true"],
+      .sug:hover {
+        background: var(--elev-1);
+      }
+
+      .sug-icon {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        background: currentColor;
+        opacity: 0.5;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+      }
+      .sug[data-kind="bookmark"] .sug-icon {
+        -webkit-mask-image: url("assets/brand/icons/bookmark.svg");
+        mask-image: url("assets/brand/icons/bookmark.svg");
+        opacity: 1;
+        color: var(--brume-lamplight);
+      }
+      .sug[data-kind="history"] .sug-icon {
+        -webkit-mask-image: url("assets/brand/icons/history.svg");
+        mask-image: url("assets/brand/icons/history.svg");
+      }
+      .sug[data-kind="search"] .sug-icon {
+        -webkit-mask-image: url("assets/brand/icons/search.svg");
+        mask-image: url("assets/brand/icons/search.svg");
+      }
+
+      .sug-title {
+        flex: 0 1 auto;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 12.5px;
+      }
+      .sug-url {
+        flex: 1 1 auto;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+      }
+
       /* --- download progress --------------------------------------------- */
       /* A 3px rule under the filename. Enough to read at a glance without
          turning a list row into a widget. */
@@ -912,13 +1013,29 @@
       }
 
       /* --- loading indicator --------------------------------------------- */
-      /* A 2px rule along the bottom edge of the chrome. Indeterminate, because
+      /* A 2px rule along the bottom edge of the toolbar. Indeterminate, because
          WebView2 reports load start and finish but no progress fraction - a bar
-         claiming a percentage would be inventing it. */
+         claiming a percentage would be inventing it.
+
+         Absolutely positioned, and that is a fix rather than a preference. It
+         used to be `flex: 0 0 2px` in the column, which put it at the first
+         pixel below the chrome viewport: the chrome is exactly tab strip plus
+         toolbar tall, so `body { overflow: hidden }` clipped it and the
+         indicator never rendered once. Measured 2026-08-04, top:76 in a 76px
+         viewport.
+
+         Pinned to the toolbar rather than to the bottom of the chrome, because
+         the chrome's height moves - the find bar, the bookmarks bar and the
+         address dropdown all change it, and the indicator should not wander. */
       .progress {
-        flex: 0 0 2px;
-        position: relative;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(var(--tab-strip-h) + var(--toolbar-h) - 2px);
+        height: 2px;
+        z-index: 30;
         overflow: hidden;
+        pointer-events: none;
       }
       .progress[data-loading="true"]::after {
         content: "";
@@ -936,7 +1053,16 @@
   </head>
 
   <body>
-    <div class="tabs" id="tabs"></div>
+    <!--
+      The new tab button lives outside the scrolling area on purpose, so it is
+      reachable no matter how many tabs are open. See the .tabs comment.
+    -->
+    <div class="tabs" id="tabs">
+      <div class="tab-scroll" id="tab-scroll"></div>
+      <button class="new-tab" id="new-tab" title="New tab" aria-label="New tab">
+        <span class="ico ico-plus"></span>
+      </button>
+    </div>
 
     <div class="toolbar">
       <button class="btn" id="back" title="Back" aria-label="Back" disabled>
@@ -982,6 +1108,13 @@
         <span class="ico ico-settings"></span>
       </button>
     </div>
+
+    <!--
+      Address bar suggestions. Positioned and sized in JS to line up with the
+      address bar, and the Rust side is told how tall it ended up so it can grow
+      the chrome by exactly that much. Filled from history and bookmarks.
+    -->
+    <div class="suggest" id="suggest" hidden></div>
 
     <!--
       The bookmarks bar. Off by default and toggled with Ctrl+Shift+B or the
@@ -1246,7 +1379,10 @@
 
       // --- tab strip ------------------------------------------------------
       function renderTabs(tabs) {
-        const strip = el("tabs");
+        const strip = el("tab-scroll");
+        // Kept so the strip does not jump back to the left on every republish,
+        // which happens on each load tick of every tab.
+        const scrollLeft = strip.scrollLeft;
         strip.textContent = "";
 
         for (const tab of tabs) {
@@ -1297,13 +1433,13 @@
           strip.appendChild(node);
         }
 
-        const add = document.createElement("button");
-        add.className = "new-tab";
-        add.title = "New tab";
-        add.setAttribute("aria-label", "New tab");
-        add.innerHTML = '<span class="ico ico-plus"></span>';
-        add.addEventListener("click", () => call("open_tab", { url: null }));
-        strip.appendChild(add);
+        // Put the scroll back where it was, then make sure the active tab is
+        // actually on screen. Switching with Ctrl+Tab past the visible run has
+        // to bring the tab to you, or the strip silently disagrees with which
+        // page is showing.
+        strip.scrollLeft = scrollLeft;
+        const active = strip.querySelector('.tab[data-active="true"]');
+        if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
 
       // --- toolbar --------------------------------------------------------
@@ -2269,6 +2405,21 @@
 
       listen("brume://open-find", openFind);
 
+      el("new-tab").addEventListener("click", () => call("open_tab", { url: null }));
+
+      // A wheel over the strip scrolls it sideways. There is no vertical axis
+      // here to give the gesture to, and reaching a tab should not require
+      // finding a scrollbar that is deliberately not drawn.
+      el("tab-scroll").addEventListener(
+        "wheel",
+        (event) => {
+          if (event.deltaY === 0) return;
+          event.preventDefault();
+          el("tab-scroll").scrollLeft += event.deltaY;
+        },
+        { passive: false }
+      );
+
       el("back").addEventListener("click", () => call("go_back"));
       el("forward").addEventListener("click", () => call("go_forward"));
       el("home").addEventListener("click", () => call("go_home"));
@@ -2277,6 +2428,100 @@
         call(loading ? "stop_loading" : "reload")
       );
 
+      /* --- address bar suggestions -----------------------------------------
+       *
+       * The list is an overlay, not another bar. The Rust side grows the chrome
+       * webview by exactly the height measured here and raises it above the
+       * page, so the dropdown covers the top of the page rather than pushing it
+       * down. Typing must not reflow the page on every keystroke.
+       *
+       * `suggestRows[selected]` is the source of truth for what Enter does.
+       * Reading it back out of the DOM would mean the highlight and the action
+       * could disagree, which is the one thing an address bar must never do.
+       */
+      let suggestRows = [];
+      let suggestIndex = -1;
+      let suggestSeq = 0;
+
+      async function closeSuggest() {
+        suggestRows = [];
+        suggestIndex = -1;
+        const box = el("suggest");
+        if (box.hidden) return;
+        box.hidden = true;
+        box.textContent = "";
+        await call("set_suggest_overlay", { height: 0 });
+      }
+
+      function paintSuggest() {
+        const box = el("suggest");
+        [...box.querySelectorAll(".sug")].forEach((row, i) => {
+          row.dataset.on = String(i === suggestIndex);
+        });
+      }
+
+      async function renderSuggest(query) {
+        const seq = ++suggestSeq;
+        const typed = query.trim();
+        if (!typed) return closeSuggest();
+
+        const rows = (await call("suggest", { query: typed, limit: 8 })) || [];
+        if (seq !== suggestSeq) return; // a newer keystroke already ran
+
+        // Always offer the search itself, last. Without it a query that happens
+        // to match history has no visible way to become a plain search.
+        rows.push({ kind: "search", title: `Search for "${typed}"`, url: typed, at: 0 });
+
+        suggestRows = rows;
+        suggestIndex = -1;
+
+        const box = el("suggest");
+        box.textContent = "";
+        for (const [i, r] of rows.entries()) {
+          const row = document.createElement("div");
+          row.className = "sug";
+          row.dataset.kind = r.kind;
+          row.innerHTML =
+            '<span class="sug-icon"></span>' +
+            `<span class="sug-title"></span>` +
+            (r.kind === "search" ? "" : `<span class="sug-url"></span>`);
+          row.querySelector(".sug-title").textContent = r.title || r.url;
+          const u = row.querySelector(".sug-url");
+          if (u) u.textContent = r.url;
+          // mousedown, not click: the input's blur fires first on a click and
+          // would close the list out from under the pointer.
+          row.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            commitSuggest(i);
+          });
+          row.addEventListener("mouseenter", () => {
+            suggestIndex = i;
+            paintSuggest();
+          });
+          box.appendChild(row);
+        }
+
+        // Line the list up with the address bar, then tell Rust how tall it is.
+        const bar = document.querySelector(".address").getBoundingClientRect();
+        box.style.left = `${Math.round(bar.left)}px`;
+        box.style.width = `${Math.round(bar.width)}px`;
+        box.hidden = false;
+        paintSuggest();
+
+        // Measured after showing: a hidden element has no height to report, and
+        // guessing a row height here would be a second contract to keep in step.
+        const height = Math.ceil(box.getBoundingClientRect().height) + 6;
+        await call("set_suggest_overlay", { height });
+      }
+
+      function commitSuggest(index) {
+        const row = suggestRows[index];
+        editing = false;
+        closeSuggest();
+        urlInput.blur();
+        call("navigate", { input: row ? row.url : urlInput.value });
+      }
+
       urlInput.addEventListener("focus", () => {
         editing = true;
         urlInput.select(); // typing replaces rather than appends
@@ -2284,20 +2529,50 @@
 
       urlInput.addEventListener("blur", () => {
         editing = false;
+        closeSuggest();
         // Put back whatever is actually loaded, discarding an abandoned edit.
         call("browser_state").then((s) => s && render(s));
       });
 
+      urlInput.addEventListener("input", () => renderSuggest(urlInput.value));
+
       urlInput.addEventListener("keydown", (event) => {
+        const open = !el("suggest").hidden && suggestRows.length > 0;
+
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          if (!open) return;
+          event.preventDefault();
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          // Wraps through -1, which is "back to what I actually typed".
+          const n = suggestRows.length;
+          suggestIndex = suggestIndex + step;
+          if (suggestIndex >= n) suggestIndex = -1;
+          if (suggestIndex < -1) suggestIndex = n - 1;
+          paintSuggest();
+          return;
+        }
+
         if (event.key === "Enter") {
           event.preventDefault();
-          editing = false;
-          urlInput.blur();
-          call("navigate", { input: urlInput.value });
+          if (open && suggestIndex >= 0) {
+            commitSuggest(suggestIndex);
+          } else {
+            editing = false;
+            closeSuggest();
+            urlInput.blur();
+            call("navigate", { input: urlInput.value });
+          }
         } else if (event.key === "Escape") {
           event.preventDefault();
-          editing = false;
-          urlInput.blur();
+          // First Escape dismisses the list, second gives up on the edit. Two
+          // stages because losing a half-typed address to a stray key is worse
+          // than pressing Escape twice.
+          if (open) {
+            closeSuggest();
+          } else {
+            editing = false;
+            urlInput.blur();
+          }
         }
       });
 

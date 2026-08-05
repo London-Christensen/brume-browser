@@ -57,6 +57,15 @@ winreg = "0.55"
 webview2-com = "0.38"
 windows-core = "0.61"
 
+# Win32 window management, for one job: raising the chrome above the page while
+# an overlay is open. See overlay.rs for why that is necessary rather than a
+# preference. Already in the tree under wry at this version; naming it here only
+# makes the dependency honest, exactly as webview2-com above.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [profile.release]
 # Tuned for a small binary rather than raw throughput. A browser shell spends
 # almost all of its time inside WebView2, not inside our Rust code, so trading
