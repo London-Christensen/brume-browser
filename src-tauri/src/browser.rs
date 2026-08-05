@@ -85,7 +85,6 @@ fn home_url(app: &AppHandle) -> String {
 /// press. history.rs reaches WebView2's real history instead, so the stack is
 /// gone and what is left is the current URL plus two flags mirrored from the
 /// runtime.
-#[derive(Default)]
 struct NavState {
     url: String,
     loading: bool,
@@ -93,6 +92,26 @@ struct NavState {
     /// Never computed here: the runtime is the only thing that knows.
     can_back: bool,
     can_forward: bool,
+    /// Page zoom, mirrored from ZoomFactorChanged. 1.0 is 100%.
+    ///
+    /// Per tab, because WebView2 keeps zoom per webview: zooming one tab does
+    /// not touch another, and the indicator has to follow whichever is in front.
+    zoom: f64,
+}
+
+impl Default for NavState {
+    /// Hand-written rather than derived, because `zoom` must start at 1.0.
+    /// Deriving gives 0.0, and a new tab would report itself at 0% until the
+    /// first ZoomFactorChanged.
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            loading: false,
+            can_back: false,
+            can_forward: false,
+            zoom: 1.0,
+        }
+    }
 }
 
 impl NavState {
@@ -124,6 +143,10 @@ struct Tab {
     /// runtime's problem and go when it closes. What is tracked here is the part
     /// Brume itself would otherwise write to disk.
     private: bool,
+    /// Pinned tabs sit at the front of the strip, render without a title, and
+    /// refuse to close. Refusing is the point: a pinned tab is one you have said
+    /// you want kept, so Ctrl+W landing on it would defeat the pinning.
+    pinned: bool,
 }
 
 impl Tab {
@@ -230,6 +253,7 @@ pub struct TabView {
     pub active: bool,
     pub loading: bool,
     pub private: bool,
+    pub pinned: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -245,6 +269,9 @@ pub struct BrowserState {
     /// rather than the frontend having to track it separately and drift.
     pub bookmarked: bool,
     pub panel_open: bool,
+    /// Zoom of the active tab. 1.0 is 100%; the chrome hides the control at
+    /// that value rather than showing "100%" permanently.
+    pub zoom: f64,
 }
 
 fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
@@ -261,6 +288,7 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
                 active: t.id == tabs.active,
                 loading: t.nav.loading,
                 private: t.private,
+                pinned: t.pinned,
             })
             .collect(),
         url: active
@@ -271,6 +299,7 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, panel_open: bool) -> BrowserState {
         loading: active.is_some_and(|t| t.nav.loading),
         bookmarked,
         panel_open,
+        zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
     }
 }
 
@@ -706,19 +735,25 @@ fn save_geometry(app: &AppHandle) {
 /// such stack to persist - the runtime's history dies with the webview.
 /// Reopening where you were is the part worth keeping.
 fn save_session(app: &AppHandle) {
-    let (urls, active) = {
+    let (saved, active) = {
         let browser = app.state::<Browser>();
         let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
 
-        let urls: Vec<String> = tabs
+        // Private tabs are left out: a session file naming them would outlive
+        // the browsing they were supposed to keep off disk.
+        let saved: Vec<crate::settings::SessionTab> = tabs
             .items
             .iter()
-            // Private tabs are left out: a session file naming them would
-            // outlive the browsing they were supposed to keep off disk.
             .filter(|t| !t.private)
-            .filter_map(|t| t.nav.current().cloned())
-            // A tab still sitting on about:blank has nowhere to be restored to.
-            .filter(|u| !u.starts_with("about:"))
+            .filter_map(|t| {
+                t.nav.current().and_then(|u| {
+                    // A tab still on about:blank has nowhere to be restored to.
+                    (!u.starts_with("about:")).then(|| crate::settings::SessionTab {
+                        url: u.clone(),
+                        pinned: t.pinned,
+                    })
+                })
+            })
             .collect();
 
         // Position within the filtered list, not the tab id.
@@ -733,12 +768,12 @@ fn save_session(app: &AppHandle) {
             .position(|t| t.id == tabs.active)
             .unwrap_or(0);
 
-        (urls, active)
+        (saved, active)
     };
 
     let _ = app
         .state::<crate::settings::SettingsState>()
-        .set_session(urls, active);
+        .set_session(saved, active);
 }
 
 /// Builds the window, the chrome, and the first tab.
@@ -839,10 +874,30 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     if session.is_empty() {
         open_tab_inner(app, None, false)?;
     } else {
-        for url in &session {
-            if let Err(e) = open_tab_inner(app, Some(url.clone()), false) {
-                eprintln!("[browser] could not restore {url}: {e}");
+        for saved in &session {
+            match open_tab_inner(app, Some(saved.url.clone()), false) {
+                // Restored tabs land at the end, so the pinned ones need putting
+                // back at the front. Set here rather than passed into
+                // open_tab_inner, which would have to know about ordering.
+                Ok(()) => {
+                    if saved.pinned {
+                        let browser = app.state::<Browser>();
+                        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+                        let active = tabs.active;
+                        if let Some(tab) = tabs.tab_mut(active) {
+                            tab.pinned = true;
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[browser] could not restore {}: {e}", saved.url),
             }
+        }
+        // Sorted once, after the lot are in. Stable, so tabs keep the order they
+        // were saved in within each group.
+        {
+            let browser = app.state::<Browser>();
+            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            tabs.items.sort_by_key(|t| !t.pinned);
         }
         // Every restore left its tab active, so the last one is in front.
         if let Some(id) = tab_id_at(app, session_active) {
@@ -939,6 +994,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
             title: String::new(),
             nav: NavState::default(),
             private,
+            pinned: false,
         });
         tabs.active = id;
 
@@ -959,6 +1015,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
     // on success: there is nothing to watch otherwise.
     if spawned.is_ok() {
         crate::history::watch(app, id, &label);
+        crate::history::watch_zoom(app, id, &label);
     }
 
     if let Err(e) = spawned {
@@ -1021,6 +1078,12 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
         let Some(pos) = tabs.items.iter().position(|t| t.id == id) else {
             return Ok(());
         };
+
+        // A pinned tab refuses to close. Ctrl+W is easy to hit, and pinning is
+        // the user saying this one should survive it. Unpin first.
+        if tabs.items[pos].pinned {
+            return Ok(());
+        }
 
         let label = tabs.items[pos].label.clone();
         let was_active = tabs.active == id;
@@ -1177,6 +1240,53 @@ fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
 /// Called from history.rs when WebView2 reports a change. Separate from the
 /// navigation handlers on purpose: whether a page can be gone back from is not
 /// knowable at the moment navigation starts.
+/// Records the zoom level the runtime reports, and republishes.
+///
+/// Compared with a small epsilon rather than `==`: the factor is a float that
+/// WebView2 steps in fractions, and an exact match would republish on every
+/// event even when nothing visible changed.
+pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
+    {
+        let browser = app.state::<Browser>();
+        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let Some(tab) = tabs.tab_mut(tab_id) else {
+            return;
+        };
+        if (tab.nav.zoom - zoom).abs() < 0.001 {
+            return;
+        }
+        tab.nav.zoom = zoom;
+    }
+    publish(app);
+}
+
+/// Sets the active tab's zoom. `1.0` is 100%.
+///
+/// WebView2 handles Ctrl+scroll and Ctrl+plus/minus itself, so this is not how
+/// zooming normally happens. It exists so the toolbar control can reset, and so
+/// the level can be driven from a test, which is the only way to prove the
+/// ZoomFactorChanged watcher actually fires.
+#[tauri::command]
+pub fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
+    let Some(tab_id) = active_tab_id(&app) else {
+        return Ok(());
+    };
+    let webview = active_webview(&app)?;
+    let actual = crate::history::set_zoom(&webview, factor)?;
+
+    // Updated from the value read back, not left to the event. A programmatic
+    // SetZoomFactor does not raise ZoomFactorChanged, so waiting for it would
+    // leave the indicator showing the old level forever.
+    update_zoom(&app, tab_id, actual);
+    Ok(())
+}
+
+/// Puts the active tab back to 100%.
+#[tauri::command]
+pub fn reset_zoom(app: AppHandle) -> Result<(), String> {
+    set_zoom(app, 1.0)
+}
+
 pub fn update_traverse(app: &AppHandle, tab_id: u32, can_back: bool, can_forward: bool) {
     {
         let browser = app.state::<Browser>();
@@ -1243,6 +1353,102 @@ pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
     let browser = app.state::<Browser>();
     let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
     tabs.active_tab().map(|t| t.id)
+}
+
+/// Pins or unpins a tab, moving it to keep pinned tabs at the front.
+///
+/// Reordered rather than merely flagged, because a pinned tab in the middle of
+/// the strip is a pinned tab you still have to hunt for. Pinning moves it to the
+/// end of the pinned run; unpinning moves it to the front of the unpinned one,
+/// so it lands where it would sit if it had never been pinned.
+#[tauri::command]
+pub async fn set_tab_pinned(app: AppHandle, id: u32, pinned: bool) -> Result<(), String> {
+    {
+        let browser = app.state::<Browser>();
+        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+
+        let Some(pos) = tabs.items.iter().position(|t| t.id == id) else {
+            return Ok(());
+        };
+        if tabs.items[pos].pinned == pinned {
+            return Ok(());
+        }
+
+        let mut tab = tabs.items.remove(pos);
+        tab.pinned = pinned;
+        // Both cases land at the same index: the boundary between the pinned run
+        // and the rest.
+        let boundary = tabs.items.iter().filter(|t| t.pinned).count();
+        tabs.items.insert(boundary, tab);
+    }
+    save_session(&app);
+    publish(&app);
+    Ok(())
+}
+
+/// Opens a copy of a tab beside it.
+///
+/// The URL only. Duplicating a tab's back history would mean copying the
+/// runtime's own history, which is not something WebView2 exposes.
+#[tauri::command]
+pub async fn duplicate_tab(app: AppHandle, id: u32) -> Result<(), String> {
+    let source = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        tabs.items
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| (t.nav.current().cloned(), t.private))
+    };
+
+    let Some((Some(url), private)) = source else {
+        return Ok(());
+    };
+    open_tab_inner(&app, Some(url), private).map_err(|e| e.to_string())
+}
+
+/// Closes every tab except `id`. Pinned tabs are kept.
+#[tauri::command]
+pub async fn close_other_tabs(app: AppHandle, id: u32) -> Result<(), String> {
+    let doomed: Vec<u32> = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        tabs.items
+            .iter()
+            .filter(|t| t.id != id && !t.pinned)
+            .map(|t| t.id)
+            .collect()
+    };
+
+    for tab in doomed {
+        close_tab_inner(&app, tab)?;
+    }
+    Ok(())
+}
+
+/// Closes every tab to the right of `id`. Pinned tabs are kept.
+///
+/// "Right" is position in the strip, so this reads the order rather than
+/// comparing ids: ids ascend by creation, and pinning reorders.
+#[tauri::command]
+pub async fn close_tabs_to_right(app: AppHandle, id: u32) -> Result<(), String> {
+    let doomed: Vec<u32> = {
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        match tabs.items.iter().position(|t| t.id == id) {
+            Some(pos) => tabs.items[pos + 1..]
+                .iter()
+                .filter(|t| !t.pinned)
+                .map(|t| t.id)
+                .collect(),
+            None => Vec::new(),
+        }
+    };
+
+    for tab in doomed {
+        close_tab_inner(&app, tab)?;
+    }
+    Ok(())
 }
 
 /// Id of the tab at a zero-based position, for the Ctrl+1..8 bindings.
@@ -1406,6 +1612,7 @@ mod tests {
             title: String::new(),
             nav: NavState::default(),
             private: false,
+            pinned: false,
         };
         assert_eq!(tab.display_title(), "New tab");
 

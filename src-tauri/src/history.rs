@@ -25,7 +25,7 @@
 use std::sync::mpsc;
 
 use tauri::{AppHandle, Manager};
-use webview2_com::HistoryChangedEventHandler;
+use webview2_com::{HistoryChangedEventHandler, ZoomFactorChangedEventHandler};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 
 /// Runs `f` against a webview's `ICoreWebView2`.
@@ -69,6 +69,84 @@ pub fn go(webview: &tauri::webview::Webview, forward: bool) -> Result<(), String
             core.GoBack()
         }
     })
+}
+
+/// Subscribes to zoom changes for one tab.
+///
+/// Zoom itself is WebView2's: `zoom_hotkeys_enabled` lets it handle Ctrl+scroll
+/// and Ctrl+plus/minus internally, so Brume never sets the level and only needs
+/// to know what it became. Without this the toolbar could not say you were at
+/// 150%, which is the whole complaint the indicator answers.
+///
+/// Watched on the **controller**, not the webview: zoom is a property of the
+/// host's presentation of the page rather than of the document.
+pub fn watch_zoom(app: &AppHandle, tab_id: u32, label: &str) {
+    let Some(webview) = app.get_webview(label) else {
+        return;
+    };
+    let handle = app.clone();
+
+    let _ = webview.with_webview(move |platform| {
+        let controller = platform.controller();
+        let _ = (|| unsafe {
+            let mut token = 0i64;
+            controller.add_ZoomFactorChanged(
+                &ZoomFactorChangedEventHandler::create(Box::new(move |sender, _args| {
+                    if let Some(controller) = sender.as_ref() {
+                        let mut factor = 1.0f64;
+                        if controller.ZoomFactor(&mut factor).is_ok() {
+                            crate::browser::update_zoom(&handle, tab_id, factor);
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+            Ok::<_, windows_core::Error>(())
+        })();
+    });
+}
+
+/// Sets the zoom level.
+///
+/// Goes through the controller rather than `Webview::set_zoom` so the change
+/// comes from the same object the watcher reads, and ZoomFactorChanged fires
+/// exactly as it would for a Ctrl+scroll. Nothing is published from here: the
+/// event does that, with whatever value the runtime actually settled on.
+///
+/// Clamped to the range Chromium itself offers. WebView2 accepts absurd factors
+/// without complaint, and a page at 5000% is a browser someone has to force-quit.
+/// Returns the factor the runtime actually settled on, which is not always the
+/// one asked for.
+///
+/// Read back rather than assumed, because **ZoomFactorChanged does not fire for
+/// a programmatic SetZoomFactor** - measured, not guessed: setting 1.5 resized
+/// the page correctly while the watcher stayed silent and the indicator kept
+/// reading 100%. The event still covers user zoom, which is the path that
+/// matters most, but this one cannot rely on it.
+pub fn set_zoom(webview: &tauri::webview::Webview, factor: f64) -> Result<f64, String> {
+    let clamped = factor.clamp(0.25, 5.0);
+    let (tx, rx) = mpsc::channel();
+
+    webview
+        .with_webview(move |platform| {
+            let controller = platform.controller();
+            let result = unsafe {
+                controller.SetZoomFactor(clamped).and_then(|()| {
+                    let mut actual = 1.0f64;
+                    controller.ZoomFactor(&mut actual)?;
+                    Ok(actual)
+                })
+            };
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("Could not reach the page: {e}"))?;
+
+    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(Ok(actual)) => Ok(actual),
+        Ok(Err(e)) => Err(format!("Could not set zoom: {e}")),
+        Err(_) => Err("The page did not respond.".into()),
+    }
 }
 
 /// Subscribes to history changes for one tab.

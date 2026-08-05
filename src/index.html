@@ -249,6 +249,75 @@
         color: var(--fg);
       }
 
+      /* Wider than an icon button, because it holds text. Tabular figures so
+         stepping 90/100/110 does not shift the toolbar around it. */
+      .zoom-btn {
+        width: auto;
+        min-width: 42px;
+        padding: 0 7px;
+        font-family: var(--font-ui);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-muted);
+      }
+      .zoom-btn:hover {
+        color: var(--fg);
+      }
+
+      /* --- tab context menu ---------------------------------------------- */
+      /* Fixed, because the chrome webview is its own document: the menu cannot
+         escape it, and it does not need to. Its height is well inside the
+         76px strip only because the menu opens downward over the toolbar. */
+      .ctxmenu {
+        position: fixed;
+        z-index: 50;
+        min-width: 168px;
+        padding: 4px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      }
+
+      .ctxmenu button {
+        display: block;
+        width: 100%;
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 3px;
+        background: transparent;
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 12px;
+        text-align: left;
+        cursor: default;
+      }
+      .ctxmenu button:hover:not(:disabled) {
+        background: var(--elev-1);
+      }
+      .ctxmenu button:disabled {
+        color: var(--fg-muted);
+        opacity: 0.5;
+      }
+      .ctxmenu hr {
+        margin: 4px 6px;
+        border: 0;
+        border-top: 1px solid var(--hairline);
+      }
+
+      /* A pinned tab is icon-only: no title, no close button, and narrow enough
+         that several fit without crowding the rest of the strip. */
+      .tab[data-pinned="true"] {
+        flex: 0 0 auto;
+        min-width: 0;
+        width: 34px;
+        padding: 0 10px;
+      }
+      .tab[data-pinned="true"] .tab-title,
+      .tab[data-pinned="true"] .tab-close {
+        display: none;
+      }
+
       /* --- find bar ------------------------------------------------------ */
       /* Height is pinned to 36px because browser.rs adds exactly that to the
          chrome when the bar opens. The two must agree or the page is left
@@ -791,6 +860,14 @@
         />
       </div>
 
+      <!--
+        Hidden at 100%. A zoom readout that is always on screen is noise, and
+        its presence is most of the signal: if you can see it, you are not at
+        normal size. Clicking it goes back to 100%.
+      -->
+      <button class="btn zoom-btn" id="zoom" title="Reset zoom to 100%" aria-label="Reset zoom" hidden>
+        <span id="zoom-level">100%</span>
+      </button>
       <button class="btn" id="bookmark" title="Bookmark this page" aria-label="Bookmark this page">
         <span class="ico ico-bookmark"></span>
       </button>
@@ -828,6 +905,13 @@
         <span class="ico ico-stop"></span>
       </button>
     </div>
+
+    <!--
+      Tab context menu. Positioned in JS at the pointer, and populated per tab
+      because the pin item has to read Pin or Unpin, and the close items are
+      pointless on the only tab.
+    -->
+    <div class="ctxmenu" id="tab-menu" hidden></div>
 
     <div class="progress" id="progress" data-loading="false"></div>
 
@@ -957,6 +1041,73 @@
         return img;
       }
 
+      /* --- tab context menu ------------------------------------------------
+       *
+       * Built fresh on each open rather than kept in the DOM, because every item
+       * depends on which tab was clicked: pin reads Pin or Unpin, and the close
+       * items are meaningless when there is nothing else to close.
+       */
+      function closeTabMenu() {
+        el("tab-menu").hidden = true;
+      }
+
+      function openTabMenu(event, tab, allTabs) {
+        const menu = el("tab-menu");
+        menu.textContent = "";
+
+        const closable = allTabs.filter((t) => !t.pinned);
+        const index = allTabs.findIndex((t) => t.id === tab.id);
+        const toRight = allTabs.slice(index + 1).filter((t) => !t.pinned).length;
+
+        const add = (label, enabled, run) => {
+          const b = document.createElement("button");
+          b.textContent = label;
+          b.disabled = !enabled;
+          if (enabled) {
+            b.addEventListener("click", () => {
+              closeTabMenu();
+              run();
+            });
+          }
+          menu.appendChild(b);
+        };
+
+        add("Duplicate", true, () => call("duplicate_tab", { id: tab.id }));
+        add(tab.pinned ? "Unpin tab" : "Pin tab", true, () =>
+          call("set_tab_pinned", { id: tab.id, pinned: !tab.pinned })
+        );
+        menu.appendChild(document.createElement("hr"));
+        // A pinned tab cannot be closed, so offer nothing that pretends it can.
+        add("Close tab", !tab.pinned, () => call("close_tab", { id: tab.id }));
+        add(
+          "Close other tabs",
+          closable.some((t) => t.id !== tab.id),
+          () => call("close_other_tabs", { id: tab.id })
+        );
+        add("Close tabs to the right", toRight > 0, () =>
+          call("close_tabs_to_right", { id: tab.id })
+        );
+
+        // Shown before measuring: a hidden element has no dimensions to clamp
+        // against, so it would be positioned off the right edge every time.
+        menu.hidden = false;
+        const rect = menu.getBoundingClientRect();
+        const x = Math.min(event.clientX, window.innerWidth - rect.width - 4);
+        const y = Math.min(event.clientY, window.innerHeight - rect.height - 4);
+        menu.style.left = `${Math.max(4, x)}px`;
+        menu.style.top = `${Math.max(4, y)}px`;
+      }
+
+      // Any click elsewhere dismisses it, and so does Escape. The chrome has
+      // focus while the menu is open, so this keydown does fire, unlike one
+      // aimed at the page.
+      document.addEventListener("click", (event) => {
+        if (!el("tab-menu").contains(event.target)) closeTabMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeTabMenu();
+      });
+
       // --- tab strip ------------------------------------------------------
       function renderTabs(tabs) {
         const strip = el("tabs");
@@ -968,6 +1119,12 @@
           node.dataset.active = String(tab.active);
           node.title = tab.title;
           node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
+
+          node.dataset.pinned = String(!!tab.pinned);
+          node.addEventListener("contextmenu", (event) => {
+            event.preventDefault();
+            openTabMenu(event, tab, tabs);
+          });
 
           if (tab.private) {
             // The mask, not a favicon. Whose site it is matters less than the
@@ -1027,6 +1184,12 @@
         el("bookmark").title = state.bookmarked
           ? "Remove bookmark"
           : "Bookmark this page";
+
+        // Rounded, because WebView2 steps zoom in fractions that do not land on
+        // whole percentages: 1.100000023841858 should read as 110%.
+        const pct = Math.round((state.zoom ?? 1) * 100);
+        el("zoom").hidden = pct === 100;
+        el("zoom-level").textContent = `${pct}%`;
 
         el("reload-icon").className = state.loading ? "ico ico-stop" : "ico ico-reload";
         el("reload").title = state.loading ? "Stop" : "Reload";
@@ -1698,6 +1861,7 @@
       el("back").addEventListener("click", () => call("go_back"));
       el("forward").addEventListener("click", () => call("go_forward"));
       el("home").addEventListener("click", () => call("go_home"));
+      el("zoom").addEventListener("click", () => call("reset_zoom"));
       el("reload").addEventListener("click", () =>
         call(loading ? "stop_loading" : "reload")
       );

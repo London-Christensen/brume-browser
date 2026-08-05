@@ -62,9 +62,15 @@ pub struct Settings {
     ///
     /// Empty means "open the homepage", which is both the first-run case and
     /// what happens after every tab was closed by hand.
-    pub session: Vec<String>,
+    ///
+    /// Named `session_tabs` rather than reusing the older `session` key, which
+    /// held bare URL strings. serde rejects a field of the wrong type outright,
+    /// and because a settings file that will not parse is moved aside wholesale,
+    /// reusing the name would have cost the user every other setting too. An
+    /// unknown key is ignored, so old files simply start with no session.
+    pub session_tabs: Vec<SessionTab>,
 
-    /// Index into `session` of the tab that was in front.
+    /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
     /// Last window geometry, or `None` until the first window closes.
@@ -73,6 +79,17 @@ pub struct Settings {
     /// BOM-stripping and corrupt-file handling. It is not a preference, and the
     /// Settings panel deliberately does not show it.
     pub window: Option<WindowGeometry>,
+}
+
+/// One restored tab.
+///
+/// URL and pinned state only. A tab's own back history is WebView2's and dies
+/// with the webview, so there is nothing more to keep.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SessionTab {
+    pub url: String,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// Where the window was, in logical pixels.
@@ -99,7 +116,7 @@ impl Default for Settings {
             search_engine: crate::search::DEFAULT_ENGINE_ID.to_string(),
             theme: "dark".to_string(),
             homepage: String::new(),
-            session: Vec::new(),
+            session_tabs: Vec::new(),
             session_active: 0,
             window: None,
         }
@@ -258,16 +275,16 @@ impl SettingsState {
     }
 
     /// Records the open tabs and which was in front.
-    pub fn set_session(&self, urls: Vec<String>, active: usize) -> Result<(), String> {
+    pub fn set_session(&self, tabs: Vec<SessionTab>, active: usize) -> Result<(), String> {
         self.update(|s| {
-            s.session = urls;
+            s.session_tabs = tabs;
             s.session_active = active;
         })
     }
 
-    pub fn session(&self) -> (Vec<String>, usize) {
+    pub fn session(&self) -> (Vec<SessionTab>, usize) {
         let current = self.get();
-        (current.session, current.session_active)
+        (current.session_tabs, current.session_active)
     }
 
     pub fn window(&self) -> Option<WindowGeometry> {

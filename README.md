@@ -88,6 +88,7 @@ way.
 | `Ctrl`+`H` | History |
 | `Ctrl`+`,` | Settings |
 | `Ctrl`+`P` | Print |
+| Right-click a tab | Duplicate, pin, close others, close to the right |
 | `F11` | Fullscreen |
 | `Ctrl`+scroll, `Ctrl`+`+`/`-`/`0` | Zoom the page |
 

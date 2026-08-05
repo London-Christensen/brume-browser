@@ -762,6 +762,56 @@ to keep" are different decisions and should not share a button.
 
 ---
 
+## Zoom: watched, not driven
+
+WebView2 owns zooming. `zoom_hotkeys_enabled` lets it handle Ctrl+scroll and
+Ctrl+plus/minus internally, so Brume never sets a level during normal use and
+only needs to know what it became. `history.rs` subscribes to
+`ZoomFactorChanged` on the **controller** (zoom is a property of the host's
+presentation, not of the document) and mirrors the factor per tab, because
+WebView2 keeps zoom per webview.
+
+The indicator is hidden at 100%. A readout that is always on screen is noise,
+and its presence is most of the signal: if you can see it, you are not at normal
+size.
+
+**ZoomFactorChanged does not fire for a programmatic `SetZoomFactor`.** Measured,
+not assumed: setting 1.5 resized the page correctly, the watcher stayed silent
+and the indicator kept reading 100%. So `set_zoom` reads the factor back and
+updates state itself. The event still covers user zoom, which is the common path,
+but it cannot be relied on for a set Brume made.
+
+`NavState` implements `Default` by hand for one reason: `zoom` must start at
+`1.0`. Deriving it gives `0.0`, and a new tab would report itself at 0%.
+
+---
+
+## Pinned tabs reorder rather than just flagging
+
+A pinned tab in the middle of the strip is still a pinned tab you have to hunt
+for, so pinning moves it to the end of the pinned run and unpinning moves it to
+the front of the unpinned one. Both land at the same index, the boundary between
+the two groups.
+
+**A pinned tab refuses to close.** `close_tab_inner` returns early for one, and
+"close others" and "close to the right" skip them. Ctrl+W is easy to hit by
+accident, and pinning is the user saying this tab should survive it.
+
+Pinned state is persisted, which is why the session field changed shape.
+
+### Why the settings key was renamed rather than reused
+
+`session` held bare URL strings; tabs now need a URL and a pinned flag. serde
+rejects a field of the wrong type outright, and `SettingsState::load` moves an
+unparseable file aside wholesale, so reusing the key would have cost the user
+every other setting as well. Unknown keys are ignored, so `session_tabs` is a new
+name and an old file simply starts with no session.
+
+Worth remembering for the next schema change: `#[serde(default)]` on the
+container rescues a *missing* field, not a mistyped one.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
