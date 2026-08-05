@@ -76,7 +76,12 @@ const BINDINGS: &[(&str, &str)] = &[
     ("CmdOrCtrl+D", "bookmark"),
     ("CmdOrCtrl+Shift+B", "bookmarks_bar"),
     ("CmdOrCtrl+H", "history"),
+    ("CmdOrCtrl+J", "downloads"),
     ("CmdOrCtrl+Comma", "settings"),
+    // Opens Settings, where the control actually lives. Brume has no separate
+    // clear-data dialog and inventing one to satisfy a keystroke would be a
+    // second place for the same switch to drift out of step.
+    ("CmdOrCtrl+Shift+Delete", "clear_data"),
     // No Escape binding here on purpose. These are *global* shortcuts while the
     // window has focus, so registering Escape would take it away from every
     // page: no dismissing a site's own dialog, no leaving its fullscreen. The
@@ -228,8 +233,11 @@ pub fn handle(app: &AppHandle, action: &str) {
         "bookmark" => log(browser::toggle_bookmark_active(app.clone()).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.
-        "history" | "settings" => {
+        "history" | "settings" | "downloads" => {
             let _ = app.emit_to(browser::CHROME_LABEL, OPEN_PANEL_EVENT, action.to_string());
+        }
+        "clear_data" => {
+            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_PANEL_EVENT, "settings".to_string());
         }
 
         other => eprintln!("[shortcuts] unhandled action: {other}"),

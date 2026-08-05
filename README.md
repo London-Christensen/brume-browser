@@ -80,13 +80,15 @@ way.
 | `Ctrl`+`1`…`8` | Switch to that tab |
 | `Ctrl`+`9` | Last tab |
 | `Ctrl`+`L` | Focus the address bar |
-| `Ctrl`+`F` | Find on page. `Enter` / `Shift`+`Enter` step, `Esc` closes |
+| `Ctrl`+`F` | Find on page. `Enter` / `Shift`+`Enter` step, `Esc` closes. `Aa` and `ab` match case and whole word |
 | `Ctrl`+`R` / `F5` | Reload |
 | `Alt`+`←` / `Alt`+`→` | Back / forward |
 | `Alt`+`Home` | Homepage |
 | `Ctrl`+`D` | Bookmark this page |
 | `Ctrl`+`Shift`+`B` | Show or hide the bookmarks bar |
 | `Ctrl`+`H` | History |
+| `Ctrl`+`J` | Downloads |
+| `Ctrl`+`Shift`+`Delete` | Clear browsing data (opens Settings, where the control is) |
 | `Ctrl`+`,` | Settings |
 | `Ctrl`+`P` | Print |
 | Right-click a tab | Duplicate, pin, close others, close to the right |

@@ -88,6 +88,7 @@ fn main() {
             browser::toggle_bookmarks_bar,
             store::history,
             store::clear_history,
+            store::remove_visit,
             store::bookmarks,
             store::suggest,
             browser::set_suggest_overlay,

@@ -139,7 +139,12 @@ fn emit(app: &AppHandle, state: FindState) {
 
 /// Starts a search. The count arrives later on `FIND_STATE_EVENT`.
 #[tauri::command]
-pub fn find_start(app: AppHandle, query: String, case_sensitive: bool) -> Result<(), String> {
+pub fn find_start(
+    app: AppHandle,
+    query: String,
+    case_sensitive: bool,
+    whole_word: bool,
+) -> Result<(), String> {
     if query.is_empty() {
         return find_stop(app);
     }
@@ -161,6 +166,10 @@ pub fn find_start(app: AppHandle, query: String, case_sensitive: bool) -> Result
                     .CreateFindOptions()?;
                 options.SetFindTerm(&windows_core::HSTRING::from(query.as_str()))?;
                 options.SetIsCaseSensitive(case_sensitive)?;
+                // Whole word means the runtime's own idea of a word boundary,
+                // not a regex Brume would have to define and get wrong for
+                // every language that does not put spaces between words.
+                options.SetShouldMatchWord(whole_word)?;
                 options.SetShouldHighlightAllMatches(true)?;
                 // Brume draws its own find bar, so WebView2's must stay shut.
                 // Without this both appear and the two disagree about state.

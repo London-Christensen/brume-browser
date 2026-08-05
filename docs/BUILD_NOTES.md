@@ -1122,6 +1122,52 @@ animation running on a 614px fill, and `loading` confirmed reaching the chrome a
 
 ---
 
+## Finishing things that were already half-built
+
+Three small ones, grouped because each was a case of the hard part already
+existing and only the last step being missing.
+
+**Find already knew about case sensitivity.** `find_start` took a
+`case_sensitive` argument and set it on the options object, and the chrome passed
+`false` unconditionally. WebView2 also offers `SetShouldMatchWord`, so both are
+exposed now as `Aa` and `ab` in the find bar. Whole word is the runtime's own
+word boundary rather than something Brume defines, which matters for every
+language that does not put spaces between words.
+
+Flipping a toggle re-runs the current search immediately rather than waiting for
+the next keystroke, because a modifier that only takes effect once you type
+again reads as broken.
+
+Verified against a running page: "domain" found 2 matches, 1 with match case on.
+"omain" found 2 as a substring and **No results** with whole word on, which is
+the assertion that actually proves the flag reaches the runtime.
+
+**Ctrl+J and Ctrl+Shift+Delete were never bound.** Both are standard everywhere
+else. Ctrl+Shift+Delete opens Settings rather than a dedicated dialog: the clear
+control already lives there, and a second surface for the same switch is a second
+thing to keep in step. The panel event now carries any of the four view names
+rather than only history and settings, falling back to history for anything
+unrecognised instead of rendering an empty panel.
+
+**History could only be cleared entirely.** Removing one visit rewrites the file,
+which is exactly what an append-only format exists to avoid, and that is fine:
+it runs when someone deletes a row by hand, not on every page load, so recording
+a visit stays O(1) and the delete pays O(n) once.
+
+Two properties there are easy to get wrong and both are tested: the match is on
+URL **and** timestamp, so removing one visit to a page does not take every other
+visit with it, and a line that will not parse is kept rather than dropped,
+because a torn line is not the line anyone asked to remove and discarding it
+would turn a delete into a repair.
+
+`match_rank` and `without_visit` are free functions rather than closures for the
+same reason `extent_for` is: the ranking and the line handling are the decisions
+worth testing, and neither needs a Store or a filesystem to exercise. Writing the
+ranking test immediately caught a wrong expectation of my own, which is the
+argument for having written it.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

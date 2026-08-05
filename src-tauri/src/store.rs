@@ -292,6 +292,25 @@ impl Store {
         write_atomic(&self.history_path, "")
     }
 
+    /// Removes one visit.
+    ///
+    /// A full rewrite of the file, which is precisely what the append-only
+    /// format exists to avoid. That is fine here: this runs when someone deletes
+    /// a row by hand, not on every page load, so paying O(n) once for a thing
+    /// that happens rarely is the right trade. Recording a visit stays O(1).
+    ///
+    /// Matched on the URL *and* the timestamp, so deleting one visit to a page
+    /// does not silently take every other visit to it with it. Lines that will
+    /// not parse are kept rather than dropped: a torn line is not the line the
+    /// user asked to remove, and quietly discarding it would turn a delete into
+    /// a repair nobody asked for.
+    pub fn remove_visit(&self, url: &str, visited_at: i64) -> Result<(), String> {
+        let Ok(raw) = fs::read_to_string(&self.history_path) else {
+            return Ok(()); // no file, nothing to remove
+        };
+        write_atomic(&self.history_path, &without_visit(&raw, url, visited_at))
+    }
+
     // --- bookmarks ------------------------------------------------------
 
     fn persist_bookmarks(&self, items: &[Bookmark]) -> Result<(), String> {
@@ -380,29 +399,7 @@ impl Store {
             return Vec::new();
         }
 
-        // How well one candidate matches, or None for not at all. Lower is
-        // better, so this sorts naturally.
-        let rank = |url: &str, title: &str| -> Option<u8> {
-            let url_l = url.to_lowercase();
-            let title_l = title.to_lowercase();
-            // The scheme is noise when matching what someone typed: nobody
-            // types "https://" to find github.
-            let bare = url_l
-                .strip_prefix("https://")
-                .or_else(|| url_l.strip_prefix("http://"))
-                .unwrap_or(&url_l);
-            let bare = bare.strip_prefix("www.").unwrap_or(bare);
-
-            if bare.starts_with(&needle) {
-                Some(0)
-            } else if title_l.starts_with(&needle) {
-                Some(1)
-            } else if bare.contains(&needle) || title_l.contains(&needle) {
-                Some(2)
-            } else {
-                None
-            }
-        };
+        let rank = |url: &str, title: &str| match_rank(url, title, &needle);
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut scored: Vec<(u8, u8, i64, Suggestion)> = Vec::new();
@@ -603,6 +600,62 @@ impl Store {
     }
 }
 
+/// How well a candidate matches what was typed, or `None` for not at all.
+///
+/// Lower is better, so the values sort naturally. Free-standing rather than a
+/// closure inside `suggest` so the ranking can be tested without a Store and a
+/// history file: the ordering *is* the feature, and it is the part most likely
+/// to be changed later by someone who has not read why.
+///
+/// `needle` is expected already lowercased and trimmed by the caller.
+fn match_rank(url: &str, title: &str, needle: &str) -> Option<u8> {
+    let url_l = url.to_lowercase();
+    let title_l = title.to_lowercase();
+
+    // The scheme is noise when matching what someone typed. Nobody types
+    // "https://" to find github, so a prefix match has to be against the bare
+    // host or every suggestion would rank as a mere substring.
+    let bare = url_l
+        .strip_prefix("https://")
+        .or_else(|| url_l.strip_prefix("http://"))
+        .unwrap_or(&url_l);
+    let bare = bare.strip_prefix("www.").unwrap_or(bare);
+
+    if bare.starts_with(needle) {
+        Some(0)
+    } else if title_l.starts_with(needle) {
+        Some(1)
+    } else if bare.contains(needle) || title_l.contains(needle) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// History minus one visit, as text ready to write back.
+///
+/// Split out from `remove_visit` so the line handling can be tested without
+/// touching the filesystem. The two properties that matter are both easy to get
+/// wrong: only the named visit goes, and a line that will not parse stays.
+fn without_visit(raw: &str, url: &str, visited_at: i64) -> String {
+    let kept: Vec<&str> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| match serde_json::from_str::<Visit>(line) {
+            Ok(v) => !(v.url == url && v.visited_at == visited_at),
+            // A torn line is not the line anyone asked to remove, and silently
+            // dropping it would turn a delete into a repair.
+            Err(_) => true,
+        })
+        .collect();
+
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 /// Last path segment of a URL, for when nothing better is available.
 fn filename_from_url(url: &str) -> String {
     tauri::Url::parse(url)
@@ -627,6 +680,11 @@ pub fn history(store: State<'_, Store>, query: Option<String>, limit: Option<usi
 #[tauri::command]
 pub fn clear_history(store: State<'_, Store>) -> Result<(), String> {
     store.clear_history()
+}
+
+#[tauri::command]
+pub fn remove_visit(store: State<'_, Store>, url: String, visited_at: i64) -> Result<(), String> {
+    store.remove_visit(&url, visited_at)
 }
 
 #[tauri::command]
@@ -736,6 +794,66 @@ mod tests {
 
         assert_eq!(parsed.len(), 1, "the intact line should still be readable");
         assert_eq!(parsed[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn a_prefix_beats_a_substring_and_the_scheme_is_ignored() {
+        // The ordering is the feature. 0 beats 1 beats 2, and None is no match.
+        assert_eq!(match_rank("https://github.com/", "GitHub", "git"), Some(0));
+        // www. is stripped too, or every www host would rank a tier low.
+        assert_eq!(match_rank("https://www.github.com/", "GitHub", "git"), Some(0));
+        // Title prefix is worth more than a substring buried in a URL.
+        assert_eq!(match_rank("https://example.com/x", "Gitting on", "git"), Some(1));
+        // Both the host and the title only *contain* it, so this is the bottom
+        // tier. Note the title matters as much as the URL: "GitLab" as a title
+        // would prefix-match and rank a tier higher, which is correct and is
+        // why the real gitlab entry ranks below github.
+        assert_eq!(
+            match_rank("https://about.gitlab.com/", "Software lifecycle", "git"),
+            Some(2)
+        );
+        assert_eq!(match_rank("https://example.com/", "Example", "git"), None);
+        // Matching is case-insensitive on both sides; the caller lowercases the
+        // needle, so an upper-case page title must still be found.
+        assert_eq!(match_rank("https://GITHUB.com/", "GITHUB", "git"), Some(0));
+    }
+
+    #[test]
+    fn removing_one_visit_leaves_the_others_and_keeps_torn_lines() {
+        let line = |url: &str, at: i64| {
+            serde_json::to_string(&Visit {
+                url: url.into(),
+                title: "t".into(),
+                visited_at: at,
+            })
+            .unwrap()
+        };
+        // Same URL twice, so this also proves a delete does not take every
+        // visit to a page with it.
+        let raw = format!(
+            "{}\n{}\n{}\n{{\"url\": \"https://torn.example",
+            line("https://a.test/", 1),
+            line("https://a.test/", 2),
+            line("https://b.test/", 3),
+        );
+
+        let out = without_visit(&raw, "https://a.test/", 2);
+        assert!(out.contains("\"visited_at\":1"), "the other visit stays");
+        assert!(!out.contains("\"visited_at\":2"), "the named visit goes");
+        assert!(out.contains("b.test"), "unrelated rows stay");
+        assert!(out.contains("torn.example"), "an unparseable line is kept");
+        assert!(out.ends_with('\n'), "the file stays newline terminated");
+    }
+
+    #[test]
+    fn removing_the_only_visit_leaves_an_empty_file_not_a_stray_newline() {
+        let raw = serde_json::to_string(&Visit {
+            url: "https://a.test/".into(),
+            title: "t".into(),
+            visited_at: 7,
+        })
+        .unwrap();
+        assert_eq!(without_visit(&raw, "https://a.test/", 7), "");
     }
 
     #[test]
