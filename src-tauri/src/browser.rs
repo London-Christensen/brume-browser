@@ -374,6 +374,23 @@ fn current_state(app: &AppHandle) -> BrowserState {
     snapshot(&tabs, bookmarked, bookmarks_bar, panel_open)
 }
 
+/// Closes the panel, because something is about to show a page.
+///
+/// While the panel is open the chrome takes the whole window and **every content
+/// webview is hidden behind it**, so anything meaning "show me a page" has to
+/// close it first. Without this a new tab opens, loads, and is never seen: the
+/// strip grows a tab, the address bar updates, and the window carries on showing
+/// Settings. That reads as the browser being broken, and it was.
+///
+/// Returns whether it was open, so a caller can skip a relayout it does not need.
+/// `swap` rather than a load and a store, so two of these racing cannot both
+/// decide they were the one that closed it.
+fn dismiss_panel(app: &AppHandle) -> bool {
+    app.state::<Browser>()
+        .panel_open
+        .swap(false, Ordering::Relaxed)
+}
+
 /// Pushes current state to the chrome.
 ///
 /// The chrome never asks; it is told. A one-way feed means the tab strip and the
@@ -1023,6 +1040,10 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
 fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri::Result<()> {
     let target = url.unwrap_or_else(|| home_url(app));
 
+    // Before the layout below, not after: a tab opened from the panel has to end
+    // up visible. The relayout at the end of this function is what applies it.
+    dismiss_panel(app);
+
     let (id, label, previous_active) = {
         let browser = app.state::<Browser>();
         let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
@@ -1206,6 +1227,8 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
             tabs.active = id;
         }
     }
+    // Clicking a tab is asking to see it, so the panel gets out of the way.
+    dismiss_panel(&app);
     relayout(&app).map_err(|e| e.to_string())?;
     publish(&app);
     Ok(())
@@ -1215,11 +1238,15 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
 ///
 /// The search engine comes from settings rather than from the caller: the chrome
 /// should not have to know, or be able to disagree about, which engine is current.
+/// Async because it can close the panel, and closing the panel re-lays-out
+/// webviews. Same rule as `set_panel`.
 #[tauri::command]
-pub fn navigate(app: AppHandle, input: String) -> Result<(), String> {
-    let settings = app.state::<crate::settings::SettingsState>();
-    let engine_id = settings.get().search_engine;
-    let target = crate::search::resolve(&input, &engine_id, settings.is_dark(&app));
+pub async fn navigate(app: AppHandle, input: String) -> Result<(), String> {
+    let target = {
+        let settings = app.state::<crate::settings::SettingsState>();
+        let engine_id = settings.get().search_engine;
+        crate::search::resolve(&input, &engine_id, settings.is_dark(&app))
+    };
     if target.is_empty() {
         return Ok(());
     }
@@ -1228,9 +1255,25 @@ pub fn navigate(app: AppHandle, input: String) -> Result<(), String> {
         .parse()
         .map_err(|_| format!("That does not look like an address: {target}"))?;
 
+    // After the parse, so a typo in the address bar does not close the panel on
+    // its way to reporting itself.
+    show_page(&app)?;
+
     active_webview(&app)?
         .navigate(url)
         .map_err(|e| e.to_string())
+}
+
+/// Closes the panel and applies the layout, for a command about to show a page.
+///
+/// Every caller is `async` for this reason: `relayout` moves and resizes
+/// webviews, which is the thing sync commands must not do from the main thread.
+fn show_page(app: &AppHandle) -> Result<(), String> {
+    if dismiss_panel(app) {
+        relayout(app).map_err(|e| e.to_string())?;
+        publish(app);
+    }
+    Ok(())
 }
 
 /// Opens the system print dialog for the active tab.
@@ -1267,12 +1310,13 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<(), String> {
 /// because an empty homepage means "follow the search engine", so the
 /// destination can change without the homepage setting itself changing.
 #[tauri::command]
-pub fn go_home(app: AppHandle) -> Result<(), String> {
+pub async fn go_home(app: AppHandle) -> Result<(), String> {
     let target = home_url(&app);
     let url = target
         .parse()
         .map_err(|_| format!("Homepage is not a valid address: {target}"))?;
 
+    show_page(&app)?;
     active_webview(&app)?.navigate(url).map_err(|e| e.to_string())
 }
 
@@ -1356,12 +1400,14 @@ pub fn update_traverse(app: &AppHandle, tab_id: u32, can_back: bool, can_forward
 }
 
 #[tauri::command]
-pub fn go_back(app: AppHandle) -> Result<(), String> {
+pub async fn go_back(app: AppHandle) -> Result<(), String> {
+    show_page(&app)?;
     traverse(&app, false)
 }
 
 #[tauri::command]
-pub fn go_forward(app: AppHandle) -> Result<(), String> {
+pub async fn go_forward(app: AppHandle) -> Result<(), String> {
+    show_page(&app)?;
     traverse(&app, true)
 }
 
@@ -1373,7 +1419,8 @@ pub fn go_forward(app: AppHandle) -> Result<(), String> {
 /// error pages has no `location` worth calling, so the old approach failed
 /// silently on exactly the pages a reload button is most wanted on.
 #[tauri::command]
-pub fn reload(app: AppHandle) -> Result<(), String> {
+pub async fn reload(app: AppHandle) -> Result<(), String> {
+    show_page(&app)?;
     active_webview(&app)?.reload().map_err(|e| e.to_string())
 }
 

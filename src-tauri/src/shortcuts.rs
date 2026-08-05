@@ -192,14 +192,15 @@ pub fn handle(app: &AppHandle, action: &str) {
             let _ = app.emit_to(browser::CHROME_LABEL, OPEN_FIND_EVENT, ());
         }
 
-        // These only talk to a webview that already exists, so they are safe to
-        // run directly.
-        "reload" => log(browser::reload(app.clone())),
-        "back" => log(browser::go_back(app.clone())),
-        "forward" => log(browser::go_forward(app.clone())),
+        // Spawned, not called inline. These used to be sync commands that only
+        // talked to an existing webview, but each one now closes the panel first
+        // so the result is actually visible, and that re-lays-out webviews.
+        "reload" => spawn(app, |app| async move { browser::reload(app).await }),
+        "back" => spawn(app, |app| async move { browser::go_back(app).await }),
+        "forward" => spawn(app, |app| async move { browser::go_forward(app).await }),
         // Alt+Home, not Ctrl+Home. Ctrl+Home is "scroll to top of document" in
         // every browser and belongs to the page, not to us.
-        "home" => log(browser::go_home(app.clone())),
+        "home" => spawn(app, |app| async move { browser::go_home(app).await }),
         "print" => log(browser::print_page(app.clone())),
 
         // Resize webviews, so they go through spawn like the tab commands.

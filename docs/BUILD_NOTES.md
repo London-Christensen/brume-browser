@@ -584,9 +584,9 @@ step with the browser, and a missing match lists what it did find instead.
 ## Two smaller ones worth recording
 
 **A double-encoded string reached the UI.** `status.textContent` read
-`"Checking???????"`: U+2026 had been through UTF-8, then CP1252, then
+`"Checkingâ€¦"`: U+2026 had been through UTF-8, then CP1252, then
 UTF-8 again, which is why the middle byte came back as a euro sign. Users saw
-`Checking???????` every time they pressed "Check for updates". It is plain dots now.
+`Checkingâ€¦` every time they pressed "Check for updates". It is plain dots now.
 This file has been through two encoding accidents already, so the one string a
 user reads mid-action is not worth a non-ASCII character.
 
@@ -995,6 +995,39 @@ monotonically, and the DOM went from an indeterminate "Starting..." bar to
 `10.0 MB of 10.0 MB` at width 100%. A 58 MB download through a redirecting host
 also matched, which is what confirms the URL key stays consistent between wry's
 handler and this one across a redirect.
+
+---
+
+## The panel hid every page behind it, and nothing said so
+
+Reported as: open Settings, press new tab, and the tab opens but the window
+carries on showing Settings. Searching from the address bar did the same thing.
+
+The cause is in the panel's own design. It lives in the chrome webview so that
+every privileged surface stays in the one webview holding capabilities, and the
+way it gets the space is that `relayout` grows the chrome to the full window and
+**hides every content webview**. Nothing closed it again. So a new tab was
+created, its webview built, its page loaded, the strip grew a tab and the address
+bar updated, all correctly, and all behind an opaque panel.
+
+Everything about it looked like it worked, which is why it survived this long:
+`browser_state` reported two tabs and the right URL, and the only thing wrong was
+that the window was still showing something else.
+
+`dismiss_panel` now runs from everything that means "show me a page": opening a
+tab, activating one, navigating, back, forward, reload and home. Bookmarking
+deliberately does not, because it acts on the active tab without needing to show
+it.
+
+**Five of those commands had to become `async`.** They only ever talked to an
+existing webview before, so they were sync; closing the panel means calling
+`relayout`, which moves and resizes webviews, which is the thing a sync command
+must not do from the main thread. `shortcuts.rs` dispatches them through `spawn`
+now for the same reason.
+
+The chrome takes `panel_open` from the published state rather than only from its
+own click handlers, so the document cannot go on believing the panel is up after
+the Rust side has already laid the page back out.
 
 ---
 

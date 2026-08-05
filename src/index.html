@@ -1330,6 +1330,13 @@
         bar.hidden = !state.bookmarksBar;
         if (state.bookmarksBar && !wasShowing) renderBookmarksBar();
 
+        // The panel can now be closed by the backend: opening a tab, navigating,
+        // going back and reloading all dismiss it, because otherwise they happen
+        // behind it and look like nothing happened. Following the published
+        // state is what stops this document believing the panel is still up
+        // after the Rust side has already laid the page back out.
+        el("panel").hidden = !state.panelOpen;
+
         // Rounded, because WebView2 steps zoom in fractions that do not land on
         // whole percentages: 1.100000023841858 should read as 110%.
         const pct = Math.round((state.zoom ?? 1) * 100);
