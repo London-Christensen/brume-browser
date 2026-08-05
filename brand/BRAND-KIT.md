@@ -321,52 +321,47 @@ That is the whole rule.
 
 ## 6. Iconography
 
-### 6.1 The angle rule
+### 6.1 The set is Lucide
 
-Version 2.0 said the icon set was entirely orthogonal, because Cleave is. That
-rule does not survive a real browser: back and forward have to carry direction,
-and a search lens has to be round. The rule as it actually stands:
+Versions 2.0 and 2.1 drew the icons here, to a house rule of 90 degrees with 45
+permitted only where an object carries direction and arcs only where an object
+genuinely is round. The rule produced a set that was internally consistent and
+that nobody liked looking at. Squaring off things that are conventionally round
+reads as deliberate on one icon and as a limitation across forty.
 
-| Angle | Permitted |
-|---|---|
-| 90 degrees | Always. The default for anything box-like. |
-| 45 degrees | Only where the object carries direction: arrows, chevrons, the check, the pencil, the bookmark notch, the shield point. |
-| Arcs | Only where the object genuinely is round: the lens, the clock, the lock shackle, info, theme. |
-| Anything else | Never. No 30s, no 60s, no arbitrary slopes. |
+The set is now Lucide, under the ISC License. It is the same 24 canvas, the same
+2px stroke and the same currentColor, so nothing in the browser chrome had to
+change: the icons are painted as CSS masks, which care about the alpha and not
+about how it was drawn.
 
-Where a glyph is conventionally round but does not need to be, it is squared off
-instead. Settings is sliders, not a gear. Extensions is a module grid, not a
-puzzle piece. Private is a mask, not a hat. Warning is a diamond, not a triangle,
-because a triangle with 45-degree sides cannot fit the grid. That substitution is
-where the set gets its character, and it is the thing that keeps it looking
-related to the mark.
+Do not reintroduce the angle rule. It describes a set that no longer exists, and
+the conformance auditor that enforced it has been removed rather than left to
+fail.
 
 ### 6.2 Grid
 
 | Property | Value |
 |---|---|
 | Canvas | 24 x 24 |
-| Live area | 20 x 20 (2 units padding all sides) |
+| Padding | at least 1 unit, per Lucide's own guide |
 | Stroke weight | 2 |
-| Stroke cap | butt |
-| Stroke join | miter |
-| Corner radius | 0. Square corners. |
-| Fill | none. Stroke-only, with two documented exceptions. |
-| Arc radii | 7 for the lens, 9 for full discs (the system radius on this grid) |
-| Coordinate grid | 0.5 units; put 2-unit centrelines on integers so they land on pixel boundaries at 24 and 48 |
+| Stroke cap | round |
+| Stroke join | round |
+| Corner radius | 2 |
+| Fill | none. Stroke-only, with one exception. |
 
-Two icons break the stroke-only rule, both deliberately: `theme` fills a half
-disc, because a light/dark toggle has to show contrast rather than describe it,
-and `cleave` is the mark itself.
+The exception is `cleave`, which is the mark itself and is filled. `theme` used
+to be a second exception, a half-filled disc; Lucide's `contrast` draws the same
+idea as a stroke, so the set is now stroke-only apart from the mark.
 
 ### 6.3 The set
 
-44 icons, enough to build the whole browser chrome.
+45 icons, enough to build the whole browser chrome.
 
 | Group | Icons |
 |---|---|
 | Navigation | `back` `forward` `reload` `home` |
-| Tabs | `tab` `tab-new` `tab-pin` `tab-audio` `split` `sidebar` |
+| Tabs | `tab` `tab-new` `tab-pin` `tab-audio` `tab-audio-muted` `split` `sidebar` |
 | Address bar | `lock` `shield` `shield-off` `info` `warning` `private` |
 | Toolbar | `download` `upload` `bookmark` `history` `extensions` `menu` `more` `settings` `search` `zoom-in` `zoom-out` `print` |
 | Window | `fullscreen` `fullscreen-exit` `maximize` `restore` `close` `minimize` |
@@ -379,42 +374,43 @@ one. Adding a `stop` would have shipped two byte-identical files.
 
 ### 6.4 Optical rules
 
-- Never scale a 24-grid icon to 16px. Redraw it: stroke to 1.5, detail out, live
-  area 14 x 14. Same rule the logomark follows.
+- Never scale a 24-grid icon to 16px. Lucide's own guidance is the same: below
+  24 the 2px stroke stops being 2px and the detail closes up.
 - State is expressed with colour, never by adding elements. An active shield is
   a Lamplight shield, not a shield with a tick on it.
-- Two elements per icon wherever possible. Four is the hard ceiling, and only
-  `extensions` and `settings` reach it.
 
-### 6.5 Adding an icon
+### 6.5 Changing an icon
 
-Add it to `ICONS` in `tools/icons.py`, then run:
+The mapping from Brume's names to Lucide's is in `tools/build-icons.ps1`. Change
+the name on the right of the map, or add a line, then:
 
 ```
-python3 tools/audit.py
+powershell tools/build-icons.ps1
+powershell ../tools/sync-brand-assets.ps1
 ```
 
-It checks every straight segment against the angle rule, computes exact arc
-bounding boxes to confirm the ink stays inside the live area, flags anything too
-small to read, and catches two icons that have ended up with identical paths.
-It exits non-zero on any failure, so it drops straight into a pre-commit hook.
+The left column is what the app asks for by filename and must not churn.
+`tools/icons.py` holds no path data and reads the generated files, so it cannot
+produce an icon that differs from the one being shipped.
 
 ### 6.6 Examples
 
-Shield. Flat top, vertical sides, 45-degree point.
+Shield.
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="shield">
-  <path d="M3 4H21V12L12 21L3 12Z"/>
+<!-- Lucide v1.28.0, ISC. Copyright (c) Lucide Icons and Contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="shield">
+  <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
 </svg>
 ```
 
-Search. One of the five icons allowed an arc, struck at the lens radius of 7.
+Search. Feather-derived, so MIT rather than ISC; `NOTICE` lists which icons are.
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="search">
-  <path d="M11 4A7 7 0 1 1 11 18A7 7 0 1 1 11 4Z"/>
-  <path d="M16 16L21 21"/>
+<!-- Lucide v1.28.0, ISC. Copyright (c) Lucide Icons and Contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="search">
+  <path d="m21 21-4.34-4.34" />
+  <circle cx="11" cy="11" r="8" />
 </svg>
 ```
 
@@ -535,7 +531,7 @@ Five sources, everything else generated.
 ```
 assets/svg/          mark.svg  mark-sm.svg  wordmark.svg  lockup-h.svg  lockup-v.svg
 assets/svg/generated colourways, tiles, adaptive favicon
-assets/icons/        44 icons, incl. cleave.svg (the mark, filled)
+assets/icons/        45 icons, incl. cleave.svg (the mark, filled)
 assets/png/          45 rasters at every size the platforms ask for
 assets/ico/          favicon.ico  brume.ico   (16 24 32 48 64 128 256 each)
 assets/css/          tokens.css
@@ -543,11 +539,11 @@ tools/               kit.py  raster.py  preview.py  docs.py  wordmark.json
 ```
 
 ```
-python3 tools/kit.py       # all SVG, from the geometry constants
+powershell tools/build-icons.ps1   # assets/icons/, from Lucide. Needs npm install.
+python3 tools/kit.py       # the mark, from the geometry constants
 python3 tools/raster.py    # PNG + ICO          (needs cairosvg, Pillow)
 python3 tools/preview.py   # preview.html
 python3 tools/docs.py      # this file
-python3 tools/audit.py     # icon system conformance, exits non-zero on failure
 ```
 
 `kit.py` holds the mark; `icons.py` holds the icon set. Those are the two files to edit. The wordmark travels with it as baked

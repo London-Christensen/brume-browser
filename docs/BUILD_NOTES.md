@@ -1297,6 +1297,51 @@ day the runtime reports it.
 
 ---
 
+## Print was never a system modal
+
+Carried as "unverified" since 0.3.0 on the grounds that it "opens a system modal
+that has to be dismissed by hand, which would hang an unattended test and put a
+dialog on the screen". **All three parts of that were wrong**, and it was never
+checked.
+
+`webview.print()` opens WebView2's own browser preview. It appears as a CDP
+target at `edge://print/` inside the app window, with the paginated document in
+a `chrome-untrusted://print/...print.pdf` iframe. Screenshotted on 2026-08-05: a
+real printer enumerated, "Total: 1 sheet of paper", layout, colour and duplex
+controls, and the page rendered with a running head and date.
+
+Nothing blocked: CDP kept answering throughout, and enumerating the process's
+visible top-level windows showed no new one. The system dialog exists, but it is
+a separate opt-in behind "Print using system dialog... (Ctrl+Shift+P)" *inside*
+that preview, which is presumably where the original claim came from.
+
+Two things to know when testing it: `edge://print/` exposes no debugger
+websocket, so it cannot be driven or dismissed over CDP; and while it is open it
+is the first non-`tauri.localhost` page target, so `Resolve-BrumeTarget -Target
+content` picks it rather than the page.
+
+---
+
+## Tab search, and a naming collision the tests caught
+
+Ctrl+Shift+A, filtering the tab list already in `brume://state` so it searches
+exactly what the strip drew. Worth having now that the strip scrolls: past about
+26 tabs on a 1200px window most of them are off screen.
+
+**The action was first called `tab_search`, and that was a real bug.**
+`shortcuts.rs` dispatches Ctrl+1..8 with a guard arm on `action.starts_with("tab_")`
+that parses the rest as a digit, and that arm sits above where the new handler
+was added. So the shortcut would have been swallowed, tried to parse "search" as
+a number, logged a line nobody reads, and done nothing.
+
+`numbered_tab_actions_carry_a_usable_index` failed the moment it was added,
+because it counts `tab_`-prefixed actions and expects exactly eight. That test
+was written for precisely this - its comment says a typo like `tab_one` "would
+compile, register, and then do nothing at all" - and it earned its keep. The
+action is `search_tabs` now.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

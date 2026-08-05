@@ -323,12 +323,12 @@ idea as a stroke, so the set is now stroke-only apart from the mark.
 
 ### 6.3 The set
 
-44 icons, enough to build the whole browser chrome.
+45 icons, enough to build the whole browser chrome.
 
 | Group | Icons |
 |---|---|
 | Navigation | `back` `forward` `reload` `home` |
-| Tabs | `tab` `tab-new` `tab-pin` `tab-audio` `split` `sidebar` |
+| Tabs | `tab` `tab-new` `tab-pin` `tab-audio` `tab-audio-muted` `split` `sidebar` |
 | Address bar | `lock` `shield` `shield-off` `info` `warning` `private` |
 | Toolbar | `download` `upload` `bookmark` `history` `extensions` `menu` `more` `settings` `search` `zoom-in` `zoom-out` `print` |
 | Window | `fullscreen` `fullscreen-exit` `maximize` `restore` `close` `minimize` |
@@ -483,7 +483,7 @@ Five sources, everything else generated.
 ```
 assets/svg/          mark.svg  mark-sm.svg  wordmark.svg  lockup-h.svg  lockup-v.svg
 assets/svg/generated colourways, tiles, adaptive favicon
-assets/icons/        44 icons, incl. cleave.svg (the mark, filled)
+assets/icons/        45 icons, incl. cleave.svg (the mark, filled)
 assets/png/          45 rasters at every size the platforms ask for
 assets/ico/          favicon.ico  brume.ico   (16 24 32 48 64 128 256 each)
 assets/css/          tokens.css
@@ -491,11 +491,11 @@ tools/               kit.py  raster.py  preview.py  docs.py  wordmark.json
 ```
 
 ```
-python3 tools/kit.py       # all SVG, from the geometry constants
+powershell tools/build-icons.ps1   # assets/icons/, from Lucide. Needs npm install.
+python3 tools/kit.py       # the mark, from the geometry constants
 python3 tools/raster.py    # PNG + ICO          (needs cairosvg, Pillow)
 python3 tools/preview.py   # preview.html
 python3 tools/docs.py      # this file
-python3 tools/audit.py     # icon system conformance, exits non-zero on failure
 ```
 
 `kit.py` is the only file to edit. The wordmark travels with it as baked

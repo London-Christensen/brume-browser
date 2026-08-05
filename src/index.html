@@ -1031,6 +1031,88 @@
         font-size: 11.5px;
       }
 
+      /* --- tab search ------------------------------------------------------ */
+      /* Same overlay as the address dropdown and the permission prompt, so the
+         page is covered rather than moved. Centred rather than anchored: it is
+         about the whole window's worth of tabs, not about one control. */
+      .tabsearch {
+        position: absolute;
+        top: calc(var(--tab-strip-h) + var(--toolbar-h));
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 46;
+        width: 460px;
+        max-width: calc(100% - 24px);
+        padding: 4px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+      }
+
+      #tabsearch-input {
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        border: 0;
+        border-bottom: 1px solid var(--hairline);
+        background: transparent;
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 12.5px;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+      #tabsearch-input:focus {
+        outline: none;
+      }
+
+      .tabsearch-list {
+        margin-top: 4px;
+      }
+      .ts-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 30px;
+        padding: 0 9px;
+        border-radius: 3px;
+        cursor: default;
+      }
+      .ts-row[data-on="true"],
+      .ts-row:hover {
+        background: var(--elev-1);
+      }
+      .ts-title {
+        flex: 0 1 auto;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 12.5px;
+      }
+      .ts-url {
+        flex: 1 1 auto;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+      /* Marks the tab you are already on, so switching to it is not offered as
+         though it would change anything. */
+      .ts-current {
+        flex: 0 0 auto;
+        color: var(--fg-muted);
+        font-size: 11px;
+      }
+      .tabsearch-empty {
+        padding: 9px;
+        color: var(--fg-muted);
+        font-size: 12px;
+      }
+
       /* --- permission prompt ---------------------------------------------- */
       /* Same overlay mechanism as the suggestions dropdown: the chrome grows and
          is raised above the page, so the prompt covers the top of the page
@@ -1277,6 +1359,22 @@
       honestly than one combined question.
     -->
     <div class="permission" id="permission" hidden></div>
+
+    <!--
+      Tab search, Ctrl+Shift+A. Worth having once the strip scrolls: a tab you
+      cannot see is a tab you cannot click, and past about 26 on a 1200px window
+      most of them are off screen.
+    -->
+    <div class="tabsearch" id="tabsearch" hidden>
+      <input
+        type="text"
+        id="tabsearch-input"
+        placeholder="Search tabs"
+        spellcheck="false"
+        autocomplete="off"
+      />
+      <div class="tabsearch-list" id="tabsearch-list"></div>
+    </div>
 
     <!--
       The bookmarks bar. Off by default and toggled with Ctrl+Shift+B or the
@@ -1643,6 +1741,10 @@
       // --- toolbar --------------------------------------------------------
       function render(state) {
         renderTabs(state.tabs);
+        // Kept so tab search filters the same list the strip drew, rather than
+        // asking the backend for a second copy that could disagree.
+        lastTabs = state.tabs;
+        if (!el("tabsearch").hidden) renderTabSearch();
 
         el("back").disabled = !state.canGoBack;
         el("forward").disabled = !state.canGoForward;
@@ -2731,6 +2833,125 @@
         call(loading ? "stop_loading" : "reload")
       );
 
+      /* --- tab search -------------------------------------------------------
+       *
+       * Ctrl+Shift+A. Filters the tabs already in `brume://state`, so it needs
+       * nothing from the backend: the list it searches is the same one the strip
+       * renders, and the two cannot disagree.
+       *
+       * Worth having because the strip scrolls now. Past about 26 tabs on a
+       * 1200px window most of them are off screen, and a tab you cannot see is
+       * one you cannot click.
+       */
+      let tabSearchRows = [];
+      let tabSearchIndex = 0;
+      let lastTabs = [];
+
+      async function closeTabSearch() {
+        const box = el("tabsearch");
+        if (box.hidden) return;
+        box.hidden = true;
+        el("tabsearch-input").value = "";
+        tabSearchRows = [];
+        await syncOverlay();
+      }
+
+      function paintTabSearch() {
+        [...el("tabsearch-list").querySelectorAll(".ts-row")].forEach((row, i) => {
+          row.dataset.on = String(i === tabSearchIndex);
+        });
+      }
+
+      async function renderTabSearch() {
+        const q = el("tabsearch-input").value.trim().toLowerCase();
+        tabSearchRows = lastTabs.filter(
+          (t) =>
+            !q ||
+            (t.title || "").toLowerCase().includes(q) ||
+            (t.url || "").toLowerCase().includes(q)
+        );
+        // Clamped rather than reset: typing a character that narrows the list
+        // should not throw away where you had got to with the arrow keys.
+        tabSearchIndex = Math.min(tabSearchIndex, Math.max(0, tabSearchRows.length - 1));
+
+        const list = el("tabsearch-list");
+        list.textContent = "";
+        if (!tabSearchRows.length) {
+          list.innerHTML = '<div class="tabsearch-empty">No tabs match that.</div>';
+          await syncOverlay();
+          return;
+        }
+
+        for (const [i, t] of tabSearchRows.entries()) {
+          const row = document.createElement("div");
+          row.className = "ts-row";
+          row.appendChild(faviconNode(t.url, false));
+          const title = document.createElement("span");
+          title.className = "ts-title";
+          title.textContent = t.title || t.url;
+          const url = document.createElement("span");
+          url.className = "ts-url";
+          url.textContent = t.url;
+          row.append(title, url);
+          if (t.active) {
+            const here = document.createElement("span");
+            here.className = "ts-current";
+            here.textContent = "current";
+            row.appendChild(here);
+          }
+          row.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            commitTabSearch(i);
+          });
+          row.addEventListener("mouseenter", () => {
+            tabSearchIndex = i;
+            paintTabSearch();
+          });
+          list.appendChild(row);
+        }
+        paintTabSearch();
+        await syncOverlay();
+      }
+
+      function commitTabSearch(index) {
+        const tab = tabSearchRows[index];
+        closeTabSearch();
+        if (tab) call("activate_tab", { id: tab.id });
+      }
+
+      async function openTabSearch() {
+        const box = el("tabsearch");
+        if (!box.hidden) return closeTabSearch(); // the shortcut toggles
+        box.hidden = false;
+        el("tabsearch-input").value = "";
+        tabSearchIndex = 0;
+        await renderTabSearch();
+        el("tabsearch-input").focus();
+      }
+
+      el("tabsearch-input").addEventListener("input", renderTabSearch);
+
+      el("tabsearch-input").addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (!tabSearchRows.length) return;
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          tabSearchIndex =
+            (tabSearchIndex + step + tabSearchRows.length) % tabSearchRows.length;
+          paintTabSearch();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          commitTabSearch(tabSearchIndex);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closeTabSearch();
+        }
+      });
+
+      el("tabsearch-input").addEventListener("blur", closeTabSearch);
+
+      listen("brume://open-tab-search", openTabSearch);
+
       /* --- permission prompts ----------------------------------------------
        *
        * The runtime is holding the page open on a deferral while this is up, so
@@ -2845,7 +3066,9 @@
        * rather than a height, so the bar heights stay in browser.rs and this
        * file never needs its own copy of them to subtract. */
       async function syncOverlay() {
-        const open = [el("suggest"), el("permission")].filter((b) => !b.hidden);
+        const open = [el("suggest"), el("permission"), el("tabsearch")].filter(
+          (b) => !b.hidden
+        );
         const bottom = open.reduce(
           (low, b) => Math.max(low, Math.ceil(b.getBoundingClientRect().bottom)),
           0

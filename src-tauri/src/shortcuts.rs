@@ -44,6 +44,7 @@ use crate::browser;
 pub const FOCUS_ADDRESS_EVENT: &str = "brume://focus-address";
 pub const OPEN_PANEL_EVENT: &str = "brume://open-panel";
 pub const OPEN_FIND_EVENT: &str = "brume://open-find";
+pub const OPEN_TAB_SEARCH_EVENT: &str = "brume://open-tab-search";
 
 /// Accelerator string paired with the action it triggers.
 ///
@@ -88,6 +89,11 @@ const BINDINGS: &[(&str, &str)] = &[
     // find bar closes on Escape from its own keydown handler in the chrome,
     // which is where the focus already is while typing in it.
     ("CmdOrCtrl+F", "find"),
+    // Named "search_tabs", not "tab_search": anything starting with `tab_` is
+    // claimed by the numbered-tab arm below, which would try to parse "search"
+    // as a digit and silently do nothing. The test that counts those actions is
+    // what caught it.
+    ("CmdOrCtrl+Shift+A", "search_tabs"),
     ("CmdOrCtrl+P", "print"),
     ("F11", "fullscreen"),
     ("CmdOrCtrl+Shift+N", "private_tab"),
@@ -209,6 +215,12 @@ pub fn handle(app: &AppHandle, action: &str) {
         // webview, so the chrome calls set_find_bar rather than doing it here.
         "find" => {
             let _ = app.emit_to(browser::CHROME_LABEL, OPEN_FIND_EVENT, ());
+        }
+
+        // Also the chrome's: it already has the tab list from brume://state, so
+        // searching it needs nothing from here beyond the keystroke.
+        "search_tabs" => {
+            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_TAB_SEARCH_EVENT, ());
         }
 
         // Spawned, not called inline. These used to be sync commands that only

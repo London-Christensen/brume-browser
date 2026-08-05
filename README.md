@@ -88,6 +88,7 @@ way.
 | `Ctrl`+`Shift`+`B` | Show or hide the bookmarks bar |
 | `Ctrl`+`H` | History |
 | `Ctrl`+`J` | Downloads |
+| `Ctrl`+`Shift`+`A` | Search open tabs |
 | `Ctrl`+`Shift`+`Delete` | Clear browsing data (opens Settings, where the control is) |
 | `Ctrl`+`,` | Settings |
 | `Ctrl`+`P` | Print |
