@@ -15,6 +15,7 @@
 
 mod audio;
 mod browser;
+mod contextmenu;
 mod downloads;
 mod find;
 mod overlay;

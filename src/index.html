@@ -1113,6 +1113,87 @@
         font-size: 12px;
       }
 
+      /* The padlock is a control now, so it has to look like one. */
+      .scheme {
+        cursor: default;
+        border-radius: 2px;
+        transition: opacity 110ms ease;
+      }
+      .scheme:hover {
+        opacity: 0.7;
+      }
+
+      /* --- site info popover ----------------------------------------------- */
+      /* Hangs off the padlock, which is the only part of the chrome that already
+         means "about this site". Same overlay mechanism as everything else here,
+         so the page is covered rather than moved. */
+      .siteinfo {
+        position: absolute;
+        top: calc(var(--tab-strip-h) + var(--toolbar-h));
+        z-index: 44;
+        width: 340px;
+        max-width: calc(100% - 24px);
+        padding: 13px 14px 11px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+      }
+
+      .si-origin {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .si-secure {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 7px;
+        font-size: 12.5px;
+      }
+      .si-secure[data-secure="true"] {
+        color: var(--fg);
+      }
+      /* Not alarming, just honest. An http page is not an attack, it is simply
+         not private, and colouring it like a warning would cry wolf. */
+      .si-secure[data-secure="false"] {
+        color: var(--brume-lamplight);
+      }
+      .si-heading {
+        margin: 12px 0 4px;
+        padding-top: 10px;
+        border-top: 1px solid var(--hairline);
+        color: var(--fg-muted);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .si-perm {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 0;
+        font-size: 12px;
+      }
+      .si-perm-kind {
+        flex: 1 1 auto;
+      }
+      .si-perm-state[data-state="allow"] {
+        color: var(--brume-lamplight);
+      }
+      .si-perm-state[data-state="block"] {
+        color: var(--fg-muted);
+      }
+      .si-none {
+        padding: 2px 0 4px;
+        color: var(--fg-muted);
+        font-size: 11.5px;
+        line-height: 16px;
+      }
+
       /* --- permission prompt ---------------------------------------------- */
       /* Same overlay mechanism as the suggestions dropdown: the chrome grows and
          is raised above the page, so the prompt covers the top of the page
@@ -1359,6 +1440,14 @@
       honestly than one combined question.
     -->
     <div class="permission" id="permission" hidden></div>
+
+    <!--
+      Site info, from clicking the padlock. Says whether the connection is
+      encrypted and what this origin has been allowed, with a way to take it
+      back. Read from the runtime, so it cannot claim something the engine is
+      not actually enforcing.
+    -->
+    <div class="siteinfo" id="siteinfo" hidden></div>
 
     <!--
       Tab search, Ctrl+Shift+A. Worth having once the strip scrolls: a tab you
@@ -1646,10 +1735,16 @@
       // aimed at the page.
       document.addEventListener("click", (event) => {
         if (!el("ctx-menu").contains(event.target)) closeMenu();
+        // The padlock's own click stops propagating, so this only ever fires
+        // for a click somewhere else.
+        if (!el("siteinfo").hidden && !el("siteinfo").contains(event.target)) {
+          closeSiteInfo();
+        }
       });
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
         closeMenu();
+        closeSiteInfo();
         // Dismissing a permission prompt is still an answer. The runtime is
         // holding the page open on a deferral, so walking away from it without
         // replying would leave the site waiting forever. Block, but do not
@@ -2833,6 +2928,121 @@
         call(loading ? "stop_loading" : "reload")
       );
 
+      /* --- site info --------------------------------------------------------
+       *
+       * What the padlock has always implied but never said. Two questions: is
+       * this connection encrypted, and what has this site been allowed.
+       *
+       * Both answers come from somewhere authoritative rather than from
+       * anything the chrome remembers. The scheme is read off the live URL, and
+       * the permissions from the runtime through list_permissions, so this
+       * cannot claim a site is blocked while the engine allows it.
+       */
+      let siteInfoOrigin = "";
+
+      /** Scheme and host, matching how permissions.rs keys an origin. */
+      function originOf(url) {
+        try {
+          const u = new URL(url);
+          return `${u.protocol}//${u.host.replace(/^www\./, "")}`;
+        } catch {
+          return "";
+        }
+      }
+
+      async function closeSiteInfo() {
+        const box = el("siteinfo");
+        if (box.hidden) return;
+        box.hidden = true;
+        box.textContent = "";
+        await syncOverlay();
+      }
+
+      async function openSiteInfo() {
+        const box = el("siteinfo");
+        if (!box.hidden) return closeSiteInfo(); // the padlock toggles
+
+        const url = urlInput.value || "";
+        const origin = originOf(url);
+        if (!origin) return; // nothing loaded worth describing
+        siteInfoOrigin = origin;
+
+        box.textContent = "";
+        const who = document.createElement("div");
+        who.className = "si-origin";
+        who.textContent = origin;
+
+        const secure = document.createElement("div");
+        secure.className = "si-secure";
+        const isHttps = url.startsWith("https://");
+        secure.dataset.secure = String(isHttps);
+        const icon = document.createElement("span");
+        icon.className = isHttps ? "ico ico-lock" : "ico ico-warning";
+        const words = document.createElement("span");
+        words.textContent = isHttps
+          ? "Connection is encrypted"
+          : "Not encrypted. Anyone on the network can read this.";
+        secure.append(icon, words);
+        box.append(who, secure);
+
+        const heading = document.createElement("div");
+        heading.className = "si-heading";
+        heading.textContent = "Permissions";
+        box.appendChild(heading);
+
+        box.hidden = false;
+        // Positioned under the padlock, then measured. Shown first because a
+        // hidden element has no height to report.
+        const anchor = document.querySelector(".address").getBoundingClientRect();
+        box.style.left = `${Math.round(anchor.left)}px`;
+        await syncOverlay();
+
+        // Fetched after painting the certain parts, so the popover appears at
+        // once rather than waiting on a round trip to say anything at all.
+        const all = (await call("list_permissions")) || [];
+        if (box.hidden || siteInfoOrigin !== origin) return; // closed or moved on
+        const mine = all.filter((p) => originOf(p.origin) === origin);
+
+        if (!mine.length) {
+          const none = document.createElement("div");
+          none.className = "si-none";
+          none.textContent =
+            "Nothing decided yet. You will be asked the first time this site wants your camera, microphone or location.";
+          box.appendChild(none);
+        } else {
+          for (const p of mine) {
+            const row = document.createElement("div");
+            row.className = "si-perm";
+            const kind = document.createElement("span");
+            kind.className = "si-perm-kind";
+            kind.textContent = p.kind;
+            const state = document.createElement("span");
+            state.className = "si-perm-state";
+            state.dataset.state = p.state;
+            state.textContent = p.state === "allow" ? "Allowed" : "Blocked";
+            const reset = document.createElement("button");
+            reset.className = "action";
+            reset.textContent = "Reset";
+            reset.addEventListener("click", async () => {
+              await call("set_permission", {
+                origin: p.origin,
+                kind: p.kind,
+                state: "default",
+              });
+              closeSiteInfo();
+            });
+            row.append(kind, state, reset);
+            box.appendChild(row);
+          }
+        }
+        await syncOverlay();
+      }
+
+      el("scheme-icon").addEventListener("click", (event) => {
+        event.stopPropagation();
+        openSiteInfo();
+      });
+
       /* --- tab search -------------------------------------------------------
        *
        * Ctrl+Shift+A. Filters the tabs already in `brume://state`, so it needs
@@ -3066,9 +3276,12 @@
        * rather than a height, so the bar heights stay in browser.rs and this
        * file never needs its own copy of them to subtract. */
       async function syncOverlay() {
-        const open = [el("suggest"), el("permission"), el("tabsearch")].filter(
-          (b) => !b.hidden
-        );
+        const open = [
+          el("suggest"),
+          el("permission"),
+          el("tabsearch"),
+          el("siteinfo"),
+        ].filter((b) => !b.hidden);
         const bottom = open.reduce(
           (low, b) => Math.max(low, Math.ceil(b.getBoundingClientRect().bottom)),
           0

@@ -1144,6 +1144,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
         // prompt, and Brume neither hears about it nor can change it later.
         crate::permissions::watch(app, &label);
         crate::audio::watch(app, id, &label);
+        crate::contextmenu::watch(app, &label);
     }
 
     if let Err(e) = spawned {
@@ -1417,6 +1418,20 @@ pub fn update_audio(app: &AppHandle, tab_id: u32, audible: bool, muted: bool) {
         tab.muted = muted;
     }
     publish(app);
+}
+
+/// Whether the tab behind a webview label is private.
+///
+/// For contextmenu.rs, which has to decide what a link opened from this tab
+/// inherits. Same rule `on_new_window` follows: the page asking is already in a
+/// private context, so what it opens is too.
+pub fn tab_is_private(app: &AppHandle, label: &str) -> bool {
+    let browser = app.state::<Browser>();
+    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    tabs.items
+        .iter()
+        .find(|t| t.label == label)
+        .is_some_and(|t| t.private)
 }
 
 /// The webview label for a tab id, for modules that need to reach one.

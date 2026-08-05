@@ -1342,6 +1342,64 @@ action is `search_tabs` now.
 
 ---
 
+## The context menu is curated, not replaced
+
+`ContextMenuRequested` offers two ways out. `SetHandled(true)` suppresses
+WebView2's menu and leaves Brume to draw its own, which means reimplementing
+positioning, keyboard navigation, submenus, and every item the engine already
+gives away: copy, paste, spellcheck suggestions, image and media commands,
+inspect. The other way is to modify the item collection the event hands over and
+let the runtime draw it. That is what contextmenu.rs does.
+
+**Nothing here was a repair.** The note claiming WebView2's "open link in new
+window" did nothing was wrong, and had never been checked. The item is replaced
+because its *label* lies: it says window and delivers a tab. Brume swaps in two
+items that say what they do, and adds opening a link in a private tab, which the
+engine cannot offer because privacy is Brume's idea and not the runtime's.
+
+The stock item is matched on `Name`, not `Label`. The label is localised and
+would stop matching the moment Brume ran in another language; the name is the
+engine's own identifier.
+
+### Verifying a menu you cannot read
+
+A Chromium-drawn menu is not a Win32 menu, so there is nothing to enumerate, and
+driving it would need the desktop-level input this project does not use.
+
+What worked: right-click a link over CDP with `Input.dispatchMouseEvent`, which
+is contained to the webview and never touches the desktop cursor, with the
+process started under `Start-Process -RedirectStandardError` so the handler could
+report what it did. Measured on 2026-08-05: the stock item was found and removed,
+both Brume items were inserted at 0 and 1, and the collection went from 8 to 10.
+
+The logging came back out afterwards, since a line per right-click is noise. Put
+it back the same way if this ever needs checking again.
+
+---
+
+## Site info on the padlock
+
+The padlock has always implied something it never said. Clicking it now answers
+two questions: is this connection encrypted, and what has this site been allowed.
+
+Both answers come from somewhere authoritative rather than from anything the
+chrome remembers. The scheme is read off the live URL; the permissions come from
+the runtime through `list_permissions`, so the popover cannot claim a site is
+blocked while the engine allows it. Resetting one from here is the same call the
+Settings list makes.
+
+The certain parts are painted before the permissions are fetched, so the popover
+appears at once rather than waiting on a round trip to say anything at all. It
+checks the origin has not changed before appending, so a slow answer for a page
+you have navigated away from is discarded rather than shown against the wrong
+site.
+
+An unencrypted page is stated plainly and coloured Lamplight rather than red. An
+http page is not an attack, it is simply not private, and styling it as a warning
+would cry wolf on every plain site on the internet.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
