@@ -1,4 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="close">
-  <path d="M5 5L19 19"/>
-  <path d="M19 5L5 19"/>
+<!-- Lucide v1.28.0, ISC. Copyright (c) Lucide Icons and Contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="close">
+  <path d="M18 6 6 18" />
+  <path d="m6 6 12 12" />
 </svg>

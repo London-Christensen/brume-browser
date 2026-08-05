@@ -11,16 +11,19 @@ Brand assets are not covered by that licence
 
 Everything under brand/, and the copies derived from it in src/assets/brand/ and
 installer-shell/ui/assets/brand/, is excluded from the Apache License and is
-reserved. That covers the Brume name, the mark, the wordmark, the icon set and
-the brand specification.
+reserved. That covers the Brume name, the mark, the wordmark and the brand
+specification.
 
 The Apache License grants no trademark rights (section 6), and none are granted
 here by any other route. A fork is free to use the code and must use its own name
 and its own marks.
 
-The one exception is the UI icon set drawn on a 24px grid, which may be reused
-under the Apache License along with the code. The name, the mark and the wordmark
-may not.
+The UI icon set in brand/assets/icons/ is the exception, and it is not Brume's to
+reserve: those files are Lucide, under the ISC License, and they travel under ISC
+rather than under either the Apache License or this reservation. See below.
+
+The one file in that directory that is reserved is cleave.svg. It is the mark
+itself, not a UI icon.
 
 --------------------------------------------------------------------------------
 Third-party components
@@ -37,3 +40,51 @@ crates.io. None of them are modified here.
 
 Archivo is bundled under the SIL Open Font License 1.1. See
 brand/assets/fonts/README.md.
+
+The UI icon set is Lucide, redistributed under the ISC License. Every file in
+brand/assets/icons/ carries the notice, except cleave.svg, which is Brume's own
+mark and no part of Lucide.
+
+Some of the icons Brume uses are derived from the Feather project and are MIT
+rather than ISC. Of the set bundled here that covers arrow-left, arrow-right,
+check, chevron-down, chevron-right, download, external-link, info, lock,
+maximize, minimize, minus, plus, search, sidebar, square, trash-2, upload, x,
+zoom-in and zoom-out. Both notices follow, as shipped by Lucide.
+
+  ISC License
+
+  Copyright (c) 2026 Lucide Icons and Contributors
+
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
+
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+  ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+  The MIT License (MIT) (for the Feather-derived icons listed above)
+
+  Copyright (c) 2013-present Cole Bemis
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.

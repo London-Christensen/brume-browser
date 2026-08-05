@@ -116,11 +116,10 @@ def favicon():
 
 
 # ============================================================ UI ICONS
-# The set lives in icons.py. See the angle rule at the top of that file: 90 is
-# the default, 45 only where the object carries direction, arcs only where the
-# object genuinely is round.
+# The set is Lucide, written into assets/icons/ by tools/build-icons.ps1.
+# icons.py reads those files rather than holding paths of its own, so this
+# module can render an icon without being able to contradict the shipped one.
 import icons as _I
-ICONS = _I.ICONS
 
 
 def icon(name):
@@ -152,8 +151,10 @@ def main():
     w(f"{GEN}/tile-light.svg", tile(PAPER, INK))
     w(f"{GEN}/tile-dark-sm.svg", tile(small=True))
     w(f"{GEN}/favicon.svg", favicon())
-    for k in _I.ALL:
-        w(f"{ICN}/{k}.svg", icon(k))
+    # cleave only. The rest of assets/icons/ is Lucide and belongs to
+    # build-icons.ps1; this loop used to write all 44 and would now overwrite
+    # the set with whatever this file thought it was.
+    w(f"{ICN}/cleave.svg", icon("cleave"))
 
     n = sum(len(os.listdir(d)) for d in (SVG, GEN, ICN))
     print(f"{n} SVG files written")

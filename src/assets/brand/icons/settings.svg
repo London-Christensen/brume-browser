@@ -1,8 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="settings">
-  <path d="M4 7H20"/>
-  <path d="M4 12H20"/>
-  <path d="M4 17H20"/>
-  <path d="M9 5V9"/>
-  <path d="M15 10V14"/>
-  <path d="M7 15V19"/>
+<!-- Lucide v1.28.0, ISC. Copyright (c) Lucide Icons and Contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="settings">
+  <path d="M10 5H3" />
+  <path d="M12 19H3" />
+  <path d="M14 3v4" />
+  <path d="M16 17v4" />
+  <path d="M21 12h-9" />
+  <path d="M21 19h-5" />
+  <path d="M21 5h-7" />
+  <path d="M8 10v4" />
+  <path d="M8 12H3" />
 </svg>

@@ -38,12 +38,12 @@ assets/svg/               THE SOURCES. Five files, currentColor.
 assets/svg/generated/     colourways + tiles. Regenerate, don't hand-edit.
   favicon.svg             adaptive: follows prefers-color-scheme on its own
   tile-dark.svg           Ink field, Paper mark, for OS icon slots
-assets/icons/             44 icons for the browser chrome
-  cleave.svg              the mark itself, filled. Not a UI icon.
+assets/icons/             44 icons for the browser chrome. Lucide, ISC.
+  cleave.svg              the mark itself, filled. Not a UI icon, not Lucide.
 assets/png/               45 rasters, incl. apple-touch-icon / icon-192 / icon-512
 assets/ico/               favicon.ico  brume.ico  (16 24 32 48 64 128 256 each)
 assets/css/tokens.css     colour, type and geometry tokens
-tools/                    kit.py (mark) + icons.py (set) + 4 generators
+tools/                    kit.py (mark) + build-icons.ps1 (set) + 3 generators
 ```
 
 ## Wiring it up
@@ -91,22 +91,43 @@ strips CSS from inline SVG:
 ## Regenerating
 
 ```
-python3 tools/kit.py       # all SVG, from the geometry constants
-python3 tools/raster.py    # PNG + ICO          (needs cairosvg, Pillow)
-python3 tools/preview.py   # preview.html
-python3 tools/docs.py      # BRAND-KIT.md
-python3 tools/audit.py     # icon conformance; exits non-zero on failure
+powershell tools/build-icons.ps1   # assets/icons/, from Lucide. Needs npm install.
+python3 tools/kit.py               # the mark, from the geometry constants
+python3 tools/raster.py            # PNG + ICO       (needs cairosvg, Pillow)
+python3 tools/preview.py           # preview.html
+python3 tools/docs.py              # BRAND-KIT.md
 ```
 
-### Adding an icon
+Run `build-icons.ps1` before `preview.py` or `docs.py`: those read the icons off
+disk, so they report whatever the last icon build wrote.
 
-Add it to `ICONS` in `tools/icons.py`, then run `tools/audit.py`. It checks every
-straight segment against the angle rule (90 always, 45 only for direction, arcs
-only for genuinely round objects), computes exact arc bounding boxes to confirm
-the ink stays inside the live area, flags anything too small to read, and catches
-two icons that have ended up with identical paths.
+### The icon set is Lucide
 
-`tools/kit.py` holds the mark and `tools/icons.py` holds the set. The wordmark travels with it as baked
-outlines in `tools/wordmark.json`, so the kit rebuilds with no font files and no
-network access. `BRAND-KIT.md` is generated from the same geometry, so the spec
-cannot drift from the assets.
+`tools/build-icons.ps1` holds the mapping from Brume's icon names to Lucide's and
+rewrites `assets/icons/` from `node_modules/lucide-static`. To change an icon,
+change the name on the right of that map and re-run it. To add one, add a line.
+
+`icons.py` no longer holds path data; it reads the generated files. That matters
+more than it looks: while the paths lived there, `kit.py` rewrote all 44 icons on
+every run, so regenerating the mark would quietly have reverted the set.
+
+Lucide is ISC, which permits redistribution as long as the copyright notice
+travels with the files. Every generated icon carries it in a comment, and
+`NOTICE` records it at the repository level. Some of the icons derive from
+Feather and are MIT; `NOTICE` lists which and carries that notice too.
+
+The set used to be drawn by hand here, to a rule of 90 degrees with 45 only for
+direction and arcs only for genuinely round objects. There was a conformance
+auditor, `tools/audit.py`, that enforced it. Both are gone: the rule does not
+describe Lucide, and an auditor that parses only absolute path commands cannot
+read it either.
+
+`cleave.svg` is the exception and is still Brume's own, composed by `kit.py` from
+the mark geometry.
+
+### The mark
+
+`tools/kit.py` holds it. The wordmark travels with it as baked outlines in
+`tools/wordmark.json`, so the kit rebuilds with no font files and no network
+access. `BRAND-KIT.md` is generated from the same geometry, so the spec cannot
+drift from the assets.

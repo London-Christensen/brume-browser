@@ -341,13 +341,15 @@ understanding before using anything else here.</p>
 
 <section>
   <p class="eye"><b>&sect; 6</b> Iconography</p>
-  <h2>Orthogonal, following the mark</h2>
-  <p class="note">Cleave is entirely right angles, so the icon set is too. Butt caps,
-  miter joins, square corners, 24 grid, 20 live area, stroke 2. Curves only where the
-  object genuinely is curved. State is colour, never an added element.</p>
+  <h2>Lucide, on the same grid</h2>
+  <p class="note">The set is Lucide, ISC licensed. 24 grid, stroke 2, round caps and
+  joins, currentColor, which is the geometry the chrome already masked against. The
+  hand-drawn set this replaced was orthogonal to match the mark, and squaring off
+  things that are conventionally round reads as deliberate once and as a limitation
+  across forty. State is colour, never an added element.</p>
   <div class="iconset">{ICONSET}</div>
-  <p class="cap"><span>assets/icons/ &middot; 24 grid, 20 live area, stroke 2</span>
-  <span>cleave.svg is the mark itself, filled, not a UI icon</span></p>
+  <p class="cap"><span>assets/icons/ &middot; Lucide, ISC &middot; 24 grid, stroke 2</span>
+  <span>cleave.svg is the mark itself, filled, not a UI icon and not Lucide</span></p>
   <div class="boards" style="margin-top:14px">
     <div class="board light">{ic("shield", 44)}</div>
     <div class="board dark" style="color:{K.LAMPLIGHT}">{ic("shield", 44)}</div>
