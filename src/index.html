@@ -882,6 +882,35 @@
         font-size: 13px;
       }
 
+      /* --- download progress --------------------------------------------- */
+      /* A 3px rule under the filename. Enough to read at a glance without
+         turning a list row into a widget. */
+      .dl-bar {
+        position: relative;
+        height: 3px;
+        margin-top: 7px;
+        border-radius: 2px;
+        background: var(--elev-1);
+        overflow: hidden;
+      }
+
+      .dl-fill {
+        height: 100%;
+        border-radius: 2px;
+        background: var(--brume-haar-dark);
+        /* Linear, not eased: the bar is reporting a measurement that arrives
+           every 200ms, and an ease makes it look like it is deciding. */
+        transition: width 180ms linear;
+      }
+
+      /* No Content-Length, so there is no fraction to draw. Borrows the sweep
+         the page-load indicator uses, which already reads as "working, length
+         unknown" rather than as a stalled bar sitting at zero. */
+      .dl-bar[data-indeterminate="true"] .dl-fill {
+        width: 32%;
+        animation: sweep 1.05s ease-in-out infinite;
+      }
+
       /* --- loading indicator --------------------------------------------- */
       /* A 2px rule along the bottom edge of the chrome. Indeterminate, because
          WebView2 reports load start and finish but no progress fraction - a bar
@@ -1564,7 +1593,21 @@
        *
        * Everything page-controlled goes through textContent. A filename comes
        * from a Content-Disposition header, which is to say from the server. */
-      function downloadNode({ filename, detail, url, path, when, state }) {
+      /* Bytes as something readable.
+       *
+       * Binary units, because that is what Explorer shows for the same file and
+       * disagreeing with the file manager about the size of a file is a bad look.
+       * One decimal below 100 and none above: "9.4 MB" reads better than "9 MB",
+       * and "412.7 MB" is more precision than anyone asked for. */
+      function formatBytes(n) {
+        if (!Number.isFinite(n) || n <= 0) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+        const v = n / Math.pow(1024, i);
+        return `${v < 100 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+      }
+
+      function downloadNode({ filename, detail, url, path, when, state, received, total }) {
         const row = document.createElement("div");
         row.className = "entry";
         row.dataset.state = state;
@@ -1583,6 +1626,23 @@
         d.className = "entry-url";
         d.textContent = detail;
         text.append(t, d);
+
+        // Only while it is running. A finished row shows where the file landed,
+        // and a full bar under it would say nothing the row does not.
+        if (state === "running") {
+          const bar = document.createElement("div");
+          bar.className = "dl-bar";
+          const known = total > 0;
+          bar.dataset.indeterminate = String(!known);
+          const fill = document.createElement("div");
+          fill.className = "dl-fill";
+          // Clamped: a server that under-reports Content-Length would otherwise
+          // push the fill past the end of its own track.
+          if (known) fill.style.width = `${Math.min(100, (received / total) * 100)}%`;
+          bar.appendChild(fill);
+          text.appendChild(bar);
+        }
+
         row.appendChild(text);
 
         if (when) {
@@ -1675,16 +1735,27 @@
             return;
           }
 
-          // In-flight first. There is no byte count to show, because the
-          // runtime reports started and finished and nothing in between.
+          // In-flight first. The byte counts come from downloads.rs, which
+          // watches the runtime's own download operation; Tauri's on_download
+          // only reports started and finished.
           for (const d of running) {
+            const known = d.total > 0;
             list.appendChild(
               downloadNode({
                 filename: d.filename || d.url,
-                detail: "Downloading...",
+                // Three states, because a server that sends no Content-Length
+                // leaves nothing to count towards. "Starting" rather than
+                // "0 B of unknown", which reads like a failure.
+                detail: known
+                  ? `${formatBytes(d.received)} of ${formatBytes(d.total)}`
+                  : d.received > 0
+                    ? `${formatBytes(d.received)} so far`
+                    : "Starting...",
                 url: d.url,
                 when: whenLabel(d.startedAt),
                 state: "running",
+                received: d.received,
+                total: d.total,
               })
             );
           }

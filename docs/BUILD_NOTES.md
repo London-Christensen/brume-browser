@@ -584,9 +584,9 @@ step with the browser, and a missing match lists what it did find instead.
 ## Two smaller ones worth recording
 
 **A double-encoded string reached the UI.** `status.textContent` read
-`"Checkingâ€¦"`: U+2026 had been through UTF-8, then CP1252, then
+`"Checking???????"`: U+2026 had been through UTF-8, then CP1252, then
 UTF-8 again, which is why the middle byte came back as a euro sign. Users saw
-`Checkingâ€¦` every time they pressed "Check for updates". It is plain dots now.
+`Checking???????` every time they pressed "Check for updates". It is plain dots now.
 This file has been through two encoding accidents already, so the one string a
 user reads mid-action is not worth a non-ASCII character.
 
@@ -955,6 +955,46 @@ PowerShell while the rest of `brand/tools/` is Python.
 `brand/preview.html` **was** brought in line, by reproducing exactly what
 `preview.py`'s `ic()` does, and checked by rendering it: 44 icons in the sheet,
 43 round-capped, one butt-capped, and that one is `cleave`.
+
+---
+
+## Download progress is a fourth interop module
+
+`on_download` reports a download starting and a download finishing, and nothing
+between the two, so the panel could say "Downloading..." and never anything more.
+The byte counts are on `ICoreWebView2DownloadOperation`, which needs the raw
+interface, so downloads.rs joins find.rs, history.rs and profile.rs.
+
+**It adds a second DownloadStarting handler rather than replacing wry's.** That
+event takes any number of subscribers, and wry's is what `on_download` is built
+on. Adding to it means the existing start and finish recording carries on
+untouched and this module only supplies the part that was missing.
+
+The cost is that nothing specifies which handler runs first, so the first
+progress tick can arrive before the store has a row to put it in. That is not
+theoretical: it is visible in the very first sample of every download, which
+reads `received 0, total 0` and renders as "Starting...".
+`update_download_progress` ignores a miss rather than inventing a row, and the
+event fires often enough that the next one lands.
+
+**Progress is throttled in Rust, not in the chrome.** BytesReceivedChanged fires
+once per network read, and every event that reaches the chrome makes the panel
+rebuild its whole list. 200ms, with the completing update always allowed through
+so the bar lands on full rather than stopping wherever the throttle last let
+something past.
+
+`TotalBytesToReceive` is read on every tick rather than once at the start,
+because a server that sent no Content-Length reports 0 and some only report it
+once the response is properly under way. Zero means there is no fraction to
+draw, and the bar falls back to the same indeterminate sweep the page-load
+indicator uses.
+
+Measured against a running browser: `total` came back as 10485760 for a file
+whose Content-Length was independently fetched as 10485760, `received` climbed
+monotonically, and the DOM went from an indeterminate "Starting..." bar to
+`10.0 MB of 10.0 MB` at width 100%. A 58 MB download through a redirecting host
+also matched, which is what confirms the URL key stays consistent between wry's
+handler and this one across a redirect.
 
 ---
 

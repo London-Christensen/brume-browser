@@ -1065,6 +1065,9 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
     if spawned.is_ok() {
         crate::history::watch(app, id, &label);
         crate::history::watch_zoom(app, id, &label);
+        // Progress only. The start and finish records still come from
+        // `on_download` above; this adds the byte count in between.
+        crate::downloads::watch(app, &label);
     }
 
     if let Err(e) = spawned {

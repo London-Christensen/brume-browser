@@ -36,7 +36,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -101,6 +101,13 @@ pub struct ActiveDownload {
     pub url: String,
     pub filename: String,
     pub started_at: i64,
+    /// Bytes so far, and how many are expected.
+    ///
+    /// `total` is 0 when the server never said, which is every chunked
+    /// response. There is no percentage to draw in that case, so the UI shows
+    /// the count alone rather than a bar stuck at zero.
+    pub received: i64,
+    pub total: i64,
 }
 
 /// What the downloads panel renders.
@@ -122,7 +129,18 @@ pub struct Store {
     /// Downloads currently running, keyed by nothing in particular: the list is
     /// never more than a handful long, so a scan is cheaper than a map.
     active_downloads: Mutex<Vec<ActiveDownload>>,
+    /// When the chrome was last told about download progress. See
+    /// `update_download_progress` for why this is throttled at all.
+    last_progress_emit: Mutex<Instant>,
 }
+
+/// How often progress may reach the chrome.
+///
+/// BytesReceivedChanged fires once per network read, which on a fast connection
+/// is hundreds of times a second, and every one of those makes the downloads
+/// panel rebuild its list. 200ms is faster than anyone reads a number and slow
+/// enough to cost nothing.
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Writes a file atomically.
 ///
@@ -162,6 +180,7 @@ impl Store {
             downloads_path: dir.join("downloads.jsonl"),
             bookmarks: Mutex::new(Vec::new()),
             active_downloads: Mutex::new(Vec::new()),
+            last_progress_emit: Mutex::new(Instant::now()),
         };
 
         let loaded = fs::read_to_string(&store.bookmarks_path)
@@ -332,7 +351,46 @@ impl Store {
             url: url.to_string(),
             filename: filename.to_string(),
             started_at: now_unix(),
+            received: 0,
+            total: 0,
         });
+    }
+
+    /// Records progress against a running download, and says whether the chrome
+    /// is due an update.
+    ///
+    /// The throttle lives here rather than in the chrome so the decision is made
+    /// before anything crosses the IPC boundary. A finished download always gets
+    /// through, so the bar lands on full instead of stopping wherever the
+    /// throttle last let something past.
+    ///
+    /// A URL with no matching row is ignored rather than inserted. Brume's
+    /// DownloadStarting handler and wry's are both subscribed to the same event
+    /// and nothing specifies which runs first, so the first tick can arrive
+    /// before `begin_download` has made a row for it. It fires many more times.
+    pub fn update_download_progress(&self, url: &str, received: i64, total: i64) -> bool {
+        let complete = {
+            let mut active = self
+                .active_downloads
+                .lock()
+                .expect("active downloads mutex poisoned");
+            let Some(row) = active.iter_mut().find(|d| d.url == url) else {
+                return false;
+            };
+            row.received = received;
+            row.total = total;
+            total > 0 && received >= total
+        };
+
+        let mut last = self
+            .last_progress_emit
+            .lock()
+            .expect("progress mutex poisoned");
+        if complete || last.elapsed() >= PROGRESS_EMIT_INTERVAL {
+            *last = Instant::now();
+            return true;
+        }
+        false
     }
 
     /// Moves a download out of the running list and onto disk.
