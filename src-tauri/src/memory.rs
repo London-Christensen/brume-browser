@@ -16,16 +16,36 @@
 //! shape Chrome has, and it is the number worth attacking: ten background tabs
 //! is most of a gigabyte held by pages nobody is reading.
 //!
-//! # Two levers, and why both
+//! # TrySuspend is worth much less than it looks
 //!
-//! `ICoreWebView2_3::TrySuspend` frees what a background renderer is holding
-//! while keeping the tab restorable. It is the big one, and it has no security
-//! cost: nothing is being shared or isolated differently, the page is simply
-//! parked.
+//! This module was written expecting `ICoreWebView2_3::TrySuspend` to be the
+//! answer. It is not, and the measurement is the point of this note.
 //!
-//! `ICoreWebView2_19::SetMemoryUsageTargetLevel(LOW)` is the lighter touch, a
-//! hint to trim rather than a park. It is applied on the way to suspending so a
-//! tab that cannot suspend still gives something back.
+//! With four tabs open and three of them suspended, total resident memory went
+//! from 1099 MB to 1038 MB. About 5%. Listing the processes afterwards showed
+//! why: eight renderers still resident, holding 57 to 137 MB each. **Suspending
+//! freezes execution and keeps the heap.**
+//!
+//! It is kept because freezing a background renderer is a real saving in CPU and
+//! battery, it costs nothing, and it loses no state. But do not come back here
+//! expecting to reclaim memory by suspending harder.
+//!
+//! `ICoreWebView2_19::SetMemoryUsageTargetLevel(LOW)` is applied alongside it as
+//! a hint to trim, and moves the number no further.
+//!
+//! # Where the memory actually came from
+//!
+//! Not loading the tab at all. Session restore used to build a webview and load
+//! a page for every saved tab, so twenty restored tabs meant twenty renderers
+//! before the window was usable. browser.rs parks them instead: on the same
+//! six-tab session that is 8 processes and 501 MB rather than 29 and 1982 MB,
+//! with the window usable in 1.3s.
+//!
+//! That trick is deliberately **not** extended to tabs that have already loaded.
+//! Destroying a live webview reclaims the same renderer and also destroys scroll
+//! position and anything typed into a form, and a tab you glanced away from for
+//! a minute is not worth that. A restored tab has nothing to lose, which is
+//! exactly why it is safe there and nowhere else.
 //!
 //! # Not immediately, and never the active tab
 //!
@@ -48,16 +68,15 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::TrySuspendCompletedHandler;
 use windows_core::Interface;
 
-/// How long a tab sits in the background before it is parked.
+/// How long a tab sits in the background before it is suspended.
 ///
-/// Long enough that cycling tabs with Ctrl+Tab never suspends anything, short
-/// enough that the tab you opened and forgot stops holding a renderer's worth of
-/// memory. Chrome's own discarding is far more aggressive; this is deliberately
-/// not, because a suspended tab costs a moment coming back and Brume would
-/// rather spend memory than make switching feel slow.
+/// Long enough that cycling tabs with Ctrl+Tab never suspends anything. Since
+/// the saving is CPU rather than memory (see above), there is nothing to be won
+/// by making this aggressive, and plenty to lose: a suspended tab costs a moment
+/// coming back.
 const IDLE_BEFORE_SUSPEND: Duration = Duration::from_secs(45);
 
-/// Parks a tab that has been in the background long enough.
+/// Suspends a tab that has been in the background long enough.
 ///
 /// Spawned rather than run inline, and it re-checks before acting: the tab may
 /// have been activated again, or closed, in the time it waited. Acting on stale
@@ -107,7 +126,7 @@ pub fn suspend_later(app: &AppHandle, tab_id: u32) {
     });
 }
 
-/// Brings a tab back, if it was parked.
+/// Brings a tab back, if it was suspended.
 ///
 /// Called on activation. `Resume` on a webview that was never suspended is a
 /// no-op, so this does not need to know which state it was in - and asking
