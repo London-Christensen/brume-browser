@@ -255,10 +255,34 @@ mod tests {
             url: None,
             date_added: "0".into(),
             children: vec![
-                Node { name: "ok".into(), kind: "url".into(), url: Some("https://a.test/".into()), children: vec![], date_added: "0".into() },
-                Node { name: "plain".into(), kind: "url".into(), url: Some("http://b.test/".into()), children: vec![], date_added: "0".into() },
-                Node { name: "bad".into(), kind: "url".into(), url: Some("javascript:alert(1)".into()), children: vec![], date_added: "0".into() },
-                Node { name: "file".into(), kind: "url".into(), url: Some("file:///C:/x".into()), children: vec![], date_added: "0".into() },
+                Node {
+                    name: "ok".into(),
+                    kind: "url".into(),
+                    url: Some("https://a.test/".into()),
+                    children: vec![],
+                    date_added: "0".into(),
+                },
+                Node {
+                    name: "plain".into(),
+                    kind: "url".into(),
+                    url: Some("http://b.test/".into()),
+                    children: vec![],
+                    date_added: "0".into(),
+                },
+                Node {
+                    name: "bad".into(),
+                    kind: "url".into(),
+                    url: Some("javascript:alert(1)".into()),
+                    children: vec![],
+                    date_added: "0".into(),
+                },
+                Node {
+                    name: "file".into(),
+                    kind: "url".into(),
+                    url: Some("file:///C:/x".into()),
+                    children: vec![],
+                    date_added: "0".into(),
+                },
             ],
         };
         let mut out = Vec::new();

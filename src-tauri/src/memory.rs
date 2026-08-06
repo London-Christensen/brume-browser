@@ -124,8 +124,8 @@ pub fn resume(app: &AppHandle, tab_id: u32) {
         let _ = (|| unsafe {
             let core = platform.controller().CoreWebView2()?;
             if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
-                let _ = core19
-                    .SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+                let _ =
+                    core19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
             }
             let core3: ICoreWebView2_3 = core.cast()?;
             core3.Resume()?;

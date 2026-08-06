@@ -50,9 +50,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Deferral, ICoreWebView2PermissionRequestedEventArgs, COREWEBVIEW2_PERMISSION_KIND,
     COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
-    COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
-    COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS,
-    COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+    COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+    COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
     COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
     COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS,
     COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT, COREWEBVIEW2_PERMISSION_STATE,
@@ -305,8 +304,8 @@ pub struct PermissionSetting {
 #[tauri::command]
 pub async fn list_permissions(app: AppHandle) -> Result<Vec<PermissionSetting>, String> {
     use std::sync::mpsc;
-    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile4, ICoreWebView2_13};
     use webview2_com::GetNonDefaultPermissionSettingsCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile4, ICoreWebView2_13};
 
     let webview = crate::browser::active_content_webview(&app)?;
     let (tx, rx) = mpsc::channel();

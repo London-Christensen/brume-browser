@@ -394,7 +394,11 @@ impl Store {
 
     /// Writes the current list out. For callers that batched several adds.
     pub fn flush_bookmarks(&self) -> Result<(), String> {
-        let snapshot = self.bookmarks.lock().expect("bookmarks mutex poisoned").clone();
+        let snapshot = self
+            .bookmarks
+            .lock()
+            .expect("bookmarks mutex poisoned")
+            .clone();
         self.persist_bookmarks(&snapshot)
     }
 
@@ -453,7 +457,12 @@ impl Store {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut scored: Vec<(u8, u8, i64, Suggestion)> = Vec::new();
 
-        for b in self.bookmarks.lock().expect("bookmarks mutex poisoned").iter() {
+        for b in self
+            .bookmarks
+            .lock()
+            .expect("bookmarks mutex poisoned")
+            .iter()
+        {
             if let Some(r) = rank(&b.url, &b.title) {
                 if seen.insert(b.url.clone()) {
                     scored.push((
@@ -862,9 +871,15 @@ mod tests {
         // The ordering is the feature. 0 beats 1 beats 2, and None is no match.
         assert_eq!(match_rank("https://github.com/", "GitHub", "git"), Some(0));
         // www. is stripped too, or every www host would rank a tier low.
-        assert_eq!(match_rank("https://www.github.com/", "GitHub", "git"), Some(0));
+        assert_eq!(
+            match_rank("https://www.github.com/", "GitHub", "git"),
+            Some(0)
+        );
         // Title prefix is worth more than a substring buried in a URL.
-        assert_eq!(match_rank("https://example.com/x", "Gitting on", "git"), Some(1));
+        assert_eq!(
+            match_rank("https://example.com/x", "Gitting on", "git"),
+            Some(1)
+        );
         // Both the host and the title only *contain* it, so this is the bottom
         // tier. Note the title matters as much as the URL: "GitLab" as a title
         // would prefix-match and rank a tier higher, which is correct and is

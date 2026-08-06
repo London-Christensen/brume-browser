@@ -128,8 +128,8 @@ fn publish(app: &AppHandle, tab_id: u32, core8: &ICoreWebView2_8) {
 /// watcher above reports whatever the runtime actually settled on.
 #[tauri::command]
 pub fn set_tab_muted(app: AppHandle, id: u32, muted: bool) -> Result<(), String> {
-    let label = crate::browser::tab_label(&app, id)
-        .ok_or_else(|| format!("No tab with id {id}"))?;
+    let label =
+        crate::browser::tab_label(&app, id).ok_or_else(|| format!("No tab with id {id}"))?;
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "That tab has no webview.".to_string())?;
@@ -137,7 +137,10 @@ pub fn set_tab_muted(app: AppHandle, id: u32, muted: bool) -> Result<(), String>
     webview
         .with_webview(move |platform| {
             let _ = (|| unsafe {
-                let core8 = platform.controller().CoreWebView2()?.cast::<ICoreWebView2_8>()?;
+                let core8 = platform
+                    .controller()
+                    .CoreWebView2()?
+                    .cast::<ICoreWebView2_8>()?;
                 core8.SetIsMuted(muted)?;
                 Ok::<_, windows_core::Error>(())
             })();

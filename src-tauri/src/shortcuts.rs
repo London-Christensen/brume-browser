@@ -249,7 +249,11 @@ pub fn handle(app: &AppHandle, action: &str) {
             let _ = app.emit_to(browser::CHROME_LABEL, OPEN_PANEL_EVENT, action.to_string());
         }
         "clear_data" => {
-            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_PANEL_EVENT, "settings".to_string());
+            let _ = app.emit_to(
+                browser::CHROME_LABEL,
+                OPEN_PANEL_EVENT,
+                "settings".to_string(),
+            );
         }
 
         other => eprintln!("[shortcuts] unhandled action: {other}"),

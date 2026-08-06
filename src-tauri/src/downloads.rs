@@ -132,7 +132,8 @@ fn watch_operation(app: &AppHandle, operation: &ICoreWebView2DownloadOperation) 
             &StateChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let Some(op) = sender.as_ref() {
                     let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
-                    if op.State(&mut state).is_ok() && state != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS
+                    if op.State(&mut state).is_ok()
+                        && state != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS
                     {
                         RUNNING.with(|r| r.borrow_mut().remove(&done_url));
                     }

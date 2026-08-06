@@ -119,9 +119,8 @@ fn home_url(app: &AppHandle) -> String {
 /// Used to keep it out of history and out of the address bar. Compared on host
 /// and path so the theme query string does not matter.
 pub fn is_new_tab(url: &str) -> bool {
-    tauri::Url::parse(url).is_ok_and(|u| {
-        u.host_str() == Some("tauri.localhost") && u.path() == NEW_TAB_PATH
-    })
+    tauri::Url::parse(url)
+        .is_ok_and(|u| u.host_str() == Some("tauri.localhost") && u.path() == NEW_TAB_PATH)
 }
 
 /// Where one tab currently is.
@@ -1178,7 +1177,12 @@ fn load_parked(app: &AppHandle, id: u32) -> tauri::Result<()> {
         tabs.items
             .iter()
             .find(|t| t.id == id && !t.loaded)
-            .map(|t| (t.label.clone(), t.nav.current().cloned().unwrap_or_default()))
+            .map(|t| {
+                (
+                    t.label.clone(),
+                    t.nav.current().cloned().unwrap_or_default(),
+                )
+            })
     }) else {
         return Ok(()); // already loaded, or gone
     };
@@ -1577,7 +1581,10 @@ pub fn tab_is_private(app: &AppHandle, label: &str) -> bool {
 pub fn tab_label(app: &AppHandle, id: u32) -> Option<String> {
     let browser = app.state::<Browser>();
     let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-    tabs.items.iter().find(|t| t.id == id).map(|t| t.label.clone())
+    tabs.items
+        .iter()
+        .find(|t| t.id == id)
+        .map(|t| t.label.clone())
 }
 
 pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
