@@ -200,6 +200,19 @@ struct Tab {
     /// Nothing here works either of them out.
     audible: bool,
     muted: bool,
+    /// Whether this tab has a webview behind it yet.
+    ///
+    /// False only for a tab restored from the last session and not yet looked
+    /// at. Restoring used to build a webview and load the page for every saved
+    /// tab at launch, so twenty restored tabs meant twenty renderers and twenty
+    /// page loads before the window was usable. A parked tab costs a row in the
+    /// strip and nothing else until it is activated.
+    ///
+    /// Deliberately only used for restore, never on a timer. Throwing away a
+    /// live webview to reclaim memory would also throw away scroll position and
+    /// anything typed into a form, and a tab you glanced away from for a minute
+    /// is not worth that. A tab that was never loaded has nothing to lose.
+    loaded: bool,
 }
 
 impl Tab {
@@ -1033,23 +1046,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     if session.is_empty() {
         open_tab_inner(app, None, false)?;
     } else {
+        // Parked, not opened. Every saved tab used to get a webview and a page
+        // load right here, so a session of twenty tabs meant twenty renderers
+        // and twenty network requests before the window was usable, for pages
+        // nobody had asked to see yet. Now only the one that was in front is
+        // built, below; the rest load when they are first clicked.
         for saved in &session {
-            match open_tab_inner(app, Some(saved.url.clone()), false) {
-                // Restored tabs land at the end, so the pinned ones need putting
-                // back at the front. Set here rather than passed into
-                // open_tab_inner, which would have to know about ordering.
-                Ok(()) => {
-                    if saved.pinned {
-                        let browser = app.state::<Browser>();
-                        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-                        let active = tabs.active;
-                        if let Some(tab) = tabs.tab_mut(active) {
-                            tab.pinned = true;
-                        }
-                    }
-                }
-                Err(e) => eprintln!("[browser] could not restore {}: {e}", saved.url),
-            }
+            park_tab(app, saved.url.clone(), saved.pinned);
         }
         // Sorted once, after the lot are in. Stable, so tabs keep the order they
         // were saved in within each group.
@@ -1058,11 +1061,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
             tabs.items.sort_by_key(|t| !t.pinned);
         }
-        // Every restore left its tab active, so the last one is in front.
-        if let Some(id) = tab_id_at(app, session_active) {
-            let browser = app.state::<Browser>();
-            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-            tabs.active = id;
+        // Whichever was in front last time comes back in front, falling back to
+        // the first if the saved index no longer points at anything.
+        let front = tab_id_at(app, session_active).or_else(|| tab_id_at(app, 0));
+        if let Some(id) = front {
+            {
+                let browser = app.state::<Browser>();
+                let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+                tabs.active = id;
+            }
+            // The only one built at launch. A failure here is not fatal: the
+            // fallback below still leaves a usable window.
+            if let Err(e) = load_parked(app, id) {
+                eprintln!("[browser] could not load the restored tab: {e}");
+            }
         }
         // Nothing restored, so there is no tab at all. Fall back rather than
         // leave an empty window.
@@ -1125,6 +1137,72 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
         .ok_or_else(|| "No active tab.".to_string())
 }
 
+/// Adds a tab with no webview behind it, for session restore.
+///
+/// The strip gets a row with the saved URL and a title guessed from the host, so
+/// it looks like any other tab. The webview is built by `activate_tab` the first
+/// time it is actually looked at.
+fn park_tab(app: &AppHandle, url: String, pinned: bool) -> u32 {
+    let browser = app.state::<Browser>();
+    let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+
+    let id = tabs.next_id;
+    tabs.next_id += 1;
+    let label = format!("tab-{id}");
+
+    let mut nav = NavState::default();
+    nav.set_url(url);
+
+    tabs.items.push(Tab {
+        id,
+        label,
+        title: String::new(), // display_title falls back to the host
+        nav,
+        private: false, // a private tab is never saved, so never restored
+        pinned,
+        audible: false,
+        muted: false,
+        loaded: false,
+    });
+    id
+}
+
+/// Builds the webview for a parked tab, if it has not got one yet.
+///
+/// Everything a live tab needs is set up here rather than at restore, which is
+/// the whole point: a restored tab you never click costs nothing.
+fn load_parked(app: &AppHandle, id: u32) -> tauri::Result<()> {
+    let Some((label, url)) = ({
+        let browser = app.state::<Browser>();
+        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        tabs.items
+            .iter()
+            .find(|t| t.id == id && !t.loaded)
+            .map(|t| (t.label.clone(), t.nav.current().cloned().unwrap_or_default()))
+    }) else {
+        return Ok(()); // already loaded, or gone
+    };
+
+    let target = if url.is_empty() { home_url(app) } else { url };
+    spawn_tab_webview(app, id, &label, &target, false)?;
+
+    {
+        let browser = app.state::<Browser>();
+        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        if let Some(tab) = tabs.tab_mut(id) {
+            tab.loaded = true;
+        }
+    }
+
+    crate::history::watch(app, id, &label);
+    crate::history::watch_zoom(app, id, &label);
+    crate::downloads::watch(app, &label);
+    crate::permissions::watch(app, &label);
+    crate::audio::watch(app, id, &label);
+    crate::contextmenu::watch(app, &label);
+    Ok(())
+}
+
 /// The real implementation, in Tauri's error type.
 ///
 /// Split from the command so that `build` - which returns `tauri::Result` - can
@@ -1163,6 +1241,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
             // has loaded a page.
             audible: false,
             muted: false,
+            loaded: true,
         });
         tabs.active = id;
 
@@ -1323,12 +1402,25 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
-    {
+    let previous = {
         let browser = app.state::<Browser>();
         let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let previous = tabs.active;
         if tabs.items.iter().any(|t| t.id == id) {
             tabs.active = id;
         }
+        previous
+    };
+
+    // A tab restored from last session has no webview until now. Built before
+    // the layout below, or there would be nothing to position.
+    load_parked(&app, id).map_err(|e| e.to_string())?;
+
+    // The one arriving comes back first, so it is ready by the time it is shown.
+    // The one leaving is only queued: see memory.rs for why it is not immediate.
+    if previous != id {
+        crate::memory::resume(&app, id);
+        crate::memory::suspend_later(&app, previous);
     }
     // Clicking a tab is asking to see it, so the panel gets out of the way.
     dismiss_panel(&app);
@@ -1932,6 +2024,7 @@ mod tests {
             pinned: false,
             audible: false,
             muted: false,
+            loaded: true,
         };
         assert_eq!(tab.display_title(), "New tab");
 

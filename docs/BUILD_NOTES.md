@@ -1510,6 +1510,77 @@ it scales with what is open.
 
 ---
 
+## Where a tab's cost actually goes, and what moved it
+
+Measured 2026-08-05, attributing WebView2 processes by walking parent PIDs so
+other applications' runtime processes are not counted.
+
+**The shared processes are shared.** One browser process, one GPU, one crashpad
+and two utility processes serve every tab. A tab adds exactly one renderer:
+
+```text
+  1 tab    7 processes  522 MB
+  +1       8 processes  586 MB    +1 renderer,  +64 MB
+  +1       9 processes  640 MB    +1 renderer,  +54 MB
+  +1      10 processes  740 MB    +1 renderer, +100 MB
+```
+
+An earlier reading of "42 processes for five tabs" was wrong in a way worth
+recording: it counted six processes belonging to Windows SearchHost, and it was
+taken while tabs closed moments earlier were still being reaped. Attributing by
+parent PID and waiting for the count to settle is the only way to get an honest
+number here.
+
+### TrySuspend freezes, it does not reclaim
+
+`ICoreWebView2_3::TrySuspend` on background tabs looked like the obvious answer
+and mostly is not. With four tabs and three of them parked, total resident memory
+went from 1099 MB to 1038 MB: about 5%. Checking the processes afterwards showed
+why - eight renderers still resident at 57 to 137 MB each. Suspension freezes
+execution and keeps the heap.
+
+It is kept, because freezing a background renderer is a real saving in CPU and
+battery and costs nothing, but **it is not a memory fix** and the module says so.
+
+### Not loading the tab at all is the memory fix
+
+Session restore used to call `open_tab_inner` for every saved tab, so a session
+of twenty meant twenty webviews and twenty page loads before the window was
+usable, for pages nobody had asked to see.
+
+Restored tabs are parked now: a row in the strip with the saved URL and a title
+guessed from the host, and no webview until the tab is first activated. Measured
+on the same six-tab session:
+
+| | processes | memory | ready |
+|---|---|---|---|
+| Eager, all six loaded | 29 | 1982 MB | - |
+| Parked | 8 | **501 MB** | **1.3s** |
+
+That is 75% less memory at launch and 21 fewer processes, and the window is
+usable in a second and a bit.
+
+### Why this is not extended to a timer
+
+Parking a tab that has already loaded would reclaim the same renderer, and it is
+deliberately not done. Destroying a live webview also destroys scroll position
+and anything typed into a form, and a tab you glanced away from for a minute is
+not worth that. Chrome only discards under real memory pressure for the same
+reason.
+
+A restored tab has nothing to lose, which is exactly why the trick is safe there
+and nowhere else.
+
+### File size was already the cheap part
+
+`Brume-Setup.exe` is 5.12 MB and the installed application is 5.2 MB, of which
+`brume.exe` is 5.07 MB. The release profile already carries `opt-level = "s"`,
+`lto`, `codegen-units = 1`, `panic = "abort"` and `strip`. There is no
+meaningful fat left to trim, and the disk figure was never the problem: it is
+the one number that was always comfortably better than an Electron equivalent.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

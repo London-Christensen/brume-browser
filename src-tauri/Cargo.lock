@@ -184,6 +184,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tokio",
  "webview2-com",
  "windows",
  "windows-core 0.61.2",

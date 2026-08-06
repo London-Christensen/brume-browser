@@ -66,6 +66,12 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# One timer, for parking background tabs. Tauri's async runtime IS tokio and it
+# is already in the tree at this version, but `async_runtime` re-exports only
+# the channels and the handle, not `time`. Naming it here with a single feature
+# adds no compile cost and beats spawning an OS thread per tab switch.
+tokio = { version = "1", features = ["time"] }
+
 [profile.release]
 # Tuned for a small binary rather than raw throughput. A browser shell spends
 # almost all of its time inside WebView2, not inside our Rust code, so trading

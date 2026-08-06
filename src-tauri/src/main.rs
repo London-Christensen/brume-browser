@@ -19,6 +19,7 @@ mod contextmenu;
 mod downloads;
 mod find;
 mod import;
+mod memory;
 mod overlay;
 mod permissions;
 mod history;
