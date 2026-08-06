@@ -4,8 +4,26 @@ A lightweight web browser for Windows, built with [Tauri 2](https://v2.tauri.app
 OS-native **WebView2** runtime.
 
 Brume deliberately does *not* bundle its own copy of Chromium. It renders pages using the
-WebView2 runtime that already ships with Windows, which keeps the installer small and the
-memory footprint far below an Electron-based equivalent.
+WebView2 runtime that already ships with Windows.
+
+What that buys, measured on 2026-08-05 rather than asserted:
+
+| | Brume |
+|---|---|
+| Installer | **5.1 MB** |
+| Installed on disk | **5.2 MB** |
+| `brume.exe` resident | **41 MB** |
+| One tab, total | ~590 MB across 9 processes |
+| Five tabs, total | ~2.8 GB across 42 processes |
+
+The disk figures are the real win, and they are the whole point: an Electron application
+carries its own Chromium and starts around 100 MB before a line of application code, and
+ships another copy with every update.
+
+**Memory is not where the saving is, and this file used to claim otherwise.** Once a page is
+open, Brume costs what Chromium costs, because it *is* Chromium: the same engine Edge uses.
+Only the shell around it is small. Closing tabs releases the memory - five tabs down to one
+goes from 42 processes to 9 - so it scales with what you have open rather than leaking.
 
 ## Status
 

@@ -742,6 +742,24 @@
         font-size: 11.5px;
         font-variant-numeric: tabular-nums;
       }
+      /* The title turned into a field, sized to sit exactly where the text was
+         so the row does not jump when editing starts. */
+      .entry-rename {
+        width: 100%;
+        padding: 1px 4px;
+        border: 1px solid var(--accent);
+        border-radius: 2px;
+        background: var(--input-bg);
+        color: var(--fg);
+        font-family: var(--font-ui);
+        font-size: 13px;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      .entry-rename:focus {
+        outline: none;
+      }
+
       .entry-remove {
         flex: 0 0 auto;
         width: 20px;
@@ -1879,7 +1897,13 @@
         el("reload").setAttribute("aria-label", state.loading ? "Stop" : "Reload");
 
         if (!editing) {
-          urlInput.value = state.url || "";
+          // Brume's new tab page shows nothing in the address bar. There is no
+          // address worth reading there, and a chrome-internal URL would be
+          // noise the moment anyone opened a tab.
+          const isNewTab = /^https?:\/\/tauri\.localhost\/newtab\.html/.test(
+            state.url || ""
+          );
+          urlInput.value = isNewTab ? "" : state.url || "";
           // A padlock only when the transport is actually encrypted. Showing one
           // for anything else would be a lie of exactly the kind padlocks exist
           // to prevent.
@@ -2079,7 +2103,7 @@
         return new Date(unixSeconds * 1000).toLocaleDateString();
       }
 
-      function entryNode({ title, url, when, onOpen, onRemove }) {
+      function entryNode({ title, url, when, onOpen, onRemove, onRename }) {
         const row = document.createElement("div");
         row.className = "entry";
         row.addEventListener("click", onOpen);
@@ -2103,6 +2127,50 @@
           w.className = "entry-when";
           w.textContent = when;
           row.appendChild(w);
+        }
+
+        /* Renaming happens in place rather than in a dialog.
+         *
+         * The title becomes an input on click, commits on Enter or blur, and
+         * reverts on Escape. A dialog for one short string is more ceremony
+         * than the edit deserves, and in-place keeps the row you are editing
+         * next to the URL that tells you which one it is. */
+        if (onRename) {
+          const edit = document.createElement("button");
+          edit.className = "entry-remove";
+          edit.title = "Rename";
+          edit.setAttribute("aria-label", "Rename");
+          edit.innerHTML = '<span class="ico ico-edit" style="width:11px;height:11px"></span>';
+          edit.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const field = document.createElement("input");
+            field.type = "text";
+            field.className = "entry-rename";
+            field.value = title || "";
+            field.spellcheck = false;
+
+            let done = false;
+            const finish = (commit) => {
+              if (done) return; // blur fires after Enter too
+              done = true;
+              const next = field.value.trim();
+              field.replaceWith(t);
+              if (commit && next && next !== title) onRename(next);
+            };
+            field.addEventListener("keydown", (e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") { e.preventDefault(); finish(true); }
+              else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+            });
+            field.addEventListener("blur", () => finish(true));
+            // Or clicking into the field opens the bookmark under it.
+            field.addEventListener("click", (e) => e.stopPropagation());
+
+            t.replaceWith(field);
+            field.focus();
+            field.select();
+          });
+          row.appendChild(edit);
         }
 
         if (onRemove) {
@@ -2384,6 +2452,9 @@
                 // and the listener refreshes both this list and the bar, which
                 // is the one path every change to the list takes.
                 onRemove: () => call("remove_bookmark", { id: b.id }),
+                // Renaming matters most right after an import: a page title is
+                // often not what you want on a 172px strip.
+                onRename: (title) => call("rename_bookmark", { id: b.id, title }),
               })
             );
           }
@@ -2465,14 +2536,14 @@
         const general = group("General");
         const home = row(
           "Homepage",
-          "Where new tabs open. Leave empty to follow the search engine."
+          "Where new tabs open. Leave empty for Brume's own page, which makes no network requests."
         );
         const homeInput = document.createElement("input");
         homeInput.type = "text";
         homeInput.className = "text-input";
         homeInput.spellcheck = false;
         homeInput.value = settings.homepage || "";
-        homeInput.placeholder = "Follow search engine";
+        homeInput.placeholder = "Brume's new tab page";
         // Saved on blur rather than per keystroke: writing the file on every
         // character would be pointless churn, and Enter is not obviously a
         // "save" gesture in a form with no submit button.
@@ -2482,7 +2553,19 @@
         homeInput.addEventListener("keydown", (e) => {
           if (e.key === "Enter") homeInput.blur();
         });
-        home.control.appendChild(homeInput);
+        // One click back to the old behaviour. Following the search engine used
+        // to be what an empty homepage meant; it is a reasonable thing to want
+        // and an unreasonable thing to make the default, so it lives here.
+        const useEngine = document.createElement("button");
+        useEngine.className = "action";
+        useEngine.textContent = "Use search engine";
+        useEngine.addEventListener("click", async () => {
+          const url = await call("engine_homepage");
+          if (!url) return;
+          homeInput.value = url;
+          await call("set_homepage", { url });
+        });
+        home.control.append(homeInput, useEngine);
         general.appendChild(home.row);
 
         const theme = row("Theme", "System follows Windows.");
@@ -2521,6 +2604,44 @@
         general.appendChild(bookmarksBar.row);
 
         form.appendChild(general);
+
+        /* --- import ---
+         *
+         * Only offered for browsers actually found with something in them, so
+         * this section is absent on a machine with nothing to import rather
+         * than showing buttons that would do nothing. */
+        const sources = (await call("import_sources")) || [];
+        if (sources.length) {
+          const imp = group("Import bookmarks");
+          for (const src of sources) {
+            const r = row(
+              src.name,
+              `${src.count} bookmark${src.count === 1 ? "" : "s"}. Folders are flattened, and anything already here is skipped.`
+            );
+            const status = document.createElement("span");
+            status.className = "status";
+            const btn = document.createElement("button");
+            btn.className = "action";
+            btn.textContent = "Import";
+            btn.addEventListener("click", async () => {
+              btn.disabled = true;
+              status.textContent = "Importing...";
+              try {
+                const added = await invoke("import_bookmarks", { source: src.id });
+                status.textContent =
+                  added === 0 ? "Already had them all" : `Added ${added}`;
+              } catch (err) {
+                console.error("[brume] import failed:", err);
+                status.textContent = "Failed";
+              } finally {
+                btn.disabled = false;
+              }
+            });
+            r.control.append(status, btn);
+            imp.appendChild(r.row);
+          }
+          form.appendChild(imp);
+        }
 
         // --- search ---
         const search = group("Search engine");

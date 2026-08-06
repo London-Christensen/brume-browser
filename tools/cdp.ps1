@@ -101,6 +101,14 @@ function Get-BrumeTargets {
 }
 
 # The chrome webview is served from tauri.localhost; anything else is page content.
+#
+# Brume's new tab page is the exception that makes this fiddly: it is a *content*
+# webview, but it is served from tauri.localhost too, so matching the host alone
+# picks it as the chrome and silently drives the wrong webview. Every test that
+# touches the chrome would then be reading a page with no toolbar in it.
+#
+# The chrome is therefore matched on the root path exactly, and the new tab page
+# is treated as content, which is what it is.
 function Resolve-BrumeTarget {
     param([ValidateSet('chrome', 'content')][string]$Target = 'chrome')
 
@@ -110,11 +118,13 @@ function Resolve-BrumeTarget {
         throw 'No CDP page targets - is Brume running with the debug port open?'
     }
 
+    $isChrome = { param($u) $u -match '^https?://tauri\.localhost/?(\?.*)?$' }
+
     $found = @(
         if ($Target -eq 'chrome') {
-            $pages | Where-Object { $_.url -like '*tauri.localhost*' }
+            $pages | Where-Object { & $isChrome $_.url }
         } else {
-            $pages | Where-Object { $_.url -notlike '*tauri.localhost*' }
+            $pages | Where-Object { -not (& $isChrome $_.url) }
         }
     )
 

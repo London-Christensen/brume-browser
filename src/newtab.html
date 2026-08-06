@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>New tab</title>
+
+    <!--
+      Brume's new tab page.
+
+      It exists to answer a contradiction rather than to add a feature. A new tab
+      used to navigate to the search engine's own homepage, which meant a request
+      to a third party before the user had typed anything: open ten tabs to park
+      them and that is ten times a search engine is told you are there. For a
+      browser that leads with privacy, that was the wrong default.
+
+      So this page makes no network requests at all. The font, the mark and every
+      colour are local. Nothing here is fetched, nothing is reported, and a new
+      tab is instant because there is nothing to wait for.
+
+      Deliberately almost empty. There is no search box: the address bar is two
+      centimetres away, it already has history and bookmark suggestions, and a
+      second field that does the same job is the kind of thing that ends up
+      disagreeing with the first one.
+
+      This page holds no capabilities. Content webviews are outside the
+      capability scope in capabilities/default.json, so it cannot invoke a Brume
+      command, and it does not need to.
+    -->
+    <link rel="stylesheet" href="assets/brand/css/tokens.css" />
+
+    <style>
+      @font-face {
+        font-family: "Archivo";
+        src: url("assets/brand/fonts/archivo-latin-var.woff2") format("woff2-variations");
+        font-weight: 300 700;
+        font-display: block;
+      }
+
+      /* Dark-first, matching the chrome. The light variants follow the same
+         `data-theme` attribute the chrome uses, so the two agree. */
+      :root {
+        color-scheme: dark;
+        --bg: var(--brume-ink);
+        --fg: var(--brume-paper);
+        --fg-muted: var(--brume-haar-dark);
+      }
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --bg: var(--brume-paper);
+        --fg: var(--brume-ink);
+        --fg-muted: var(--brume-haar);
+      }
+      @media (prefers-color-scheme: light) {
+        :root[data-theme="system"] {
+          color-scheme: light;
+          --bg: var(--brume-paper);
+          --fg: var(--brume-ink);
+          --fg-muted: var(--brume-haar);
+        }
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-ui);
+        user-select: none;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+
+      /* Sat slightly above centre. Dead centre reads as low, because the eye
+         puts the optical middle above the geometric one. */
+      main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 8vh;
+      }
+
+      .mark {
+        width: 56px;
+        height: 56px;
+        color: var(--fg);
+        opacity: 0.9;
+      }
+
+      .word {
+        font-size: 13px;
+        letter-spacing: 0.34em;
+        text-indent: 0.34em; /* letter-spacing pads the right; this recentres */
+        text-transform: uppercase;
+        color: var(--fg-muted);
+      }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <!--
+        The mark, inline rather than an <img>, so it inherits currentColor and
+        follows the theme without a second file per colourway. This is
+        mark-sm.svg's geometry: the redraw meant for small sizes, where the cut
+        opens from 3 units to 4 so it survives antialiasing.
+      -->
+      <svg
+        class="mark"
+        viewBox="0 0 32 32"
+        fill="currentColor"
+        role="img"
+        aria-label="Brume"
+      >
+        <path d="M4 4H8V18H20V28H4Z M12 4H28V28H24V14H12Z" />
+      </svg>
+      <div class="word">Brume</div>
+    </main>
+
+    <script>
+      /* The theme, read from the URL rather than asked for.
+       *
+       * This page has no capabilities and cannot call get_settings, so the tab
+       * that opens it appends ?theme=. Without it the page would always be dark
+       * and would look wrong for the one setting it is meant to match. */
+      const theme = new URLSearchParams(location.search).get("theme");
+      if (theme) document.documentElement.dataset.theme = theme;
+    </script>
+  </body>
+</html>

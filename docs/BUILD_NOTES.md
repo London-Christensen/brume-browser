@@ -1400,6 +1400,116 @@ would cry wolf on every plain site on the internet.
 
 ---
 
+## A new tab stopped being a request to a search engine
+
+Opening a tab used to navigate to the active engine's landing page, because an
+empty `homepage` meant "follow the search engine". That was a genuinely nice
+property - choosing Mojeek moved the new-tab destination too - and the wrong
+default for this browser. It meant a request to a third party every time a tab
+was opened, before anything had been typed. Park ten tabs and a search engine is
+told ten times that you are there.
+
+`src/newtab.html` makes no network requests at all: the font, the mark and every
+colour are local. It is also deliberately almost empty. There is no search box,
+because the address bar is two centimetres away, already has history and
+bookmark suggestions, and a second field doing the same job is a thing that ends
+up disagreeing with the first.
+
+The old behaviour is one click away in Settings rather than removed. That is what
+`engine_homepage` exists for, and it is why `search.rs::home_for` and its
+theme-matching tests are still live rather than orphaned by the change.
+
+### It needed a hole in the navigation guard
+
+`on_navigation` refuses anything on `tauri.localhost`, as a second lock behind
+the capability scoping. A page served from there is exactly what a new tab page
+has to be, so the guard now allows one exact path and nothing else.
+
+The exception is narrow on purpose and costs little: a page that navigates itself
+there gains nothing, because it holds no capabilities either way and stops being
+able to render anything of its own the moment it goes. The address bar keeps
+showing the real URL, so there is nothing to impersonate.
+
+The page is kept out of history - it would otherwise be far and away the most
+visited entry - and the address bar shows nothing for it rather than a
+chrome-internal URL.
+
+**This broke the test harness, quietly.** `Resolve-BrumeTarget` picked the chrome
+by matching `*tauri.localhost*` and taking the first hit, and the new tab page
+matches that too. It came first in the list, so `-Target chrome` started
+returning a page with no toolbar in it. The chrome is matched on the root path
+exactly now, and the new tab page counts as content, which is what it is.
+
+---
+
+## Importing bookmarks, and where it stops
+
+Nobody moves browser without their bookmarks. Chrome, Edge, Brave, Vivaldi and
+Opera all keep theirs in the same **plain JSON** file at a predictable path, so
+reading them needs serde and nothing else.
+
+Firefox keeps them in `places.sqlite`, which would mean bundling a SQLite driver -
+the ~1.5 MB that store.rs explicitly refused for Brume's own storage - or parsing
+the format by hand. Taking the easy 90% now beats taking none of it while waiting
+to do all of it.
+
+Three decisions worth keeping:
+
+- **Add-only, never toggle.** `toggle_bookmark` is what the star needs and
+  exactly the wrong call here: it would have *removed* every bookmark the two
+  browsers had in common. Importing twice adds 0 the second time.
+- **Dates come from the source.** Otherwise every imported bookmark claims to
+  have been made today and the bar reorders itself wholesale.
+- **`http` and `https` only.** A Chromium file can carry `javascript:`
+  bookmarklets, and importing one would put a script behind a one-click button
+  on the bookmarks bar. That filter is a security decision, and it is tested.
+
+Folders are flattened, because Brume's list is flat. Flattening loses the
+grouping and keeps every bookmark, which is the right way round: a bookmark in a
+long list still works, one silently dropped does not. The Settings row says so
+rather than letting it be discovered.
+
+Renaming arrived with it, in place rather than in a dialog: a page title is often
+not what you want on a 172px strip, and that is most obvious right after
+importing forty of them.
+
+Verified against real profiles: Chrome and Brave detected with counts, Edge
+correctly absent, 46 imported, second run added 0, and every imported date landed
+in the past rather than today.
+
+---
+
+## The lightweight claim, measured at last
+
+`README.md` said Brume's "memory footprint far below an Electron-based
+equivalent", and `BUILD_NOTES` called not bundling Chromium "the central decision
+that makes Brume lightweight". Neither had a number anywhere in the repo.
+
+Measured 2026-08-05, attributing WebView2 processes by walking parent PIDs so
+other apps' runtime processes were not counted:
+
+| | Brume |
+|---|---|
+| Installer | 5.1 MB |
+| Installed on disk | 5.2 MB |
+| `brume.exe` resident | 41 MB |
+| One tab | ~590 MB, 9 processes |
+| Five tabs | ~2.8 GB, 42 processes |
+
+**The disk claim is emphatically true. The memory claim was not.** Once a page is
+open, Brume costs what Chromium costs, because it is Chromium. Only the shell
+around it is small, and 41 MB of shell does not offset an engine.
+
+The saving that is real and worth stating is disk and distribution: 5 MB against
+an Electron app's 100 MB before any application code, and no second copy of a
+browser engine to ship with every update.
+
+Also checked, because 42 processes for five tabs looked like a leak: closing back
+to one tab drops to 9 processes and ~590 MB and stays there. Nothing is leaking;
+it scales with what is open.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

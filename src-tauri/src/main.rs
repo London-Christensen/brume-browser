@@ -18,6 +18,7 @@ mod browser;
 mod contextmenu;
 mod downloads;
 mod find;
+mod import;
 mod overlay;
 mod permissions;
 mod history;
@@ -98,6 +99,9 @@ fn main() {
             browser::set_chrome_overlay,
             store::toggle_bookmark,
             store::remove_bookmark,
+            store::rename_bookmark,
+            import::import_sources,
+            import::import_bookmarks,
             store::downloads,
             downloads::cancel_download,
             store::clear_downloads,
@@ -111,6 +115,7 @@ fn main() {
             settings::set_auto_update,
             settings::set_search_engine,
             settings::set_homepage,
+            settings::engine_homepage,
             settings::set_theme,
             settings::app_version,
             find::find_start,

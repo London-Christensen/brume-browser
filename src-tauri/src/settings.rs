@@ -346,18 +346,18 @@ impl SettingsState {
         }
     }
 
-    /// The URL a new tab should open.
+    /// The URL a new tab should open, or empty for Brume's own new tab page.
     ///
-    /// An explicit homepage wins; otherwise the active engine's own landing
-    /// page, in the current theme.
-    pub fn resolved_homepage(&self, app: &AppHandle) -> String {
-        let current = self.get();
-        if !current.homepage.is_empty() {
-            return current.homepage;
-        }
-        crate::search::engine_by_id(&current.search_engine)
-            .home_for(self.is_dark(app))
-            .to_string()
+    /// Empty used to mean "the active engine's landing page", so that choosing
+    /// Mojeek moved the new-tab destination too. That was a nice property and
+    /// the wrong default: it meant a request to a search engine every time a tab
+    /// was opened, before anything had been typed, on a browser that leads with
+    /// privacy. browser.rs turns empty into a local page instead.
+    ///
+    /// Anyone who preferred the old behaviour sets the engine's URL here
+    /// explicitly, which is one field and does exactly what it says.
+    pub fn resolved_homepage(&self, _app: &AppHandle) -> String {
+        self.get().homepage
     }
 }
 
@@ -401,6 +401,21 @@ pub fn set_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
         let _ = window.set_theme(resolved);
     }
     Ok(())
+}
+
+/// The active search engine's own landing page, in the current theme.
+///
+/// Offered as a one-click fill for the Homepage field rather than as a default.
+/// It used to be what an empty homepage meant, and that was the wrong default -
+/// every new tab became a request to a search engine. Keeping it reachable is
+/// the difference between changing a default and removing a capability.
+#[tauri::command]
+pub fn engine_homepage(app: tauri::AppHandle) -> String {
+    let state = app.state::<SettingsState>();
+    let dark = state.is_dark(&app);
+    crate::search::engine_by_id(&state.get().search_engine)
+        .home_for(dark)
+        .to_string()
 }
 
 /// The running version, for the updates section of Settings.

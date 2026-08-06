@@ -81,16 +81,47 @@ pub const BOOKMARKS_EVENT: &str = "brume://bookmarks";
 /// one and the active engine's own landing page otherwise.
 const FALLBACK_HOME: &str = "https://duckduckgo.com/";
 
+/// Path of Brume's own new tab page, under the chrome's origin.
+///
+/// The only path a content webview is allowed to load from that origin; see the
+/// navigation guard.
+const NEW_TAB_PATH: &str = "/newtab.html";
+
+/// Brume's new tab page, with the theme along for the ride.
+///
+/// The page holds no capabilities and cannot ask what the theme is, so it is
+/// told. Without it a new tab would always paint dark and would look wrong for
+/// the one setting it exists to match.
+fn new_tab_url(app: &AppHandle) -> String {
+    let theme = app.state::<crate::settings::SettingsState>().get().theme;
+    format!("http://tauri.localhost{NEW_TAB_PATH}?theme={theme}")
+}
+
 /// Where a new tab should open.
+///
+/// An explicit homepage wins. Otherwise Brume's own page, which is **not** what
+/// this used to do: the old default sent every new tab to the search engine's
+/// landing page, so parking ten tabs told a search engine ten times that you
+/// were there, before you had typed anything. See BUILD_NOTES.
 fn home_url(app: &AppHandle) -> String {
     let resolved = app
         .state::<crate::settings::SettingsState>()
         .resolved_homepage(app);
     if resolved.is_empty() {
-        FALLBACK_HOME.to_string()
+        new_tab_url(app)
     } else {
         resolved
     }
+}
+
+/// Whether a URL is Brume's new tab page.
+///
+/// Used to keep it out of history and out of the address bar. Compared on host
+/// and path so the theme query string does not matter.
+pub fn is_new_tab(url: &str) -> bool {
+    tauri::Url::parse(url).is_ok_and(|u| {
+        u.host_str() == Some("tauri.localhost") && u.path() == NEW_TAB_PATH
+    })
 }
 
 /// Where one tab currently is.
@@ -679,10 +710,20 @@ fn spawn_tab_webview(
                 //
                 // Matched exactly rather than by suffix: `ends_with` would also
                 // accept `nottauri.localhost`.
-                if url
+                // One exception, kept as narrow as it can be: Brume's own new
+                // tab page, which has to live somewhere a content webview can
+                // actually load. Matched on the exact path, so nothing else
+                // under that origin is reachable.
+                //
+                // What a page gains by navigating itself here is nothing. It
+                // holds no capabilities either way, and the moment it navigates
+                // it stops being able to render anything of its own. The address
+                // bar keeps showing the real URL, so there is nothing to
+                // impersonate.
+                let own_origin = url
                     .host_str()
-                    .is_some_and(|h| h == "tauri.localhost" || h == "asset.localhost")
-                {
+                    .is_some_and(|h| h == "tauri.localhost" || h == "asset.localhost");
+                if own_origin && url.path() != NEW_TAB_PATH {
                     eprintln!("[browser] refused navigation to Brume's own origin: {url}");
                     return false;
                 }
@@ -735,9 +776,15 @@ fn spawn_tab_webview(
                 // Recorded on load *finished* rather than on navigation start,
                 // so the entry carries a real title instead of an empty one.
                 if let Some((url, title)) = visit {
-                    load_handle
-                        .state::<crate::store::Store>()
-                        .record_visit(&url, &title);
+                    // Brume's own new tab page is not somewhere you went. It
+                    // would otherwise be far and away the most visited entry in
+                    // history, and it is the one page a back button should never
+                    // need to return to.
+                    if !is_new_tab(&url) {
+                        load_handle
+                            .state::<crate::store::Store>()
+                            .record_visit(&url, &title);
+                    }
 
                     // The tab has settled somewhere new, so the saved session is
                     // stale. Written here rather than only at quit, so an

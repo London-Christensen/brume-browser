@@ -365,6 +365,55 @@ impl Store {
         Ok(now_bookmarked)
     }
 
+    /// Adds a bookmark unless the URL is already there.
+    ///
+    /// Add-only, unlike `toggle_bookmark`, which is what the star needs and
+    /// exactly the wrong thing for an import: toggling would *remove* every
+    /// bookmark the two browsers had in common.
+    ///
+    /// Returns whether it was added.
+    pub fn add_bookmark(&self, url: &str, title: &str, added_at: i64) -> bool {
+        if url.is_empty() {
+            return false;
+        }
+        let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+        if items.iter().any(|b| b.url == url) {
+            return false;
+        }
+        let next_id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+        items.push(Bookmark {
+            id: next_id,
+            url: url.to_string(),
+            title: title.to_string(),
+            // The source's own date, so an import does not claim every
+            // bookmark was made today and reorder the bar by accident.
+            added_at,
+        });
+        true
+    }
+
+    /// Writes the current list out. For callers that batched several adds.
+    pub fn flush_bookmarks(&self) -> Result<(), String> {
+        let snapshot = self.bookmarks.lock().expect("bookmarks mutex poisoned").clone();
+        self.persist_bookmarks(&snapshot)
+    }
+
+    /// Renames a bookmark, leaving its URL and position alone.
+    ///
+    /// Worth having on its own once bookmarks can be imported: a title that made
+    /// sense as a page title is often not what you want on a 172px strip.
+    pub fn rename_bookmark(&self, id: u64, title: &str) -> Result<(), String> {
+        let snapshot = {
+            let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+            match items.iter_mut().find(|b| b.id == id) {
+                Some(b) => b.title = title.trim().to_string(),
+                None => return Ok(()),
+            }
+            items.clone()
+        };
+        self.persist_bookmarks(&snapshot)
+    }
+
     pub fn remove_bookmark(&self, id: u64) -> Result<(), String> {
         let snapshot = {
             let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
@@ -722,6 +771,18 @@ pub fn toggle_bookmark(
     let bookmarked = store.toggle_bookmark(&url, &title)?;
     notify_bookmarks(&app);
     Ok(bookmarked)
+}
+
+#[tauri::command]
+pub fn rename_bookmark(
+    app: AppHandle,
+    store: State<'_, Store>,
+    id: u64,
+    title: String,
+) -> Result<(), String> {
+    store.rename_bookmark(id, &title)?;
+    notify_bookmarks(&app);
+    Ok(())
 }
 
 #[tauri::command]
