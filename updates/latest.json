@@ -1,11 +1,11 @@
 {
-    "version":  "0.6.0",
-    "notes":  "**Added**\n- Bookmark folders, on the bookmarks bar and in a new bookmarks manager\n- Move, reorder and rename bookmarks and folders\n- Importing from another browser now brings its folders across, into a folder named for the day\n- Export bookmarks to a file any other browser can read\n- Day headings in history, and clearing just the last hour, day or week\n- Retry a failed download\n\n**Fixed**\n- An unreadable bookmarks file is kept instead of being silently emptied\n- Menus were cut off at the toolbar and showed only their first few items\n- The rename button drew a solid square instead of its icon",
-    "pub_date":  "2026-08-07T14:13:30Z",
+    "version":  "0.7.0",
+    "notes":  "**Added**\n- A second window. Ctrl+N opens one, Ctrl+Shift+N opens a private one\n- Move a tab into a window of its own, from the tab context menu\n- Right-click the new tab button for the new tab and new window options\n- Session restore brings back every window that was open, not just one\n- Ctrl+Shift+P opens a private tab, since Ctrl+Shift+N now opens a private window",
+    "pub_date":  "2026-08-07T15:38:41Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1ZZYTBYdVJ2bkZyQ3ErU1hJOE5kZkhrUWFZMXYzM2JHWEVqVjdIcjFQUlJjMXdVZEJ4dlRZenh2cklPZWlWdTRaeGp1dWg5ckZOdC9kWmlUYWozN3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTEyMDEwCWZpbGU6QnJ1bWUtU2V0dXAuZXhlCllGNzh2T0czbWFSbVNHUmtJUi92Y0N4Q1V4cS94dWhOTW4rUVAyd3ZNMEJ2Q2VIa1BVWGRPRkcyNzdDYW5ySVNPODhRVEtMRUl1WGhSWWZGU0NPcUFBPT0K",
-                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.6.0/Brume-Setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1VUYVZrUkxOeUtpT1hCc1kzcENqcEdBdFppR1pVRE9RSllGRjV6WmxVM2d6MHRsb3dSSlZ1N2VWNnAxYkg4RVVVSzZPSSt6WUg4YlRLeThhNHN3amdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTE3MTIxCWZpbGU6QnJ1bWUtU2V0dXAuZXhlCjNjejFoRXFZb2xjeFBIRzcrVWhJL0tQb25ENEdOUm1iY2FyYkZFRmIwc1l2d2pZUkxwaEMreDdBdGdjSGJGS3ROcjJJMi9rNHpJUFNnVm1SZm8rUURnPT0K",
+                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.7.0/Brume-Setup.exe"
                                          }
                   }
 }
