@@ -2243,6 +2243,76 @@ than merely warning about it.
 
 ---
 
+## 0.9.0 plan: Personal
+
+Planned. Two halves that do not obviously belong together, bundled deliberately:
+**who is using the browser** and **how they read in it**. Profiles and reader
+mode. The name covers both without pretending they are one feature.
+
+0.9.0 exists at all because the arc drawn in 0.6.0 went straight from Power tools
+to 1.0.0 "Shield", and content blocking on its own is what 1.0.0 would then be.
+Brume already reads as a functional browser, so the question was whether 1.0.0
+should carry more than blocking. This is the answer: one more release of things
+people notice, then Shield.
+
+### Reader mode cannot hand its result back, and that decides the design
+
+The obvious shape is: extract the article in the page, send the text to Rust,
+navigate the tab to a Brume-served reader page. It does not work, and the reason
+is a deliberate property of this codebase.
+
+**The content webview holds no capabilities.** `capabilities/default.json` is
+scoped to `chrome-*`, and a tab is `tab-N`, so a page cannot invoke a command.
+That is the thing standing between every website on the internet and Brume's IPC
+bridge, and it is not being widened for a reader.
+
+Nor can the reader page fetch the article itself: it would be served from
+`tauri.localhost` and the article is not, so CORS refuses it. Fetching in Rust
+instead means an HTTP client, which is a dependency in a project whose premise is
+not being large, and it would re-request a document the browser already has.
+
+So the reader is **injected into the page** rather than rendered beside it. One
+script extracts the article and replaces the document with a clean layout using
+Brume's own tokens. Nothing has to come back, so the capability boundary is never
+approached.
+
+That is the opposite of what `find.rs` decided, and the difference is worth
+stating. Find refused to mutate the document because a search has no business
+altering what it is searching, and a highlight injected into a page fights the
+page's own styling. Reader mode's entire purpose is to alter presentation, it is
+invoked deliberately, and a reload puts the original back. Mutating is the
+feature rather than a side effect.
+
+Extraction is hand written rather than vendored. Readability.js is Apache-2.0 and
+would be compatible, but it is roughly 100KB of JavaScript against a 5MB binary
+whose whole argument is size. A scoring heuristic over text density gets most
+articles, and the honest part is saying which pages it fails on rather than
+claiming it is general.
+
+### Profiles need one environment per data directory, not a restart
+
+`WebviewBuilder::data_directory` exists in Tauri 2.11.5, and wry creates a
+`WebContext` per directory. Two different user data folders are two WebView2
+environments, and one process is allowed to host several, so switching profiles
+does not have to mean relaunching.
+
+Brume's own data is the other half and is currently one directory:
+`settings.json`, `history.jsonl`, `bookmarks.json` and `downloads.jsonl` all sit
+under `app_config_dir()`. Those become profile-scoped, which means `store.rs` and
+`settings.rs` stop resolving their own paths and are told where to look.
+
+The profile list itself cannot live in a profile, or there would be nothing to
+read at startup to find out which profiles exist. It goes in a small file beside
+them, and that file is the only thing that stays global.
+
+**The default profile keeps the current paths.** Moving an existing install's
+data into a `default/` subdirectory would be a migration, and the bookmarks file
+has already demonstrated what this project's migrations cost when they go wrong.
+A named profile gets a subdirectory; the one everybody already has stays exactly
+where it is.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
