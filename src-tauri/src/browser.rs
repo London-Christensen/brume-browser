@@ -920,237 +920,251 @@ fn spawn_tab_webview(
     let opener_private = private;
 
     window.add_child(
-        WebviewBuilder::new(label, WebviewUrl::External(parsed))
-            // Incognito hands cookies, storage and cache to a throwaway
-            // partition the runtime discards with the webview. Brume still has
-            // to keep its own records out, which is what Tab::private is for.
-            .incognito(private)
-            // Ctrl+scroll and Ctrl+plus/minus, which WebView2 gates behind its
-            // IsZoomControlEnabled setting.
+        {
+            let mut builder = WebviewBuilder::new(label, WebviewUrl::External(parsed));
+            // Cookies, storage and cache go with the profile, not with the
+            // install. Without this a second profile would share the first's
+            // logins, which is most of what a separate profile is for.
             //
-            // wry and tauri-runtime both default this to `false`, so leaving it
-            // unset does not mean "platform default" - it means zoom is switched
-            // off outright, on a browser. Enabling it is the whole fix: WebView2
-            // handles both the wheel and the keyboard itself, so there is no
-            // accelerator for Brume to register and nothing to keep in step.
-            .zoom_hotkeys_enabled(true)
-            // A page asking for a new window gets a Brume tab instead.
-            //
-            // This is not an enhancement, it repairs a hole: wry registers a
-            // NewWindowRequested handler unconditionally, and when no callback
-            // is supplied its else-branch calls SetHandled(true) and completes
-            // the deferral - which *cancels* the request. Without this,
-            // target="_blank" and window.open() silently did nothing at all.
-            .on_new_window(move |url, _features| {
-                let handle = newwin_handle.clone();
-                let target = url.to_string();
-                // Spawned, never called inline. This handler runs on the main
-                // thread, and open_tab_inner reaches add_child, which dispatches
-                // to the main thread and then blocks waiting on it - the same
-                // deadlock the async commands below exist to avoid.
-                tauri::async_runtime::spawn(async move {
-                    // Into the window the opening tab is in, so a link opened
-                    // from a second window does not land in the first.
-                    let Some(state) = window_of_tab(&handle, id) else {
-                        return;
-                    };
-                    if let Err(e) = open_tab_inner(&handle, &state, Some(target), opener_private) {
-                        eprintln!("[browser] new-window request failed: {e}");
-                    }
-                });
-                // Deny, not Allow: allowing it hands the page a bare OS window
-                // with no chrome, no tab strip and no address bar - a popup
-                // Brume could neither show the URL of nor close.
-                NewWindowResponse::Deny
-            })
-            // Downloads, so Brume has a record of them.
-            //
-            // WebView2 handles the transfer and its own default dialog either
-            // way; without this Brume simply never heard about it, so there was
-            // nothing to list. The destination is left alone deliberately: the
-            // runtime already puts files where Windows says downloads go, and
-            // overriding that to somewhere Brume invented would be worse.
-            //
-            // The runtime reports started and finished and nothing between, so
-            // there is no byte count to show a progress bar with. Reaching one
-            // means going through ICoreWebView2DownloadOperation directly.
-            .on_download(move |_webview, event| {
-                match event {
-                    tauri::webview::DownloadEvent::Requested { url, destination } => {
-                        let name = destination
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        download_handle
-                            .state::<crate::store::Store>()
-                            .begin_download(url.as_str(), &name);
-                    }
-                    tauri::webview::DownloadEvent::Finished { url, path, success } => {
-                        download_handle
-                            .state::<crate::store::Store>()
-                            .finish_download(url.as_str(), path.as_deref(), success);
-                    }
-                    // The enum is non_exhaustive, so a future variant compiles
-                    // rather than breaking the build.
-                    _ => {}
+            // `None` for the default profile, deliberately: it never had a named
+            // directory, so naming one now would move an existing install's
+            // cookies and log everybody out. See profiles::webview_dir.
+            if let Some(dir) = crate::profiles::webview_dir(app, &crate::profiles::load(app).active)
+            {
+                builder = builder.data_directory(dir);
+            }
+            builder
+        }
+        // Incognito hands cookies, storage and cache to a throwaway
+        // partition the runtime discards with the webview. Brume still has
+        // to keep its own records out, which is what Tab::private is for.
+        .incognito(private)
+        // Ctrl+scroll and Ctrl+plus/minus, which WebView2 gates behind its
+        // IsZoomControlEnabled setting.
+        //
+        // wry and tauri-runtime both default this to `false`, so leaving it
+        // unset does not mean "platform default" - it means zoom is switched
+        // off outright, on a browser. Enabling it is the whole fix: WebView2
+        // handles both the wheel and the keyboard itself, so there is no
+        // accelerator for Brume to register and nothing to keep in step.
+        .zoom_hotkeys_enabled(true)
+        // A page asking for a new window gets a Brume tab instead.
+        //
+        // This is not an enhancement, it repairs a hole: wry registers a
+        // NewWindowRequested handler unconditionally, and when no callback
+        // is supplied its else-branch calls SetHandled(true) and completes
+        // the deferral - which *cancels* the request. Without this,
+        // target="_blank" and window.open() silently did nothing at all.
+        .on_new_window(move |url, _features| {
+            let handle = newwin_handle.clone();
+            let target = url.to_string();
+            // Spawned, never called inline. This handler runs on the main
+            // thread, and open_tab_inner reaches add_child, which dispatches
+            // to the main thread and then blocks waiting on it - the same
+            // deadlock the async commands below exist to avoid.
+            tauri::async_runtime::spawn(async move {
+                // Into the window the opening tab is in, so a link opened
+                // from a second window does not land in the first.
+                let Some(state) = window_of_tab(&handle, id) else {
+                    return;
+                };
+                if let Err(e) = open_tab_inner(&handle, &state, Some(target), opener_private) {
+                    eprintln!("[browser] new-window request failed: {e}");
                 }
-                // Every window: the downloads list is app-wide, so a panel open
-                // in another window is just as stale.
-                notify_downloads_everywhere(&download_handle);
-                // Always allow. Brume is recording, not gatekeeping.
-                true
-            })
-            .on_navigation(move |url| {
-                // Brume's own UI is served from tauri.localhost, and the asset
-                // protocol from asset.localhost. Neither is somewhere a website
-                // has any business navigating to.
-                //
-                // The content webview holds no capabilities, so a page that got
-                // there could not invoke a command today. It could still render
-                // Brume's chrome inside a tab, and the whole reason that
-                // capability scoping is safe is that nothing else is relying on
-                // it alone. Refusing here is a second lock on the same door.
-                //
-                // Matched exactly rather than by suffix: `ends_with` would also
-                // accept `nottauri.localhost`.
-                // One exception, kept as narrow as it can be: Brume's own new
-                // tab page, which has to live somewhere a content webview can
-                // actually load. Matched on the exact path, so nothing else
-                // under that origin is reachable.
-                //
-                // What a page gains by navigating itself here is nothing. It
-                // holds no capabilities either way, and the moment it navigates
-                // it stops being able to render anything of its own. The address
-                // bar keeps showing the real URL, so there is nothing to
-                // impersonate.
-                let own_origin = url
-                    .host_str()
-                    .is_some_and(|h| h == "tauri.localhost" || h == "asset.localhost");
-                if own_origin && url.path() != NEW_TAB_PATH {
-                    eprintln!("[browser] refused navigation to Brume's own origin: {url}");
-                    return false;
+            });
+            // Deny, not Allow: allowing it hands the page a bare OS window
+            // with no chrome, no tab strip and no address bar - a popup
+            // Brume could neither show the URL of nor close.
+            NewWindowResponse::Deny
+        })
+        // Downloads, so Brume has a record of them.
+        //
+        // WebView2 handles the transfer and its own default dialog either
+        // way; without this Brume simply never heard about it, so there was
+        // nothing to list. The destination is left alone deliberately: the
+        // runtime already puts files where Windows says downloads go, and
+        // overriding that to somewhere Brume invented would be worse.
+        //
+        // The runtime reports started and finished and nothing between, so
+        // there is no byte count to show a progress bar with. Reaching one
+        // means going through ICoreWebView2DownloadOperation directly.
+        .on_download(move |_webview, event| {
+            match event {
+                tauri::webview::DownloadEvent::Requested { url, destination } => {
+                    let name = destination
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    download_handle
+                        .state::<crate::store::Store>()
+                        .begin_download(url.as_str(), &name);
+                }
+                tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                    download_handle
+                        .state::<crate::store::Store>()
+                        .finish_download(url.as_str(), path.as_deref(), success);
+                }
+                // The enum is non_exhaustive, so a future variant compiles
+                // rather than breaking the build.
+                _ => {}
+            }
+            // Every window: the downloads list is app-wide, so a panel open
+            // in another window is just as stale.
+            notify_downloads_everywhere(&download_handle);
+            // Always allow. Brume is recording, not gatekeeping.
+            true
+        })
+        .on_navigation(move |url| {
+            // Brume's own UI is served from tauri.localhost, and the asset
+            // protocol from asset.localhost. Neither is somewhere a website
+            // has any business navigating to.
+            //
+            // The content webview holds no capabilities, so a page that got
+            // there could not invoke a command today. It could still render
+            // Brume's chrome inside a tab, and the whole reason that
+            // capability scoping is safe is that nothing else is relying on
+            // it alone. Refusing here is a second lock on the same door.
+            //
+            // Matched exactly rather than by suffix: `ends_with` would also
+            // accept `nottauri.localhost`.
+            // One exception, kept as narrow as it can be: Brume's own new
+            // tab page, which has to live somewhere a content webview can
+            // actually load. Matched on the exact path, so nothing else
+            // under that origin is reachable.
+            //
+            // What a page gains by navigating itself here is nothing. It
+            // holds no capabilities either way, and the moment it navigates
+            // it stops being able to render anything of its own. The address
+            // bar keeps showing the real URL, so there is nothing to
+            // impersonate.
+            let own_origin = url
+                .host_str()
+                .is_some_and(|h| h == "tauri.localhost" || h == "asset.localhost");
+            if own_origin && url.path() != NEW_TAB_PATH {
+                eprintln!("[browser] refused navigation to Brume's own origin: {url}");
+                return false;
+            }
+
+            // Fires for every navigation, including ones Brume did not
+            // start: link clicks, form submissions, redirects, JavaScript.
+            // Recording here rather than only in `navigate` is what keeps
+            // the address bar honest.
+            // Looked up rather than captured. The window is known when this
+            // webview is built, but a tab can be moved to another one
+            // afterwards, and a captured label would then update the window
+            // the tab used to be in.
+            if let Some(win) = window_of_tab(&nav_handle, id) {
+                {
+                    let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                    if let Some(tab) = tabs.tab_mut(id) {
+                        tab.nav.set_url(url.to_string());
+                        tab.nav.loading = true;
+                        // The old page's title does not describe the new one.
+                        tab.title.clear();
+                        // The reader belongs to the document it replaced.
+                        // The next one arrives untouched, so the flag would
+                        // otherwise claim a page was in reader mode when it
+                        // is showing the site exactly as sent.
+                        tab.reader = false;
+                    }
+                }
+                publish(&nav_handle, &win);
+            }
+            true
+        })
+        .on_page_load(move |_webview, payload| {
+            let finished = matches!(payload.event(), PageLoadEvent::Finished);
+
+            // What to record is decided while holding the tabs lock, but the
+            // store is written after releasing it. Taking the store's lock
+            // while holding this one would establish a lock order that the
+            // bookmark path takes in reverse.
+            let Some(win) = window_of_tab(&load_handle, id) else {
+                return;
+            };
+            let visit = {
+                let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                match tabs.tab_mut(id) {
+                    Some(tab) => {
+                        tab.nav.loading = !finished;
+                        // A private tab records nothing. This is the single
+                        // place a visit would reach history from.
+                        if finished && !tab.private {
+                            tab.nav
+                                .current()
+                                .cloned()
+                                .map(|url| (url, tab.display_title()))
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                }
+            };
+
+            // Recorded on load *finished* rather than on navigation start,
+            // so the entry carries a real title instead of an empty one.
+            if let Some((url, title)) = visit {
+                // Brume's own new tab page is not somewhere you went. It
+                // would otherwise be far and away the most visited entry in
+                // history, and it is the one page a back button should never
+                // need to return to.
+                if !is_new_tab(&url) {
+                    load_handle
+                        .state::<crate::store::Store>()
+                        .record_visit(&url, &title);
                 }
 
-                // Fires for every navigation, including ones Brume did not
-                // start: link clicks, form submissions, redirects, JavaScript.
-                // Recording here rather than only in `navigate` is what keeps
-                // the address bar honest.
-                // Looked up rather than captured. The window is known when this
-                // webview is built, but a tab can be moved to another one
-                // afterwards, and a captured label would then update the window
-                // the tab used to be in.
-                if let Some(win) = window_of_tab(&nav_handle, id) {
+                // The tab has settled somewhere new, so the saved session is
+                // stale. Written here rather than only at quit, so an
+                // unexpected exit still has something to restore.
+                save_session(&load_handle);
+
+                // On finish rather than on navigation start: applying it
+                // earlier means the runtime resets the factor as the new
+                // document commits, and the zoom silently does not stick.
+                apply_site_zoom(&load_handle, id, &url);
+            }
+
+            publish(&load_handle, &win);
+        })
+        .on_document_title_changed(move |_webview, title| {
+            // Titles arrive from the runtime, not from the page over IPC.
+            //
+            // That distinction matters: the content webview is deliberately
+            // outside every capability, so a website cannot call a Brume
+            // command. Having pages report their own titles would have meant
+            // opening an IPC channel to the entire internet for a cosmetic
+            // feature.
+            if let Some(win) = window_of_tab(&title_handle, id) {
+                // The reader saying it found nothing. It cannot call a
+                // command - a content webview holds no capabilities - so it
+                // reports through the one thing the runtime relays either
+                // way. See reader.rs.
+                if title == crate::reader::FAILED_SENTINEL {
                     {
                         let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
                         if let Some(tab) = tabs.tab_mut(id) {
-                            tab.nav.set_url(url.to_string());
-                            tab.nav.loading = true;
-                            // The old page's title does not describe the new one.
-                            tab.title.clear();
-                            // The reader belongs to the document it replaced.
-                            // The next one arrives untouched, so the flag would
-                            // otherwise claim a page was in reader mode when it
-                            // is showing the site exactly as sent.
                             tab.reader = false;
                         }
                     }
-                    publish(&nav_handle, &win);
-                }
-                true
-            })
-            .on_page_load(move |_webview, payload| {
-                let finished = matches!(payload.event(), PageLoadEvent::Finished);
-
-                // What to record is decided while holding the tabs lock, but the
-                // store is written after releasing it. Taking the store's lock
-                // while holding this one would establish a lock order that the
-                // bookmark path takes in reverse.
-                let Some(win) = window_of_tab(&load_handle, id) else {
-                    return;
-                };
-                let visit = {
-                    let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
-                    match tabs.tab_mut(id) {
-                        Some(tab) => {
-                            tab.nav.loading = !finished;
-                            // A private tab records nothing. This is the single
-                            // place a visit would reach history from.
-                            if finished && !tab.private {
-                                tab.nav
-                                    .current()
-                                    .cloned()
-                                    .map(|url| (url, tab.display_title()))
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    }
-                };
-
-                // Recorded on load *finished* rather than on navigation start,
-                // so the entry carries a real title instead of an empty one.
-                if let Some((url, title)) = visit {
-                    // Brume's own new tab page is not somewhere you went. It
-                    // would otherwise be far and away the most visited entry in
-                    // history, and it is the one page a back button should never
-                    // need to return to.
-                    if !is_new_tab(&url) {
-                        load_handle
-                            .state::<crate::store::Store>()
-                            .record_visit(&url, &title);
-                    }
-
-                    // The tab has settled somewhere new, so the saved session is
-                    // stale. Written here rather than only at quit, so an
-                    // unexpected exit still has something to restore.
-                    save_session(&load_handle);
-
-                    // On finish rather than on navigation start: applying it
-                    // earlier means the runtime resets the factor as the new
-                    // document commits, and the zoom silently does not stick.
-                    apply_site_zoom(&load_handle, id, &url);
-                }
-
-                publish(&load_handle, &win);
-            })
-            .on_document_title_changed(move |_webview, title| {
-                // Titles arrive from the runtime, not from the page over IPC.
-                //
-                // That distinction matters: the content webview is deliberately
-                // outside every capability, so a website cannot call a Brume
-                // command. Having pages report their own titles would have meant
-                // opening an IPC channel to the entire internet for a cosmetic
-                // feature.
-                if let Some(win) = window_of_tab(&title_handle, id) {
-                    // The reader saying it found nothing. It cannot call a
-                    // command - a content webview holds no capabilities - so it
-                    // reports through the one thing the runtime relays either
-                    // way. See reader.rs.
-                    if title == crate::reader::FAILED_SENTINEL {
-                        {
-                            let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
-                            if let Some(tab) = tabs.tab_mut(id) {
-                                tab.reader = false;
-                            }
-                        }
-                        let _ = title_handle.emit_to(
-                            &win.chrome,
-                            crate::reader::READER_STATE_EVENT,
-                            "failed",
-                        );
-                        publish(&title_handle, &win);
-                        return;
-                    }
-                    {
-                        let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
-                        if let Some(tab) = tabs.tab_mut(id) {
-                            tab.title = title;
-                        }
-                    }
+                    let _ = title_handle.emit_to(
+                        &win.chrome,
+                        crate::reader::READER_STATE_EVENT,
+                        "failed",
+                    );
                     publish(&title_handle, &win);
+                    return;
                 }
-            }),
+                {
+                    let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                    if let Some(tab) = tabs.tab_mut(id) {
+                        tab.title = title;
+                    }
+                }
+                publish(&title_handle, &win);
+            }
+        }),
         // Born where the layout would put it, sidebar included, so a tab opened
         // while the sidebar is on is not briefly 208px too wide and underneath
         // it. The relayout that follows corrects it either way; this is about

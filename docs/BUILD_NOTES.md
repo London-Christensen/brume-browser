@@ -2355,6 +2355,62 @@ The reader icon was added to the kit properly rather than borrowing `menu`.
 45 icons with only the new one changing, which is incidental evidence that the
 generator is deterministic.
 
+### Profiles: the stores stopped resolving their own paths
+
+`Store::load` and `SettingsState::load` each worked out `app_config_dir()` for
+themselves. They are told a directory now, and `profiles.rs` is the only thing
+that decides which one. Two places answering "where does data live" would
+eventually answer differently, and the answer moved from a constant to something
+that varies per launch.
+
+`profiles.json` sits in the config root and is the one file that stays global.
+It has to: there would otherwise be nothing to read at startup to find out where
+to look.
+
+**An upgrade changes nothing on disk.** The default profile keeps the paths it
+already had, so `settings.json`, `bookmarks.json`, `history.jsonl` and
+`downloads.jsonl` stay in the root. Moving them into a `default/` subdirectory
+would be a migration, and `store.rs` documents at length what one costs here when
+it goes wrong. Verified: on a build with profiles, an existing install showed its
+bookmark and `profiles.json` did not exist at all until a profile was created.
+
+The default's WebView2 directory is left unnamed for the same reason. It never
+had one, so naming it now would move an existing install's cookies and log the
+user out of everything. A named profile gets `profiles/<id>/webview`.
+
+**Switching relaunches, and that is a decision rather than a shortcut.** A
+content webview's data directory is fixed when the webview is built, and both
+stores are managed state resolved at startup. Switching in place would mean
+rebuilding every content webview in every window, swapping both stores underneath
+whatever was reading them, and leaving WebView2 holding two environments for one
+process. Relaunching gets all of it for free, and session restore is per window
+already, so what comes back is what was there. The Settings row says so before
+the click rather than after.
+
+Ids are `p-N`, generated and never reused. A recycled id would adopt a deleted
+profile's directory, and with it their bookmarks and cookies. Deleting removes
+the directory too, because a profile whose data survived its deletion is the
+opposite of what a separate profile is for, and the path is checked to be inside
+`profiles/` before anything is removed: `id` arrives over IPC.
+
+Verified on 2026-08-07, with the real profile restored byte for byte afterwards:
+
+| | |
+|---|---|
+| Existing install, profiles build | Bookmark intact, no `profiles.json` written |
+| Create a profile | `p-1`, directory made, root untouched |
+| Switch to it | Own store: 0 bookmarks, 0 history |
+| Bookmark inside it | Landed in `profiles/p-1/bookmarks.json` |
+| The root file meanwhile | Byte-identical on SHA-256 |
+| Switch back | Original bookmark, none of the profile's |
+| Delete the profile | Directory gone, entry gone |
+| Delete the default | Refused |
+
+The switch itself was exercised by writing the active id and relaunching through
+the harness rather than by calling `switch_profile`, because that restarts the
+process and a restarted window is not the off-screen one the harness parked. The
+code path under test is the same: `active_dir` is read at startup either way.
+
 ---
 
 ## Known hard problems, deliberately deferred

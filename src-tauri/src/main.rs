@@ -25,6 +25,7 @@ mod memory;
 mod overlay;
 mod permissions;
 mod profile;
+mod profiles;
 mod reader;
 mod search;
 mod settings;
@@ -44,13 +45,18 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(shortcuts::plugin())
         .setup(|app| {
-            let store = settings::SettingsState::load(app.handle());
+            // Resolved once, before anything that stores data exists. Every
+            // path below hangs off it, so a profile is chosen in exactly one
+            // place rather than worked out again by each store.
+            let profile_dir = profiles::active_dir(app.handle());
+
+            let store = settings::SettingsState::load(app.handle(), profile_dir.clone());
             let auto_update = store.get().auto_update;
             app.manage(store);
             app.manage(browser::Browser::default());
             // Registered before the window is built: the first tab's page-load
             // handler records a visit, and that runs as soon as it navigates.
-            app.manage(store::Store::load(app.handle()));
+            app.manage(store::Store::load(app.handle(), profile_dir));
 
             browser::build(app.handle())?;
 
@@ -137,6 +143,11 @@ fn main() {
             settings::engine_homepage,
             settings::set_theme,
             settings::app_version,
+            profiles::profiles,
+            profiles::create_profile,
+            profiles::rename_profile,
+            profiles::delete_profile,
+            profiles::switch_profile,
             settings::zoomed_site_count,
             settings::clear_site_zoom,
             find::find_start,

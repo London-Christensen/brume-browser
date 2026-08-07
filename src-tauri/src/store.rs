@@ -39,7 +39,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 /// Maximum history entries kept on disk.
 ///
@@ -189,7 +189,7 @@ const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 /// process dies mid-write, which for bookmarks means losing all of them. Writing
 /// a sibling and renaming means the destination is either the old contents or
 /// the new ones, never a half-written mixture.
-pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
+pub fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -427,11 +427,17 @@ fn preserve_unreadable(path: &Path) {
 }
 
 impl Store {
-    pub fn load(app: &AppHandle) -> Self {
-        let dir = app
-            .path()
-            .app_config_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+    /// Loads from a directory it is told about rather than one it resolves.
+    ///
+    /// Since 0.9.0 the directory belongs to a profile, and only `profiles.rs`
+    /// knows which one is active. Resolving it here as well would be a second
+    /// answer to the same question, and the two would eventually differ.
+    pub fn load(app: &AppHandle, dir: PathBuf) -> Self {
+        let _ = app;
+        // Created up front. A named profile's directory does not exist until
+        // something writes to it, and the first write here is an atomic rename
+        // that would fail against a missing parent.
+        let _ = fs::create_dir_all(&dir);
 
         let store = Self {
             history_path: dir.join("history.jsonl"),

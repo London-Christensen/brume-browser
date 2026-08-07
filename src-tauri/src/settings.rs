@@ -235,11 +235,12 @@ impl SettingsState {
     /// Never fails to produce a usable state: settings are not important enough
     /// to refuse to start over. It does, however, refuse to *destroy* anything -
     /// see the corrupt-file branch.
-    pub fn load(app: &AppHandle) -> Self {
-        let dir = app
-            .path()
-            .app_config_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+    /// Loads from a directory it is told about, for the reason `Store::load`
+    /// records: since 0.9.0 that directory belongs to a profile, and only
+    /// `profiles.rs` knows which profile is active.
+    pub fn load(app: &AppHandle, dir: PathBuf) -> Self {
+        let _ = app;
+        let _ = fs::create_dir_all(&dir);
         let path = dir.join("settings.json");
 
         let raw = fs::read_to_string(&path).ok();

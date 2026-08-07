@@ -3300,6 +3300,90 @@
         search.append(addRow, engErr);
         form.appendChild(search);
 
+        /* --- profiles ---
+         *
+         * Switching relaunches Brume, and the row says so before you click it
+         * rather than after. A content webview's data directory is fixed when
+         * it is built and both stores are resolved at startup, so switching in
+         * place would mean rebuilding every webview in every window and swapping
+         * both stores underneath whatever was reading them. See profiles.rs. */
+        const profileList = (await call("profiles")) || [];
+        const profs = group("Profiles");
+        for (const p of profileList) {
+          const btn = document.createElement("button");
+          btn.className = "engine";
+          btn.dataset.selected = String(p.active);
+
+          const check = document.createElement("span");
+          check.className = "engine-check";
+          const name = document.createElement("span");
+          name.className = "engine-name";
+          name.textContent = p.name;
+          const note = document.createElement("span");
+          note.className = "engine-host";
+          note.textContent = p.active ? "in use" : "";
+          btn.append(check, name, note);
+
+          if (!p.active) {
+            btn.addEventListener("click", async () => {
+              // No confirmation. The row already says switching restarts, and
+              // the session comes back per window afterwards.
+              await call("switch_profile", { id: p.id });
+            });
+          }
+
+          // The default profile is neither renameable nor removable: it holds
+          // the data every existing install already had.
+          if (p.id) {
+            const rm = document.createElement("span");
+            rm.className = "engine-remove";
+            rm.textContent = "Delete";
+            rm.title = "Delete this profile and everything in it";
+            rm.addEventListener("click", async (event) => {
+              event.stopPropagation();
+              try {
+                await invoke("delete_profile", { id: p.id });
+                renderPanel();
+              } catch (e) {
+                profErr.textContent = String(e);
+              }
+            });
+            btn.appendChild(rm);
+          }
+          profs.appendChild(btn);
+        }
+
+        const profAddRow = document.createElement("div");
+        profAddRow.className = "engine-add";
+        const profName = document.createElement("input");
+        profName.type = "text";
+        profName.placeholder = "New profile name";
+        profName.spellcheck = false;
+        const profAdd = document.createElement("button");
+        profAdd.className = "action";
+        profAdd.textContent = "Create";
+        const profErr = document.createElement("div");
+        profErr.className = "engine-error";
+        profAdd.addEventListener("click", async () => {
+          profErr.textContent = "";
+          try {
+            await invoke("create_profile", { name: profName.value });
+            profName.value = "";
+            renderPanel();
+          } catch (e) {
+            profErr.textContent = String(e);
+          }
+        });
+        profAddRow.append(profName, profAdd);
+
+        const profNote = document.createElement("div");
+        profNote.className = "engine-error";
+        profNote.style.color = "var(--fg-muted)";
+        profNote.textContent =
+          "Each profile keeps its own bookmarks, history, cookies and settings. Switching restarts Brume.";
+        profs.append(profAddRow, profErr, profNote);
+        form.appendChild(profs);
+
         // --- privacy ---
         const privacy = group("Privacy");
 
