@@ -1,11 +1,11 @@
 {
-    "version":  "0.5.0",
-    "notes":  "**Added**\n- Address bar suggestions from your history and bookmarks\n- A new tab page that makes no network requests\n- Site permissions: Brume asks about camera, microphone and location itself, and remembers your answer\n- Site info on the padlock, showing what a site has been allowed\n- Bookmark import from Chrome, Edge, Brave, Vivaldi and Opera\n- Bookmark renaming\n- Tab search on Ctrl+Shift+A\n- Tab muting, from the tab context menu\n- Cancelling a running download\n- Match case and whole word in find on page\n- Ctrl+J for downloads, Ctrl+Shift+Delete for clearing browsing data\n- Deleting a single history entry\n- Open link in new tab and in private tab, on the page context menu\n\n**Fixed**\n- The page loading indicator never appeared\n- Opening a new tab or searching while Settings or History was open left the new page hidden behind the panel\n- The tab strip lost tabs, and the new tab button, once enough were open\n- Tabs restored from the last session all loaded at launch; they now load when clicked, cutting startup memory by about three quarters",
-    "pub_date":  "2026-08-06T04:05:32Z",
+    "version":  "0.6.0",
+    "notes":  "**Added**\n- Bookmark folders, on the bookmarks bar and in a new bookmarks manager\n- Move, reorder and rename bookmarks and folders\n- Importing from another browser now brings its folders across, into a folder named for the day\n- Export bookmarks to a file any other browser can read\n- Day headings in history, and clearing just the last hour, day or week\n- Retry a failed download\n\n**Fixed**\n- An unreadable bookmarks file is kept instead of being silently emptied\n- Menus were cut off at the toolbar and showed only their first few items\n- The rename button drew a solid square instead of its icon",
+    "pub_date":  "2026-08-07T14:13:30Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1VOV1o1TGFoVkJjVVhJQ1BSYW1qbFpOZkdLRHFCS29QSlo5dVhQa2JLMzJNekZrTnVPb21JSUI5enh1UnlsRFk0a3pUY3d4R2VXbjhadFNiTi9GUUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1OTg5MTMyCWZpbGU6QnJ1bWUtU2V0dXAuZXhlCnZZcVc0dWN1L0ljRG5YTlB1d0dONHcwcVpEb1pGRjhOYTFUZlZqNmtvRmswSitPZ1JEQUttRkozcWp2Wk5IQkxuRzhSaHZOSlcrWWZmMllMUjU1NER3PT0K",
-                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.5.0/Brume-Setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1ZZYTBYdVJ2bkZyQ3ErU1hJOE5kZkhrUWFZMXYzM2JHWEVqVjdIcjFQUlJjMXdVZEJ4dlRZenh2cklPZWlWdTRaeGp1dWg5ckZOdC9kWmlUYWozN3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTEyMDEwCWZpbGU6QnJ1bWUtU2V0dXAuZXhlCllGNzh2T0czbWFSbVNHUmtJUi92Y0N4Q1V4cS94dWhOTW4rUVAyd3ZNMEJ2Q2VIa1BVWGRPRkcyNzdDYW5ySVNPODhRVEtMRUl1WGhSWWZGU0NPcUFBPT0K",
+                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.6.0/Brume-Setup.exe"
                                          }
                   }
 }
