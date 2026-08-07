@@ -2151,6 +2151,44 @@ Verified on 2026-08-07 against a running build:
 | Removing a built-in | Refused |
 | Removing the selected engine | Fell back to duckduckgo, search still worked |
 
+### Split view breaks the last single-page assumption
+
+`relayout` had always positioned exactly one content webview and hidden every
+other. That survived the bookmarks bar, the panel, the overlay and even the
+multi-window refactor, because none of those needed two pages on screen at once.
+Split view is the first thing that does.
+
+The partner is held as a tab id, not a label, for the reason `window_of_tab`
+exists. It is resolved fresh on every layout and dropped if the tab is gone, so a
+split that outlives its partner falls back to one pane rather than leaving half
+the window empty.
+
+Down the middle rather than at a draggable ratio. A divider is its own
+interaction with its own hit target, drag handling and persistence, and half is
+the case worth having. The gap between the panes is left as window background,
+so nothing has to draw it.
+
+**Not saved to the session, deliberately.** A split is a way of looking at two
+things right now, not a property of the tabs, and a window restoring itself into
+a split nobody asked for would be a puzzle rather than a convenience.
+
+The strip marks the partner. Without that it looks like an ordinary background
+tab while occupying half the window, which reads as the browser having lost track
+of what it is showing. It gets the active tab's background plus an accent
+underline, so it is visibly on screen without a second colour to learn.
+
+Verified on 2026-08-07, with each pane's own reported width as the check:
+
+| | |
+|---|---|
+| Before splitting | One page at 1920 |
+| After splitting | Both `visible`, 959 each. 1920 minus the 2px gap, halved |
+| The strip | Partner marked, active tab marked separately |
+| Closing the partner | Split cleared, the remaining page back to 1920 |
+
+Splitting the active tab with itself is refused: that is one pane and a gap down
+the side. The menu offers the active tab the way out instead of the way in.
+
 ---
 
 ## Known hard problems, deliberately deferred

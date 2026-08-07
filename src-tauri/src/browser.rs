@@ -323,7 +323,22 @@ pub struct WindowState {
     ///
     /// An integer because there is no atomic f64 and a pixel is a pixel.
     overlay_bottom: AtomicU32,
+    /// The tab shown beside the active one, when the window is split.
+    ///
+    /// `None` is the ordinary case and the one every version before 0.8.0 had.
+    /// A second visible content webview is the assumption that survived even the
+    /// multi-window refactor, so this is the first thing to break it.
+    ///
+    /// Held as a tab id rather than a label, for the reason `window_of_tab`
+    /// exists: an id survives things a label does not have to.
+    split: Mutex<Option<u32>>,
 }
+
+/// Gap between the two panes, in logical pixels.
+///
+/// Wide enough to read as two panes rather than one page with a seam down it.
+/// The window background shows through, which is why nothing has to draw it.
+const SPLIT_GAP: f64 = 2.0;
 
 pub struct Browser {
     /// Per-window state, keyed by window label.
@@ -411,6 +426,7 @@ impl WindowState {
             panel_open: AtomicBool::new(false),
             find_open: AtomicBool::new(false),
             overlay_bottom: AtomicU32::new(0),
+            split: Mutex::new(None),
         }
     }
 }
@@ -554,9 +570,21 @@ pub struct BrowserState {
     /// Zoom of the active tab. 1.0 is 100%; the chrome hides the control at
     /// that value rather than showing "100%" permanently.
     pub zoom: f64,
+    /// The tab shown beside the active one, or `None` when not split.
+    ///
+    /// Published so the strip can mark it. Without that, a split tab looks like
+    /// an ordinary background tab while occupying half the window, which reads
+    /// as the browser having lost track of what it is showing.
+    pub split: Option<u32>,
 }
 
-fn snapshot(tabs: &Tabs, bookmarked: bool, bookmarks_bar: bool, panel_open: bool) -> BrowserState {
+fn snapshot(
+    tabs: &Tabs,
+    bookmarked: bool,
+    bookmarks_bar: bool,
+    panel_open: bool,
+    split: Option<u32>,
+) -> BrowserState {
     let active = tabs.active_tab();
 
     BrowserState {
@@ -585,6 +613,9 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, bookmarks_bar: bool, panel_open: bool
         bookmarks_bar,
         panel_open,
         zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
+        // Reported as absent once the tab is gone, so a split that outlived its
+        // partner cannot leave the strip marking a tab that is not there.
+        split: split.filter(|id| tabs.items.iter().any(|t| t.id == *id)),
     }
 }
 
@@ -610,8 +641,9 @@ fn current_state(app: &AppHandle, state: &WindowState) -> BrowserState {
         .show_bookmarks_bar();
 
     let panel_open = state.panel_open.load(Ordering::Relaxed);
+    let split = *state.split.lock().expect("split mutex poisoned");
     let tabs = state.tabs.lock().expect("tabs mutex poisoned");
-    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open)
+    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open, split)
 }
 
 /// Closes the panel, because something is about to show a page.
@@ -713,13 +745,24 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
         chrome.set_size(LogicalSize::new(size.width, chrome_height))?;
     }
 
-    let (active_label, inactive_labels) = {
+    // The split partner, if there is one and it is still open. Resolved here so
+    // a tab closed while split simply falls back to one pane rather than
+    // leaving half the window empty.
+    let split_id = *state.split.lock().expect("split mutex poisoned");
+
+    let (active_label, split_label, inactive_labels) = {
         let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        let split_label = split_id
+            .filter(|id| *id != tabs.active)
+            .and_then(|id| tabs.items.iter().find(|t| t.id == id))
+            .map(|t| t.label.clone());
         (
             tabs.active_tab().map(|t| t.label.clone()),
+            split_label.clone(),
             tabs.items
                 .iter()
                 .filter(|t| t.id != tabs.active)
+                .filter(|t| Some(&t.label) != split_label.as_ref())
                 .map(|t| t.label.clone())
                 .collect::<Vec<_>>(),
         )
@@ -733,13 +776,36 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
         }
     }
 
+    // Two panes when split, one otherwise. Split down the middle rather than at
+    // a draggable ratio: a divider is its own interaction, and half is the
+    // useful case. The gap is left as window background, so nothing draws it.
+    let (left_width, right_x, right_width) = match split_label {
+        Some(_) => {
+            let half = ((size.width - SPLIT_GAP) / 2.0).max(0.0);
+            (half, half + SPLIT_GAP, half)
+        }
+        None => (size.width, 0.0, 0.0),
+    };
+
     if let Some(label) = active_label {
         if let Some(view) = app.get_webview(&label) {
             if panel_open {
                 let _ = view.hide();
             } else {
                 view.set_position(LogicalPosition::new(0.0, extent))?;
-                view.set_size(LogicalSize::new(size.width, content_height))?;
+                view.set_size(LogicalSize::new(left_width, content_height))?;
+                let _ = view.show();
+            }
+        }
+    }
+
+    if let Some(label) = split_label {
+        if let Some(view) = app.get_webview(&label) {
+            if panel_open {
+                let _ = view.hide();
+            } else {
+                view.set_position(LogicalPosition::new(right_x, extent))?;
+                view.set_size(LogicalSize::new(right_width, content_height))?;
                 let _ = view.show();
             }
         }
@@ -1606,6 +1672,15 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
     let Some(state) = window_of_tab(app, id) else {
         return Ok(());
     };
+    // Cleared before the tab goes, so nothing downstream sees a split pointing
+    // at something that no longer exists.
+    {
+        let mut split = state.split.lock().expect("split mutex poisoned");
+        if *split == Some(id) {
+            *split = None;
+        }
+    }
+
     let (label, closed_last, reopen_url) = {
         let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
@@ -1770,6 +1845,47 @@ pub fn print_page(app: AppHandle, window: tauri::Window) -> Result<(), String> {
     active_webview(&app, &state)?
         .print()
         .map_err(|e| e.to_string())
+}
+
+/// Shows a tab beside the active one, or clears the split with `None`.
+///
+/// Async because it re-lays-out webviews and can build one: a parked tab put
+/// into the split has to be loaded before it can be positioned.
+///
+/// The split is deliberately **not** saved to the session. It is a way of
+/// looking at two things right now, not a property of the tabs, and restoring a
+/// window into a split nobody asked for on launch would be a puzzle.
+#[tauri::command]
+pub async fn set_split(
+    app: AppHandle,
+    window: tauri::Window,
+    id: Option<u32>,
+) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+
+    if let Some(id) = id {
+        // Splitting a tab with itself is one pane with a gap down the side.
+        let (exists, is_active) = {
+            let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+            (tabs.items.iter().any(|t| t.id == id), tabs.active == id)
+        };
+        if !exists || is_active {
+            return Ok(());
+        }
+        // Built before it is positioned. A restored tab has no webview until
+        // something asks for it, and the split is asking.
+        load_parked(&app, &state, id).map_err(|e| e.to_string())?;
+    }
+
+    *state.split.lock().expect("split mutex poisoned") = id;
+    // Showing a page, so the panel gets out of the way, exactly as activating a
+    // tab does.
+    if id.is_some() {
+        dismiss_panel(&state);
+    }
+    relayout(&app, &state).map_err(|e| e.to_string())?;
+    publish(&app, &state);
+    Ok(())
 }
 
 /// Opens DevTools for the active tab.

@@ -86,6 +86,7 @@ fn main() {
             browser::print_page,
             browser::open_devtools,
             browser::view_source,
+            browser::set_split,
             browser::toggle_fullscreen,
             browser::reset_zoom,
             browser::set_zoom,

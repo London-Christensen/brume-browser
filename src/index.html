@@ -173,6 +173,14 @@
         background: var(--surface);
         color: var(--fg);
       }
+      /* The split partner. It is on screen, so it reads like the active tab
+         rather than like a background one, but the underline says which of the
+         two it is without a second colour to learn. */
+      .tab[data-split="true"] {
+        background: var(--surface);
+        color: var(--fg);
+        box-shadow: inset 0 -2px 0 var(--accent);
+      }
 
       .tab-favicon {
         flex: 0 0 auto;
@@ -1872,6 +1880,17 @@
             call("set_tab_muted", { id: tab.id, muted: !tab.muted })
           );
           separator();
+          // Splitting a tab with itself is one pane and a gap, so the active
+          // tab is offered the way out instead of the way in.
+          if (splitTabId === tab.id) {
+            add("Close split view", true, () => call("set_split", { id: null }));
+          } else {
+            add(
+              "Open in split view",
+              !isActiveTab(tab.id) && allTabs.length > 1,
+              () => call("set_split", { id: tab.id })
+            );
+          }
           // Disabled on the last tab: the window it would move to is the window
           // it is already in, and the source would close out from under it.
           // Offering it and then doing nothing is worse than saying no.
@@ -1926,6 +1945,10 @@
           const node = document.createElement("div");
           node.className = "tab";
           node.dataset.active = String(tab.active);
+          // Marked, because a split tab occupies half the window while looking
+          // like any other background tab. Without this the browser appears to
+          // have lost track of what it is showing.
+          node.dataset.split = String(tab.id === splitTabId);
           node.title = tab.title;
           node.addEventListener("click", () => call("activate_tab", { id: tab.id }));
 
@@ -1997,6 +2020,8 @@
 
       // --- toolbar --------------------------------------------------------
       function render(state) {
+        // Set before renderTabs, which reads it to mark the split tab.
+        splitTabId = state.split ?? null;
         renderTabs(state.tabs);
         // Kept so tab search filters the same list the strip drew, rather than
         // asking the backend for a second copy that could disagree.
@@ -2080,6 +2105,14 @@
 
       /** Set by the bar's Rename, so the panel opens straight into editing. */
       let pendingRenameId = null;
+
+      /** The tab currently shown beside the active one, or null. */
+      let splitTabId = null;
+
+      /** Whether a tab id is the active one, from the list the strip drew. */
+      function isActiveTab(id) {
+        return lastTabs.some((t) => t.id === id && t.active);
+      }
 
       function openBookmark(bookmark, newTab) {
         if (newTab) {
