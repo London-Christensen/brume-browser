@@ -205,6 +205,21 @@ pub async fn cancel_download(app: AppHandle, url: String) -> Result<(), String> 
     .map_err(|e| format!("Could not cancel the download: {e}"))
 }
 
+/// Starts a failed or cancelled download again, from the beginning.
+///
+/// Not a resume, and deliberately so: picking up a partial transfer needs the
+/// half-written file tracked and range support detected, with a fallback to a
+/// full retry anyway when the server has none. That is its own feature.
+///
+/// Re-issued by navigating the active tab, which is precisely what following the
+/// original link did. The consequence is worth knowing: a URL that has since
+/// started answering with a page rather than a file will navigate that tab, just
+/// as it would have the first time.
+#[tauri::command]
+pub async fn retry_download(app: AppHandle, url: String) -> Result<(), String> {
+    crate::browser::navigate(app, url).await
+}
+
 /// The download's source URL, as an owned `String`.
 ///
 /// `Uri` hands back a string the runtime allocated and the caller owns.

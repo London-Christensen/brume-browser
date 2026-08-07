@@ -53,7 +53,7 @@ const HISTORY_CAP: usize = 20_000;
 /// list a person actually reads, and a thousand old rows help nobody.
 const DOWNLOAD_CAP: usize = 500;
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -153,9 +153,20 @@ pub struct Store {
     bookmarks_path: PathBuf,
     downloads_path: PathBuf,
     /// Bookmarks live in memory: the list is small, and every read wants all of
-    /// it. History is not cached, because it is large and read only when the
-    /// user actually opens the panel.
+    /// it.
     bookmarks: Mutex<Vec<Bookmark>>,
+    /// History, parsed, while the panel that is reading it stays open.
+    ///
+    /// It used to be read straight off disk every time, and the comment here
+    /// said that was fine "because it is large and read only when the user
+    /// actually opens the panel". True until 0.6.0 put a search box on it. With
+    /// one, that is 20,000 lines parsed on every keystroke, which is word for
+    /// word the bug fixed in 0.3.0.
+    ///
+    /// Filled on the first read, dropped by `release_history` when the panel
+    /// closes, and invalidated by anything that writes. Roughly 3 MB at the cap,
+    /// and only while someone is looking at it.
+    history_cache: Mutex<Option<Vec<Visit>>>,
     /// Downloads currently running, keyed by nothing in particular: the list is
     /// never more than a handful long, so a scan is cheaper than a map.
     active_downloads: Mutex<Vec<ActiveDownload>>,
@@ -280,6 +291,34 @@ fn repair_tree(items: &mut [Bookmark]) {
     }
 }
 
+/// Appends an entry and returns its id.
+///
+/// The one place ids are allocated. `max + 1` over the whole list means folders
+/// and links share a space and can never collide. It does reuse an id after the
+/// highest-numbered entry is deleted, which `repair_tree` cannot detect because
+/// such a parent still resolves, just to the wrong entry. Left as it is
+/// deliberately: a persisted counter would mean a top-level object rather than
+/// an array, and that shape change is what the folder model was built to avoid.
+fn push_entry(
+    items: &mut Vec<Bookmark>,
+    url: &str,
+    title: &str,
+    added_at: i64,
+    parent: Option<u64>,
+    is_folder: bool,
+) -> u64 {
+    let id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+    items.push(Bookmark {
+        id,
+        url: url.to_string(),
+        title: title.to_string(),
+        added_at,
+        parent,
+        is_folder,
+    });
+    id
+}
+
 /// Removes one entry, lifting a folder's direct children up a level.
 ///
 /// Split from `Store::remove_bookmark` so the promotion can be tested without a
@@ -399,6 +438,7 @@ impl Store {
             bookmarks_path: dir.join("bookmarks.json"),
             downloads_path: dir.join("downloads.jsonl"),
             bookmarks: Mutex::new(Vec::new()),
+            history_cache: Mutex::new(None),
             active_downloads: Mutex::new(Vec::new()),
             last_progress_emit: Mutex::new(Instant::now()),
         };
@@ -475,37 +515,91 @@ impl Store {
         {
             let _ = writeln!(file, "{line}");
         }
+
+        // Appended to the cache rather than invalidating it. Browsing with the
+        // history panel open would otherwise re-parse the whole file on every
+        // page load, which is the cost the cache exists to avoid.
+        if let Some(cached) = self
+            .history_cache
+            .lock()
+            .expect("history cache poisoned")
+            .as_mut()
+        {
+            cached.push(visit);
+        }
+    }
+
+    /// Throws away the parsed history.
+    ///
+    /// Called by every write, and by `release_history` when the panel closes. A
+    /// stale cache here would show a page that was just deleted, or hide one
+    /// just visited.
+    fn invalidate_history(&self) {
+        *self.history_cache.lock().expect("history cache poisoned") = None;
+    }
+
+    /// Drops the cache. The panel calls this when it closes.
+    pub fn release_history(&self) {
+        self.invalidate_history();
     }
 
     /// Most recent visits first, optionally filtered.
+    ///
+    /// The parse is cached, so typing in the search box does not re-read the
+    /// file per keystroke. Filtering still runs over every visit, which is a
+    /// scan of a few tens of thousands of short strings and costs nothing next
+    /// to the parse it replaces.
     pub fn history(&self, query: Option<&str>, limit: usize) -> Vec<Visit> {
-        let Ok(raw) = fs::read_to_string(&self.history_path) else {
-            return Vec::new();
-        };
+        let mut cache = self.history_cache.lock().expect("history cache poisoned");
+        if cache.is_none() {
+            let parsed = match fs::read_to_string(&self.history_path) {
+                Ok(raw) => raw
+                    .lines()
+                    // A line that will not parse is skipped rather than aborting
+                    // the read - one torn line from a crash should not hide the
+                    // rest.
+                    .filter_map(|line| serde_json::from_str::<Visit>(line).ok())
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            *cache = Some(parsed);
+        }
+        let all = cache.as_ref().expect("just filled");
 
         let needle = query
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
 
-        let mut out: Vec<Visit> = raw
-            .lines()
-            .rev() // newest first without sorting the whole file
-            // A line that will not parse is skipped rather than aborting the
-            // read - one torn line from a crash should not hide the rest.
-            .filter_map(|line| serde_json::from_str::<Visit>(line).ok())
+        let mut out: Vec<Visit> = all
+            .iter()
+            .rev() // newest first without sorting: the file is already in order
             .filter(|v| match &needle {
                 None => true,
                 Some(q) => v.url.to_lowercase().contains(q) || v.title.to_lowercase().contains(q),
             })
             .take(limit)
+            .cloned()
             .collect();
 
         out.shrink_to_fit();
         out
     }
 
-    pub fn clear_history(&self) -> Result<(), String> {
-        write_atomic(&self.history_path, "")
+    /// Clears history, either entirely or back to a cutoff.
+    ///
+    /// `since` is a Unix timestamp: everything visited at or after it goes, and
+    /// anything older stays. `None` clears the lot.
+    pub fn clear_history(&self, since: Option<i64>) -> Result<(), String> {
+        self.invalidate_history();
+        match since {
+            None => write_atomic(&self.history_path, ""),
+            Some(cutoff) => {
+                let Ok(raw) = fs::read_to_string(&self.history_path) else {
+                    return Ok(()); // no file, nothing to clear
+                };
+                write_atomic(&self.history_path, &without_visits_since(&raw, cutoff))
+            }
+        }
     }
 
     /// Removes one visit.
@@ -521,6 +615,7 @@ impl Store {
     /// user asked to remove, and quietly discarding it would turn a delete into
     /// a repair nobody asked for.
     pub fn remove_visit(&self, url: &str, visited_at: i64) -> Result<(), String> {
+        self.invalidate_history();
         let Ok(raw) = fs::read_to_string(&self.history_path) else {
             return Ok(()); // no file, nothing to remove
         };
@@ -566,17 +661,9 @@ impl Store {
                 items.remove(pos);
                 (items.clone(), false)
             } else {
-                let next_id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
-                items.push(Bookmark {
-                    id: next_id,
-                    url: url.to_string(),
-                    title: title.to_string(),
-                    added_at: now_unix(),
-                    // The star bookmarks to the root. Filing it somewhere is a
-                    // separate action, in the manager.
-                    parent: None,
-                    is_folder: false,
-                });
+                // The star bookmarks to the root. Filing it somewhere is a
+                // separate action, in the manager.
+                push_entry(&mut items, url, title, now_unix(), None, false);
                 (items.clone(), true)
             }
         };
@@ -585,33 +672,37 @@ impl Store {
         Ok(now_bookmarked)
     }
 
-    /// Adds a bookmark unless the URL is already there.
+    /// Adds a bookmark without writing, for callers batching several inserts.
     ///
     /// Add-only, unlike `toggle_bookmark`, which is what the star needs and
     /// exactly the wrong thing for an import: toggling would *remove* every
     /// bookmark the two browsers had in common.
     ///
+    /// No duplicate check either, which it used to have. Import now lands in its
+    /// own dated folder, so the source tree is reproduced as it stands and a URL
+    /// held in two of its folders stays in both. Skipping duplicates would have
+    /// made a second import produce an empty folder, which reads as broken.
+    /// Nothing is ever removed, which was the actual guarantee worth keeping.
+    ///
     /// Returns whether it was added.
-    pub fn add_bookmark(&self, url: &str, title: &str, added_at: i64) -> bool {
+    pub fn add_bookmark(&self, url: &str, title: &str, added_at: i64, parent: Option<u64>) -> bool {
         if url.is_empty() {
             return false;
         }
         let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
-        if items.iter().any(|b| !b.is_folder && b.url == url) {
-            return false;
-        }
-        let next_id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
-        items.push(Bookmark {
-            id: next_id,
-            url: url.to_string(),
-            title: title.to_string(),
-            // The source's own date, so an import does not claim every
-            // bookmark was made today and reorder the bar by accident.
-            added_at,
-            parent: None,
-            is_folder: false,
-        });
+        // The source's own date, so an import does not claim every bookmark was
+        // made today and reorder the bar by accident.
+        push_entry(&mut items, url, title, added_at, parent, false);
         true
+    }
+
+    /// Adds a folder without writing, for callers batching several inserts.
+    ///
+    /// The unvalidated sibling of `create_folder`: an import builds parents
+    /// before children, so every parent it names is one it just made.
+    pub fn add_folder(&self, title: &str, parent: Option<u64>) -> u64 {
+        let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+        push_entry(&mut items, "", title, now_unix(), parent, true)
     }
 
     /// Writes the current list out. For callers that batched several adds.
@@ -673,15 +764,7 @@ impl Store {
                     return Err("no such folder".into());
                 }
             }
-            let id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
-            items.push(Bookmark {
-                id,
-                url: String::new(),
-                title: title.to_string(),
-                added_at: now_unix(),
-                parent,
-                is_folder: true,
-            });
+            let id = push_entry(&mut items, "", title, now_unix(), parent, true);
             (items.clone(), id)
         };
         self.persist_bookmarks(&snapshot)?;
@@ -997,6 +1080,28 @@ fn match_rank(url: &str, title: &str, needle: &str) -> Option<u8> {
     }
 }
 
+/// History minus everything at or after `cutoff`, ready to write back.
+///
+/// Split out to be testable, same as `without_visit`. A line that will not parse
+/// is kept: it cannot be shown to be recent, and throwing away what it cannot
+/// read would make "clear the last hour" quietly delete a torn line from years
+/// ago.
+fn without_visits_since(raw: &str, cutoff: i64) -> String {
+    let kept: Vec<&str> = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| match serde_json::from_str::<Visit>(line) {
+            Ok(v) => v.visited_at < cutoff,
+            Err(_) => true,
+        })
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", kept.join("\n"))
+    }
+}
+
 /// History minus one visit, as text ready to write back.
 ///
 /// Split out from `remove_visit` so the line handling can be tested without
@@ -1043,8 +1148,14 @@ pub fn history(store: State<'_, Store>, query: Option<String>, limit: Option<usi
 }
 
 #[tauri::command]
-pub fn clear_history(store: State<'_, Store>) -> Result<(), String> {
-    store.clear_history()
+pub fn clear_history(store: State<'_, Store>, since: Option<i64>) -> Result<(), String> {
+    store.clear_history(since)
+}
+
+/// Frees the parsed history when the panel that was reading it closes.
+#[tauri::command]
+pub fn release_history(store: State<'_, Store>) {
+    store.release_history();
 }
 
 #[tauri::command]
@@ -1315,6 +1426,41 @@ mod tests {
         let raw = "\u{feff}[]";
         assert!(serde_json::from_str::<Vec<Bookmark>>(strip_bom(raw)).is_ok());
         assert!(serde_json::from_str::<Vec<Bookmark>>(raw).is_err());
+    }
+
+    #[test]
+    fn clearing_a_range_keeps_everything_older_than_the_cutoff() {
+        let line = |url: &str, at: i64| {
+            serde_json::to_string(&Visit {
+                url: url.into(),
+                title: "t".into(),
+                visited_at: at,
+            })
+            .unwrap()
+        };
+        let raw = format!(
+            "{}\n{}\n{}\n{{\"url\": \"https://torn.example",
+            line("https://old.test/", 1_000),
+            line("https://edge.test/", 2_000),
+            line("https://new.test/", 3_000),
+        );
+
+        // The cutoff is inclusive: a visit exactly at it is inside the range
+        // being cleared, or "the last hour" would leave the oldest second.
+        let out = without_visits_since(&raw, 2_000);
+        assert!(out.contains("old.test"), "older than the cutoff stays");
+        assert!(!out.contains("edge.test"), "exactly at the cutoff goes");
+        assert!(!out.contains("new.test"), "newer than the cutoff goes");
+        assert!(
+            out.contains("torn.example"),
+            "a line that will not parse is kept: it cannot be shown to be recent"
+        );
+
+        // A cutoff before everything is the same as clearing the lot, except
+        // for the torn line, which still cannot be judged.
+        let all = without_visits_since(&raw, 0);
+        assert!(!all.contains("old.test") && !all.contains("new.test"));
+        assert!(all.contains("torn.example"));
     }
 
     #[test]

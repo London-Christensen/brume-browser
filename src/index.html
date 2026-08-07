@@ -334,6 +334,15 @@
         border: 0;
         border-top: 1px solid var(--hairline);
       }
+      /* A folder inside a menu. The chevron says the click goes somewhere
+         rather than doing something, which is the one thing separating it from
+         every other row. */
+      .ctxmenu button.has-sub::after {
+        content: "›";
+        float: right;
+        margin-left: 12px;
+        color: var(--fg-muted);
+      }
 
       /* The audio indicator doubles as the mute control, which is why it is a
          button rather than a decoration. Sits before the close button so the
@@ -495,6 +504,19 @@
         text-overflow: ellipsis;
       }
 
+      /* A folder on the bar. Its chevron is what says the click opens a menu
+         instead of a page, so it sits after the title where it reads as part of
+         the control rather than as an icon for it. */
+      .bm-folder {
+        font-weight: 500;
+      }
+      .bm-folder .ico {
+        flex: 0 0 12px;
+        width: 12px;
+        height: 12px;
+        color: var(--fg-muted);
+      }
+
       /* Pushed to the right edge, where it stays put as the row fills up. */
       .bm-more {
         margin-left: auto;
@@ -574,6 +596,12 @@
       .ico-settings { -webkit-mask-image: url("assets/brand/icons/settings.svg"); mask-image: url("assets/brand/icons/settings.svg"); }
       .ico-check { -webkit-mask-image: url("assets/brand/icons/check.svg"); mask-image: url("assets/brand/icons/check.svg"); }
       .ico-chevron-right { -webkit-mask-image: url("assets/brand/icons/chevron-right.svg"); mask-image: url("assets/brand/icons/chevron-right.svg"); }
+      .ico-chevron-down { -webkit-mask-image: url("assets/brand/icons/chevron-down.svg"); mask-image: url("assets/brand/icons/chevron-down.svg"); }
+      .ico-upload { -webkit-mask-image: url("assets/brand/icons/upload.svg"); mask-image: url("assets/brand/icons/upload.svg"); }
+      /* Used by the rename button since 0.5.0 and never defined, so it painted
+         a solid square: `.ico` fills with currentColor and relies on the mask
+         to cut the shape out, and no mask means nothing is cut. */
+      .ico-edit { -webkit-mask-image: url("assets/brand/icons/edit.svg"); mask-image: url("assets/brand/icons/edit.svg"); }
 
       /* The star fills in when the page is bookmarked. Lamplight is the accent
          the brand allows once per screen, and this is where it earns it: a
@@ -741,6 +769,31 @@
         color: var(--fg-muted);
         font-size: 11.5px;
         font-variant-numeric: tabular-nums;
+      }
+      /* A day heading in history. Sticky so the day stays readable while
+         scrolling through a long one. */
+      .panel-day {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 10px 10px 4px;
+        background: var(--bg);
+        color: var(--fg-muted);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      /* A folder row in the manager. Its title carries the weight, because the
+         tree is read by scanning folder names down the left edge. */
+      .entry-folder .entry-title {
+        font-weight: 600;
+      }
+      .entry-folder-mark {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--fg-muted);
       }
       /* The title turned into a field, sized to sit exactly where the text was
          so the row does not jump when editing starts. */
@@ -1560,6 +1613,12 @@
           spellcheck="false"
           autocomplete="off"
         />
+        <button class="btn" id="panel-newfolder" title="New folder" aria-label="New folder" hidden>
+          <span class="ico ico-plus"></span>
+        </button>
+        <button class="btn" id="panel-export" title="Export bookmarks to a file" aria-label="Export bookmarks" hidden>
+          <span class="ico ico-upload"></span>
+        </button>
         <button class="btn" id="panel-clear" title="Clear history" aria-label="Clear history">
           <span class="ico ico-trash"></span>
         </button>
@@ -1675,17 +1734,24 @@
        */
       function closeMenu() {
         el("ctx-menu").hidden = true;
+        // Lets the chrome shrink back, or it would keep covering the page.
+        syncOverlay();
       }
 
       /* Builds a menu and places it at the pointer.
        *
-       * `build` receives `add(label, enabled, run)` and `separator()`, so a
-       * caller writes only its own items. The placement below is the part worth
-       * sharing: it is fiddly, and two copies would drift.
+       * `build` receives `add(label, enabled, run)`, `separator()` and
+       * `submenu(label, build)`, so a caller writes only its own items. The
+       * placement below is the part worth sharing: it is fiddly, and two copies
+       * would drift.
        *
        * `at` only has to carry clientX and clientY, so a caller with no pointer
        * event - the overflow button, which opens under itself - can pass a plain
        * point instead.
+       *
+       * A submenu replaces the menu in place rather than flying out beside it.
+       * That avoids hover timing entirely, works the same by keyboard, and can
+       * be driven in a test; the cost is a Back item, which is cheap.
        */
       function openMenu(at, build) {
         const menu = el("ctx-menu");
@@ -1702,19 +1768,40 @@
             });
           }
           menu.appendChild(b);
+          return b;
         };
         const separator = () => menu.appendChild(document.createElement("hr"));
+        const submenu = (label, buildChildren) => {
+          const b = document.createElement("button");
+          b.className = "has-sub";
+          b.textContent = label;
+          b.addEventListener("click", (event) => {
+            // Or the document listener closes the menu we are replacing.
+            event.stopPropagation();
+            openMenu(at, buildChildren);
+          });
+          menu.appendChild(b);
+        };
 
-        build(add, separator);
+        build(add, separator, submenu);
 
         // Shown before measuring: a hidden element has no dimensions to clamp
         // against, so it would be positioned off the right edge every time.
         menu.hidden = false;
         const rect = menu.getBoundingClientRect();
         const x = Math.min(at.clientX, window.innerWidth - rect.width - 4);
-        const y = Math.min(at.clientY, window.innerHeight - rect.height - 4);
+        // Deliberately not clamped against innerHeight. The chrome webview is
+        // only as tall as its own bars until syncOverlay grows it, so clamping
+        // here pinned every menu to y=4 and clipped everything past 76px: a
+        // menu of six items showed two. Measured on 2026-08-06, a tab menu ran
+        // to 179px inside a 76px viewport. The ceiling is the same 720 the Rust
+        // side clamps the overlay to, so a menu cannot ask for more than it gets.
+        const y = Math.min(at.clientY, 720 - rect.height - 4);
         menu.style.left = `${Math.max(4, x)}px`;
         menu.style.top = `${Math.max(4, y)}px`;
+        // Raises and grows the chrome to cover it. Without this the menu is
+        // drawn into a webview that is not tall enough to show it.
+        syncOverlay();
       }
 
       function openTabMenu(event, tab, allTabs) {
@@ -1928,8 +2015,14 @@
        */
       let bookmarkItems = [];
 
+      /** Just the root level, which is all the bar shows. Indexed by layout. */
+      let barItems = [];
+
       /** The ones currently in the overflow menu, in bar order. */
       let bookmarkOverflow = [];
+
+      /** Set by the bar's Rename, so the panel opens straight into editing. */
+      let pendingRenameId = null;
 
       function openBookmark(bookmark, newTab) {
         if (newTab) {
@@ -1939,11 +2032,49 @@
         }
       }
 
+      /** Direct children of a folder, or the root level for null. */
+      function childrenOf(parentId) {
+        return bookmarkItems.filter((b) => (b.parent ?? null) === parentId);
+      }
+
+      /** Menu contents for a folder: its links, and its folders as submenus. */
+      function buildFolderMenu(folder) {
+        return (add, separator, submenu) => {
+          const kids = childrenOf(folder.id);
+          if (!kids.length) {
+            add("Empty", false, () => {});
+            return;
+          }
+          for (const kid of kids) {
+            if (kid.is_folder) {
+              submenu(kid.title, buildFolderMenu(kid));
+            } else {
+              add(kid.title || kid.url, true, () => openBookmark(kid, false));
+            }
+          }
+          separator();
+          add(`Open all ${kids.filter((k) => !k.is_folder).length}`, true, () => {
+            for (const kid of kids) if (!kid.is_folder) openBookmark(kid, true);
+          });
+        };
+      }
+
       function openBookmarkMenu(at, bookmark) {
         openMenu(at, (add, separator) => {
+          if (bookmark.is_folder) {
+            add("Rename", true, () => renameBookmarkPrompt(bookmark));
+            separator();
+            // Says what it does. Deleting a folder keeps its contents, and
+            // someone about to click this deserves to know that before they do.
+            add("Delete folder, keep contents", true, () =>
+              call("remove_bookmark", { id: bookmark.id })
+            );
+            return;
+          }
           add("Open", true, () => openBookmark(bookmark, false));
           add("Open in new tab", true, () => openBookmark(bookmark, true));
           separator();
+          add("Rename", true, () => renameBookmarkPrompt(bookmark));
           // No re-render here: remove_bookmark emits brume://bookmarks, so the
           // bar and the panel both refresh through the one path every change to
           // the list already takes.
@@ -1951,11 +2082,45 @@
         });
       }
 
+      /** Renames through the panel, which has a proper inline editor. */
+      async function renameBookmarkPrompt(bookmark) {
+        await openPanel("bookmarks");
+        pendingRenameId = bookmark.id;
+        renderPanel();
+      }
+
       function bookmarkNode(bookmark, index) {
         const node = document.createElement("button");
-        node.className = "bm";
+        node.className = bookmark.is_folder ? "bm bm-folder" : "bm";
         // Where layout looks the bookmark back up after measuring.
         node.dataset.index = String(index);
+
+        if (bookmark.is_folder) {
+          const count = childrenOf(bookmark.id).length;
+          node.title = `${bookmark.title}\n${count} item${count === 1 ? "" : "s"}`;
+          const title = document.createElement("span");
+          title.className = "bm-title";
+          title.textContent = bookmark.title;
+          node.appendChild(title);
+          const chevron = document.createElement("span");
+          chevron.className = "ico ico-chevron-down";
+          node.appendChild(chevron);
+          node.addEventListener("click", (event) => {
+            // Or the document listener closes it in the tick it opened.
+            event.stopPropagation();
+            const rect = node.getBoundingClientRect();
+            openMenu(
+              { clientX: rect.left, clientY: rect.bottom + 2 },
+              buildFolderMenu(bookmark)
+            );
+          });
+          node.addEventListener("contextmenu", (event) => {
+            event.preventDefault();
+            openBookmarkMenu(event, bookmark);
+          });
+          return node;
+        }
+
         // Both lines: the title is truncated to fit the bar, and the URL is the
         // part that says where this actually goes.
         node.title = `${bookmark.title || bookmark.url}\n${bookmark.url}`;
@@ -1991,13 +2156,20 @@
         // dismisses menus, and this one closes in the tick it opened.
         event.stopPropagation();
         const rect = el("bm-more").getBoundingClientRect();
-        openMenu({ clientX: rect.left, clientY: rect.bottom + 2 }, (add) => {
-          for (const bookmark of bookmarkOverflow) {
-            add(bookmark.title || bookmark.url, true, () =>
-              openBookmark(bookmark, false)
-            );
+        openMenu(
+          { clientX: rect.left, clientY: rect.bottom + 2 },
+          (add, separator, submenu) => {
+            for (const bookmark of bookmarkOverflow) {
+              if (bookmark.is_folder) {
+                submenu(bookmark.title, buildFolderMenu(bookmark));
+              } else {
+                add(bookmark.title || bookmark.url, true, () =>
+                  openBookmark(bookmark, false)
+                );
+              }
+            }
           }
-        });
+        );
       }
 
       async function renderBookmarksBar() {
@@ -2007,8 +2179,12 @@
         bookmarkItems = (await call("bookmarks")) || [];
         bar.textContent = "";
         bookmarkOverflow = [];
+        // Only the root level goes on the bar. Everything filed into a folder
+        // is reachable through that folder's menu, which is the whole point of
+        // having folders; putting the flat list up here would undo it.
+        barItems = childrenOf(null);
 
-        if (!bookmarkItems.length) {
+        if (!barItems.length) {
           const hint = document.createElement("span");
           hint.className = "bm-empty";
           hint.textContent = "Bookmarks you save with Ctrl+D appear here.";
@@ -2021,7 +2197,7 @@
         // the whole value of a bookmark bar is that a thing stays where you last
         // saw it. The panel sorts newest first, which is right for a list you
         // read rather than one you aim at.
-        bookmarkItems.forEach((bookmark, index) =>
+        barItems.forEach((bookmark, index) =>
           bar.appendChild(bookmarkNode(bookmark, index))
         );
 
@@ -2084,13 +2260,37 @@
           if (overflowing || used > budget) {
             overflowing = true;
             node.hidden = true;
-            bookmarkOverflow.push(bookmarkItems[Number(node.dataset.index)]);
+            bookmarkOverflow.push(barItems[Number(node.dataset.index)]);
           }
         });
       }
 
       // --- panel ----------------------------------------------------------
       let panelView = "history";
+
+      /* Which day a visit belongs to, for the headings in history.
+       *
+       * Compared as local calendar days rather than by elapsed seconds: a visit
+       * 20 hours ago can easily be yesterday, and "23h ago" under a heading
+       * saying Today is exactly the confusion the headings exist to remove. */
+      function dayLabel(unixSeconds) {
+        const then = new Date(unixSeconds * 1000);
+        const today = new Date();
+        const midnight = (d) =>
+          new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        const days = Math.round((midnight(today) - midnight(then)) / 86400000);
+        if (days <= 0) return "Today";
+        if (days === 1) return "Yesterday";
+        if (days < 7) {
+          return then.toLocaleDateString(undefined, { weekday: "long" });
+        }
+        return then.toLocaleDateString(undefined, {
+          day: "numeric",
+          month: "long",
+          year:
+            then.getFullYear() === today.getFullYear() ? undefined : "numeric",
+        });
+      }
 
       /** Compact relative time: browsing history is read as "when", not "at". */
       function whenLabel(unixSeconds) {
@@ -2103,13 +2303,39 @@
         return new Date(unixSeconds * 1000).toLocaleDateString();
       }
 
-      function entryNode({ title, url, when, onOpen, onRemove, onRename }) {
+      function entryNode({
+        title,
+        url,
+        when,
+        onOpen,
+        onRemove,
+        onRename,
+        // Manager extras. A folder has no favicon and no URL to show, and the
+        // tree needs to say how deep a row sits.
+        depth = 0,
+        isFolder = false,
+        subtitle,
+        onMenu,
+      }) {
         const row = document.createElement("div");
-        row.className = "entry";
+        row.className = isFolder ? "entry entry-folder" : "entry";
+        if (depth) row.style.paddingLeft = `${10 + depth * 16}px`;
         row.addEventListener("click", onOpen);
+        if (onMenu) {
+          row.addEventListener("contextmenu", (event) => {
+            event.preventDefault();
+            onMenu(event);
+          });
+        }
 
-        // Lazy: the panel renders up to 300 of these at once.
-        row.appendChild(faviconNode(url, true));
+        if (isFolder) {
+          const mark = document.createElement("span");
+          mark.className = "ico ico-chevron-down entry-folder-mark";
+          row.appendChild(mark);
+        } else {
+          // Lazy: the panel renders up to 300 of these at once.
+          row.appendChild(faviconNode(url, true));
+        }
 
         const text = document.createElement("div");
         text.className = "entry-text";
@@ -2118,7 +2344,7 @@
         t.textContent = title || url;
         const u = document.createElement("div");
         u.className = "entry-url";
-        u.textContent = url;
+        u.textContent = subtitle !== undefined ? subtitle : url;
         text.append(t, u);
         row.appendChild(text);
 
@@ -2276,6 +2502,22 @@
           row.appendChild(stop);
         }
 
+        // A download that failed or was cancelled can be started again. Not a
+        // resume: it re-requests the whole file, which is what downloads.rs
+        // does and what the label should therefore imply.
+        if (state === "failed") {
+          const again = document.createElement("button");
+          again.className = "entry-remove";
+          again.title = "Download again";
+          again.setAttribute("aria-label", "Download again");
+          again.innerHTML = '<span class="ico ico-reload"></span>';
+          again.addEventListener("click", (event) => {
+            event.stopPropagation();
+            call("retry_download", { url });
+          });
+          row.appendChild(again);
+        }
+
         // Only finished, successful downloads with a recorded path can be
         // revealed. The backend checks this too, and refuses a path it has no
         // record of, but there is no reason to offer a button that will fail.
@@ -2316,6 +2558,8 @@
         el("panel-clear").hidden = !(panelView === "history" || panelView === "downloads");
         el("panel-clear").title =
           panelView === "downloads" ? "Clear download list" : "Clear history";
+        el("panel-newfolder").hidden = panelView !== "bookmarks";
+        el("panel-export").hidden = panelView !== "bookmarks";
 
         const list = el("panel-list");
         list.textContent = "";
@@ -2407,7 +2651,19 @@
             }</div>`;
             return;
           }
+          let lastDay = null;
           for (const v of rows) {
+            // A day heading whenever the date changes. History is read by
+            // "when did I see that", and a flat list of relative times gives
+            // no way to scan for a particular day.
+            const day = dayLabel(v.visited_at);
+            if (day !== lastDay) {
+              lastDay = day;
+              const heading = document.createElement("div");
+              heading.className = "panel-day";
+              heading.textContent = day;
+              list.appendChild(heading);
+            }
             list.appendChild(
               entryNode({
                 title: v.title,
@@ -2424,41 +2680,172 @@
             );
           }
         } else {
-          let rows = (await call("bookmarks")) || [];
+          bookmarkItems = (await call("bookmarks")) || [];
           if (seq !== panelSeq) return; // a newer render started; this is stale
-          if (query) {
-            const q = query.toLowerCase();
-            rows = rows.filter(
-              (b) =>
-                b.title.toLowerCase().includes(q) || b.url.toLowerCase().includes(q)
-            );
-          }
-          if (!rows.length) {
-            list.innerHTML = `<div class="panel-empty">${
-              query ? "No bookmarks match that." : "No bookmarks yet."
-            }</div>`;
+
+          if (!bookmarkItems.length) {
+            list.innerHTML = `<div class="panel-empty">No bookmarks yet.</div>`;
             return;
           }
-          // Newest first, matching how history reads.
-          rows.sort((a, b) => b.added_at - a.added_at);
-          for (const b of rows) {
-            list.appendChild(
-              entryNode({
-                title: b.title,
-                url: b.url,
-                when: whenLabel(b.added_at),
-                onOpen: () => open(b.url),
-                // No re-render here. remove_bookmark emits brume://bookmarks
-                // and the listener refreshes both this list and the bar, which
-                // is the one path every change to the list takes.
-                onRemove: () => call("remove_bookmark", { id: b.id }),
-                // Renaming matters most right after an import: a page title is
-                // often not what you want on a 172px strip.
-                onRename: (title) => call("rename_bookmark", { id: b.id, title }),
-              })
+
+          /* Searching shows a flat list, not a tree.
+           *
+           * A filtered tree has to keep every ancestor of a match to stay
+           * readable, so a search for one page shows the folders around it and
+           * buries the thing you asked for. Folders are dropped from the
+           * results too: matching one would mean either showing it empty or
+           * pulling its contents in, and neither is what was asked. */
+          if (query) {
+            const q = query.toLowerCase();
+            const hits = bookmarkItems.filter(
+              (b) =>
+                !b.is_folder &&
+                (b.title.toLowerCase().includes(q) ||
+                  b.url.toLowerCase().includes(q))
             );
+            if (!hits.length) {
+              list.innerHTML = `<div class="panel-empty">No bookmarks match that.</div>`;
+              return;
+            }
+            hits.sort((a, b) => b.added_at - a.added_at);
+            for (const b of hits) {
+              list.appendChild(
+                entryNode({
+                  title: b.title,
+                  url: b.url,
+                  when: folderPathOf(b) || whenLabel(b.added_at),
+                  onOpen: () => open(b.url),
+                  onRemove: () => call("remove_bookmark", { id: b.id }),
+                  onRename: (title) => call("rename_bookmark", { id: b.id, title }),
+                  onMenu: (event) => openManagerMenu(event, b),
+                })
+              );
+            }
+            return;
+          }
+
+          // Tree order: each folder immediately followed by its contents.
+          const rows = [];
+          const walk = (parent, depth) => {
+            for (const b of childrenOf(parent)) {
+              rows.push({ item: b, depth });
+              if (b.is_folder) walk(b.id, depth + 1);
+            }
+          };
+          walk(null, 0);
+
+          for (const { item, depth } of rows) {
+            const kids = item.is_folder ? childrenOf(item.id).length : 0;
+            const node = entryNode({
+              title: item.title,
+              url: item.url,
+              depth,
+              isFolder: item.is_folder,
+              subtitle: item.is_folder
+                ? `${kids} item${kids === 1 ? "" : "s"}`
+                : undefined,
+              when: item.is_folder ? "" : whenLabel(item.added_at),
+              onOpen: () => {
+                if (!item.is_folder) open(item.url);
+              },
+              // No re-render here. remove_bookmark emits brume://bookmarks
+              // and the listener refreshes both this list and the bar, which
+              // is the one path every change to the list takes.
+              onRemove: () => call("remove_bookmark", { id: item.id }),
+              // Renaming matters most right after an import: a page title is
+              // often not what you want on a 172px strip.
+              onRename: (title) => call("rename_bookmark", { id: item.id, title }),
+              onMenu: (event) => openManagerMenu(event, item),
+            });
+            if (item.id === pendingRenameId) {
+              pendingRenameId = null;
+              // Opened from the bar's Rename, which sends the user here.
+              node.querySelector(".entry-remove")?.click();
+            }
+            list.appendChild(node);
           }
         }
+      }
+
+      /** "In Reading / Later", for a search hit that lives inside folders. */
+      function folderPathOf(bookmark) {
+        const names = [];
+        let cursor = bookmark.parent ?? null;
+        // Bounded: repair_tree guarantees the chain reaches the root.
+        while (cursor !== null && names.length < 12) {
+          const folder = bookmarkItems.find((b) => b.id === cursor);
+          if (!folder) break;
+          names.unshift(folder.title);
+          cursor = folder.parent ?? null;
+        }
+        return names.length ? `in ${names.join(" / ")}` : "";
+      }
+
+      /* The manager's per-row menu.
+       *
+       * Reorder and move live here rather than only on drag and drop. A
+       * drag-only design cannot be driven without synthetic input, which this
+       * project does not allow in tests, so it could never be verified - and a
+       * menu works for anyone not using a mouse besides. */
+      function openManagerMenu(at, item) {
+        const siblings = childrenOf(item.parent ?? null);
+        const index = siblings.findIndex((b) => b.id === item.id);
+
+        openMenu(at, (add, separator, submenu) => {
+          if (!item.is_folder) {
+            add("Open", true, () => openBookmark(item, false));
+            add("Open in new tab", true, () => openBookmark(item, true));
+            separator();
+          }
+          add("Move up", index > 0, () =>
+            call("reorder_bookmark", { id: item.id, index: index - 1 })
+          );
+          add("Move down", index >= 0 && index < siblings.length - 1, () =>
+            call("reorder_bookmark", { id: item.id, index: index + 1 })
+          );
+
+          // Every folder this one could legally move into: not itself, and not
+          // anything already inside it, or it would become its own ancestor.
+          // The store refuses those anyway; leaving them off the menu means
+          // never offering something that will only fail.
+          const banned = new Set([item.id]);
+          if (item.is_folder) {
+            const sweep = (id) => {
+              for (const kid of childrenOf(id)) {
+                banned.add(kid.id);
+                if (kid.is_folder) sweep(kid.id);
+              }
+            };
+            sweep(item.id);
+          }
+          const targets = bookmarkItems.filter(
+            (b) =>
+              b.is_folder && !banned.has(b.id) && b.id !== (item.parent ?? null)
+          );
+          submenu("Move to", (addTo) => {
+            if ((item.parent ?? null) !== null) {
+              addTo("Top level", true, () =>
+                call("move_bookmark", { id: item.id, parent: null })
+              );
+            }
+            if (!targets.length) {
+              addTo("No other folders", false, () => {});
+              return;
+            }
+            for (const folder of targets) {
+              addTo(folder.title, true, () =>
+                call("move_bookmark", { id: item.id, parent: folder.id })
+              );
+            }
+          });
+
+          separator();
+          add(
+            item.is_folder ? "Delete folder, keep contents" : "Remove",
+            true,
+            () => call("remove_bookmark", { id: item.id })
+          );
+        });
       }
 
       // --- settings -------------------------------------------------------
@@ -2616,7 +3003,7 @@
           for (const src of sources) {
             const r = row(
               src.name,
-              `${src.count} bookmark${src.count === 1 ? "" : "s"}. Folders are flattened, and anything already here is skipped.`
+              `${src.count} bookmark${src.count === 1 ? "" : "s"}, with their folders, into a folder named for today.`
             );
             const status = document.createElement("span");
             status.className = "status";
@@ -2817,6 +3204,9 @@
 
       async function closePanel() {
         el("panel").hidden = true;
+        // Hands back the parsed history. It is only worth keeping while
+        // something is reading it, and it is several megabytes at the cap.
+        call("release_history");
         await call("set_panel", { open: false });
       }
 
@@ -2826,11 +3216,13 @@
       /* Debounced rather than wired straight to `input`.
        *
        * Searching history is not a cheap local filter: the store keeps history
-       * as append-only JSONL and has no index, so every query reads the whole
-       * file and parses every line, up to the 20,000-entry cap. Firing that per
-       * keystroke meant typing a six-letter word re-read and re-parsed the file
-       * six times. Bookmarks are filtered in-page and would not need this, but
-       * one path for both keeps the two views behaving the same. */
+       * as append-only JSONL and has no index, so a query scans every entry, up
+       * to the 20,000 cap. Until 0.6.0 it also re-read and re-parsed the file
+       * each time, so typing a six-letter word did that six times; the store
+       * caches the parse now while the panel is open, and `release_history`
+       * drops it on close. The debounce still earns its keep, because the scan
+       * and the re-render remain. Bookmarks are filtered in-page and would not
+       * need this, but one path for both keeps the two views behaving alike. */
       let searchTimer = null;
       el("panel-search").addEventListener("input", () => {
         clearTimeout(searchTimer);
@@ -2843,11 +3235,50 @@
           renderPanel();
         });
       }
-      el("panel-clear").addEventListener("click", async () => {
-        // The button is only shown for the two views that are logs, and it
-        // clears whichever one is in front.
-        await call(panelView === "downloads" ? "clear_downloads" : "clear_history");
+      el("panel-newfolder").addEventListener("click", async () => {
+        // Created with a placeholder name and opened straight into the rename
+        // editor, rather than asking first. One less dialog, and the folder is
+        // real by the time you are naming it, so cancelling leaves something
+        // you can see and delete rather than nothing at all.
+        const id = await call("create_folder", { title: "New folder", parent: null });
+        if (id == null) return;
+        pendingRenameId = id;
         renderPanel();
+      });
+
+      el("panel-export").addEventListener("click", async () => {
+        const saved = await call("export_bookmarks");
+        // Silent when cancelled: the user closed the dialog, they know.
+        if (saved) {
+          await message("Bookmarks exported.", { title: "Brume", kind: "info" });
+        }
+      });
+
+      el("panel-clear").addEventListener("click", async (event) => {
+        // Downloads is a short list and clearing it loses nothing but the log,
+        // so it goes straight away. History is the one worth asking about.
+        if (panelView === "downloads") {
+          await call("clear_downloads");
+          renderPanel();
+          return;
+        }
+        event.stopPropagation();
+        const rect = el("panel-clear").getBoundingClientRect();
+        openMenu(
+          { clientX: rect.right - 180, clientY: rect.bottom + 2 },
+          (add, separator) => {
+            const clear = async (since) => {
+              await call("clear_history", { since });
+              renderPanel();
+            };
+            const ago = (secs) => Math.floor(Date.now() / 1000) - secs;
+            add("Clear the last hour", true, () => clear(ago(3600)));
+            add("Clear the last 24 hours", true, () => clear(ago(86400)));
+            add("Clear the last 7 days", true, () => clear(ago(604800)));
+            separator();
+            add("Clear everything", true, () => clear(null));
+          }
+        );
       });
 
       // A download starting or finishing refreshes the list, but only when it
@@ -3402,6 +3833,10 @@
           el("permission"),
           el("tabsearch"),
           el("siteinfo"),
+          // Brume's own menus are HTML in this webview too, so they need the
+          // chrome raised exactly as the dropdowns do. Left out until 0.6.0,
+          // which is why a long menu was cut off at the toolbar.
+          el("ctx-menu"),
         ].filter((b) => !b.hidden);
         const bottom = open.reduce(
           (low, b) => Math.max(low, Math.ceil(b.getBoundingClientRect().bottom)),

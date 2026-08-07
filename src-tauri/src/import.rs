@@ -17,12 +17,18 @@
 //! Taking the easy 90% now beats taking none of it while waiting to do all of
 //! it. Firefox is noted here rather than half-attempted.
 //!
-//! # Folders are flattened, and the UI says so
+//! # Folders come across, into a dated folder of their own
 //!
-//! Brume's bookmarks are a flat list, so a folder tree cannot survive the trip.
-//! Flattening loses the grouping but keeps every bookmark, which is the right
-//! way round: a bookmark you can find in a long list still works, and one that
-//! was silently dropped does not.
+//! Until 0.6.0 Brume's bookmarks were a flat list, so a tree could not survive
+//! the trip and this deliberately flattened rather than dropping anything. The
+//! folder model removed that limit, and the structure now comes over intact.
+//!
+//! Every import lands under one folder named for the source and the day, so a
+//! second import cannot collide with the first and the whole thing is one
+//! deletion to undo. That is also why nothing is skipped as a duplicate any
+//! more: the tree is reproduced as it stands, and a URL the source keeps in two
+//! folders stays in both. Nothing existing is ever touched or removed, which was
+//! the guarantee that actually mattered.
 
 use std::path::PathBuf;
 
@@ -125,29 +131,65 @@ fn candidates() -> Vec<(&'static str, &'static str, PathBuf)> {
     ]
 }
 
-/// Flattens a node tree into (url, title, added_at).
-fn collect(node: &Node, out: &mut Vec<(String, String, i64)>) {
-    if node.kind == "url" {
-        if let Some(url) = &node.url {
-            // Only real web addresses. A Chromium file can carry javascript:
-            // bookmarklets, and importing one would put a script behind a
-            // one-click button on the bookmarks bar.
-            if url.starts_with("http://") || url.starts_with("https://") {
-                out.push((
-                    url.clone(),
-                    node.name.clone(),
-                    chrome_time_to_unix(&node.date_added),
-                ));
-            }
-        }
-        return;
-    }
-    for child in &node.children {
-        collect(child, out);
-    }
+/// One entry on its way in, with the source's structure still attached.
+///
+/// An intermediate rather than building `store::Bookmark` directly, because ids
+/// and parents belong to the store and are only known once it starts inserting.
+#[derive(Debug, PartialEq)]
+pub enum Imported {
+    Link {
+        url: String,
+        title: String,
+        added_at: i64,
+    },
+    Folder {
+        title: String,
+        children: Vec<Imported>,
+    },
 }
 
-fn read_source(path: &PathBuf) -> Option<Vec<(String, String, i64)>> {
+/// Turns a node tree into `Imported`, keeping the folders.
+///
+/// Empty folders are dropped. A source often carries several, and reproducing
+/// them means an import whose result is mostly things to tidy up.
+fn collect(node: &Node) -> Option<Imported> {
+    if node.kind == "url" {
+        let url = node.url.as_ref()?;
+        // Only real web addresses. A Chromium file can carry javascript:
+        // bookmarklets, and importing one would put a script behind a
+        // one-click button on the bookmarks bar.
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return None;
+        }
+        return Some(Imported::Link {
+            url: url.clone(),
+            title: node.name.clone(),
+            added_at: chrome_time_to_unix(&node.date_added),
+        });
+    }
+
+    let children: Vec<Imported> = node.children.iter().filter_map(collect).collect();
+    if children.is_empty() {
+        return None;
+    }
+    Some(Imported::Folder {
+        title: node.name.clone(),
+        children,
+    })
+}
+
+/// How many links are in a tree, for the count on the import button.
+fn count_links(items: &[Imported]) -> usize {
+    items
+        .iter()
+        .map(|i| match i {
+            Imported::Link { .. } => 1,
+            Imported::Folder { children, .. } => count_links(children),
+        })
+        .sum()
+}
+
+fn read_source(path: &PathBuf) -> Option<Vec<Imported>> {
     let raw = std::fs::read_to_string(path).ok()?;
     // Same BOM guard the rest of Brume's file reading uses.
     let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
@@ -162,9 +204,50 @@ fn read_source(path: &PathBuf) -> Option<Vec<(String, String, i64)>> {
     .into_iter()
     .flatten()
     {
-        collect(root, &mut out);
+        // The roots themselves are unwrapped: "Bookmarks bar" as a folder inside
+        // a dated folder is one level of nesting nobody asked for. Their
+        // children keep whatever structure they had.
+        match collect(root) {
+            Some(Imported::Folder { children, .. }) => out.extend(children),
+            Some(link) => out.push(link),
+            None => {}
+        }
     }
     Some(out)
+}
+
+/// Names of the months, for the folder an import lands in.
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Formats a Unix timestamp as "6 August 2026".
+///
+/// Hand-rolled from the civil-from-days algorithm rather than taking a date
+/// crate, for the same reason `store.rs` refused SQLite: this is one label on
+/// one folder, and it is not worth a dependency in a 5 MB binary.
+fn format_day(unix_secs: i64) -> String {
+    let days = unix_secs.div_euclid(86_400) + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
 }
 
 /// Which browsers are actually installed and have bookmarks to give.
@@ -183,37 +266,67 @@ pub fn import_sources() -> Vec<ImportSource> {
             Some(ImportSource {
                 id: id.to_string(),
                 name: name.to_string(),
-                count: found.len(),
+                count: count_links(&found),
             })
         })
         .collect()
 }
 
-/// Copies one browser's bookmarks in. Returns how many were added.
+/// Inserts a tree under `parent`, depth first. Returns how many links landed.
 ///
-/// Duplicates by URL are skipped rather than merged or replaced: running the
-/// import twice is a thing people do, and it should be a no-op the second time
-/// instead of doubling the list.
+/// Parents are created before their children so every parent id named here is
+/// one this call just made, which is what lets it use the store's unvalidated
+/// `add_folder` and `add_bookmark`.
+fn insert_tree(store: &crate::store::Store, items: &[Imported], parent: Option<u64>) -> usize {
+    let mut added = 0usize;
+    for item in items {
+        match item {
+            Imported::Link {
+                url,
+                title,
+                added_at,
+            } => {
+                if store.add_bookmark(url, title, *added_at, parent) {
+                    added += 1;
+                }
+            }
+            Imported::Folder { title, children } => {
+                let id = store.add_folder(title, parent);
+                added += insert_tree(store, children, Some(id));
+            }
+        }
+    }
+    added
+}
+
+/// Copies one browser's bookmarks in. Returns how many links were added.
+///
+/// Everything lands under one folder named for the source and the day. A second
+/// import therefore sits beside the first rather than merging into it, and is
+/// undone by deleting one folder.
 #[tauri::command]
 pub fn import_bookmarks(
     app: AppHandle,
     store: State<'_, crate::store::Store>,
     source: String,
 ) -> Result<usize, String> {
-    let (_, _, path) = candidates()
+    let (_, name, path) = candidates()
         .into_iter()
         .find(|(id, _, _)| *id == source)
         .ok_or_else(|| format!("Unknown source: {source}"))?;
 
     let found = read_source(&path)
         .ok_or("Could not read that browser's bookmarks. Is it still installed?")?;
-
-    let mut added = 0usize;
-    for (url, title, at) in found {
-        if store.add_bookmark(&url, &title, at) {
-            added += 1;
-        }
+    if found.is_empty() {
+        return Ok(0);
     }
+
+    let root = store.add_folder(
+        &format!("{name}, {}", format_day(crate::store::now_unix())),
+        None,
+    );
+    let added = insert_tree(&store, &found, Some(root));
+
     // Written once at the end rather than per bookmark. Importing a thousand
     // would otherwise rewrite the file a thousand times.
     store.flush_bookmarks()?;
@@ -285,10 +398,14 @@ mod tests {
                 },
             ],
         };
-        let mut out = Vec::new();
-        collect(&node, &mut out);
-        assert_eq!(out.len(), 2, "only http and https should survive");
-        assert!(out.iter().all(|(u, _, _)| u.starts_with("http")));
+        let Some(Imported::Folder { children, .. }) = collect(&node) else {
+            panic!("a folder with usable children should come across");
+        };
+        assert_eq!(children.len(), 2, "only http and https should survive");
+        assert!(children.iter().all(|c| matches!(
+            c,
+            Imported::Link { url, .. } if url.starts_with("http")
+        )));
     }
 
     #[test]
@@ -312,9 +429,90 @@ mod tests {
                 }],
             }],
         };
-        let mut out = Vec::new();
-        collect(&deep, &mut out);
-        assert_eq!(out.len(), 1, "a bookmark two folders down still comes over");
-        assert_eq!(out[0].0, "https://deep.test/");
+        // Inverted in 0.6.0. This used to assert the tree was flattened, which
+        // was the honest thing to do while the store held a flat list.
+        let Some(Imported::Folder { title, children }) = collect(&deep) else {
+            panic!("the outer folder should come across");
+        };
+        assert_eq!(title, "root");
+        assert_eq!(children.len(), 1);
+        let Imported::Folder { title, children } = &children[0] else {
+            panic!("the inner folder should still be a folder, not flattened");
+        };
+        assert_eq!(title, "inner");
+        assert_eq!(
+            children[0],
+            Imported::Link {
+                url: "https://deep.test/".into(),
+                title: "buried".into(),
+                added_at: 0,
+            },
+            "a bookmark two folders down comes over, still two folders down"
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_is_not_worth_importing() {
+        // Sources carry plenty of these, and reproducing them means an import
+        // whose result is mostly things to tidy up.
+        let empty = Node {
+            name: "nothing here".into(),
+            kind: "folder".into(),
+            url: None,
+            date_added: "0".into(),
+            children: vec![Node {
+                name: "also empty".into(),
+                kind: "folder".into(),
+                url: None,
+                date_added: "0".into(),
+                children: vec![],
+            }],
+        };
+        assert!(collect(&empty).is_none());
+    }
+
+    #[test]
+    fn the_import_folder_is_named_for_the_day_it_happened() {
+        // Checked against dates worked out independently rather than against
+        // the same arithmetic run twice.
+        assert_eq!(format_day(0), "1 January 1970");
+        // 20671 days after the epoch, counted out by hand.
+        assert_eq!(format_day(1_785_974_400), "6 August 2026");
+        // A leap day, which is where a hand-rolled calendar goes wrong.
+        assert_eq!(format_day(1_709_164_800), "29 February 2024");
+        // One second before midnight UTC must still be the same day.
+        assert_eq!(format_day(1_786_060_799), "6 August 2026");
+        // And the next second must not be.
+        assert_eq!(format_day(1_786_060_800), "7 August 2026");
+    }
+
+    #[test]
+    fn counting_links_ignores_the_folders_around_them() {
+        let tree = vec![
+            Imported::Link {
+                url: "https://a.test/".into(),
+                title: "a".into(),
+                added_at: 0,
+            },
+            Imported::Folder {
+                title: "f".into(),
+                children: vec![
+                    Imported::Link {
+                        url: "https://b.test/".into(),
+                        title: "b".into(),
+                        added_at: 0,
+                    },
+                    Imported::Folder {
+                        title: "g".into(),
+                        children: vec![Imported::Link {
+                            url: "https://c.test/".into(),
+                            title: "c".into(),
+                            added_at: 0,
+                        }],
+                    },
+                ],
+            },
+        ];
+        assert_eq!(count_links(&tree), 3);
     }
 }

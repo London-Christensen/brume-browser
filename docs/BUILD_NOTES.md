@@ -1756,20 +1756,27 @@ manager's context menu and on the keyboard, which makes the behaviour reachable
 over CDP and is better for anyone not using a mouse. Dragging then becomes a
 second path to commands that already exist rather than the only one.
 
-### History search already exists, and exposing it changes what it costs
+### History search was already there, and it was already costing something
 
-`store.history(query, limit)` at `store.rs:265` filters on the query, and the
-command is registered. The panel has simply never sent one, so the search box is
-a box wired to a parameter that has been sitting there since 0.3.0.
+**The plan above was wrong about this and the correction is the useful part.** It
+claimed the panel had never sent a query and that the search box was yet to be
+built. It has sent one since 0.3.0: `renderPanel` passes `query` straight to
+`store.history`, and the box has been in the panel header all along.
 
-Adding it invalidates a comment. `store.rs:142` says history is not cached
-"because it is large and read only when the user actually opens the panel", which
-holds exactly while there is no search box. With one, 20,000 lines are read and
-parsed on every keystroke, which is word for word the bug fixed in 0.3.0 under
-"searching history re-read the whole file per keystroke". So the box is
-debounced, the parse is cached while the panel is open and dropped when it
-closes, and that comment is rewritten in the same change. A comment that states
-the opposite of what the code does is worse than none.
+That makes the caching worth more, not less. `store.rs:142` said history was not
+cached "because it is large and read only when the user actually opens the
+panel", which would have been true had there been no search. There was, so every
+debounced render re-read and re-parsed up to 20,000 lines. Debounced at 120ms, so
+not the per-keystroke version of the 0.3.0 bug, but the same shape and live in
+shipped code rather than hypothetical.
+
+The parse is now cached while the panel is open and dropped by `release_history`
+when it closes. `record_visit` appends to the cache instead of dropping it, so
+browsing with the panel open does not re-parse per page load. That comment has
+been rewritten, along with the one on the debounce that described the old cost.
+
+What history genuinely lacked was day headings and a way to clear part of it
+rather than all of it. Both are new.
 
 Date grouping is front end work over `visited_at`. Clearing by range extends
 `clear_history` with a cutoff, and `compact_history` already writes a filtered
@@ -1808,6 +1815,32 @@ are 0.7.0 and which fight assumptions running through `chrome_extent()`,
 `overlay.rs`, session restore and `browser_state`. DevTools and user agent
 switching, which are 0.8.0. Sync, Firefox import, and any move to a database.
 
+### Two bugs found by building on top of the menus
+
+Neither was the feature being built, and both had shipped.
+
+**Brume's own menus were cut off at the toolbar.** `openMenu` placed itself with
+`Math.min(at.clientY, window.innerHeight - rect.height - 4)`, and in the chrome
+webview `innerHeight` is the height of the bars, not of the window: 76px. So the
+clamp went negative, every menu was pinned to y=4, and anything past 76px was
+outside the webview and simply not drawn. Measured on 2026-08-06: a tab context
+menu ran to 179px inside a 76px viewport, so 103px of it did not exist. A menu of
+six items showed two.
+
+The cause is the 0.5.0 finding again. `syncOverlay` raises and grows the chrome
+for the address bar dropdown, the permission prompt, tab search and site info,
+and `ctx-menu` was never added to that list even though it is HTML in the same
+webview. It is now, `openMenu` calls `syncOverlay` after positioning, `closeMenu`
+calls it again to shrink back, and the vertical clamp is against the same 720 the
+Rust side clamps the overlay to rather than against `innerHeight`. Verified: the
+chrome grows from 76 to 195 and the menu is fully inside it.
+
+**The rename button was a solid square.** `.ico` fills with `currentColor` and
+relies on a mask to cut the shape out, so a class with no `mask-image` paints a
+filled block. `ico-edit` was used by the bookmark rename button from 0.5.0 and
+never defined. `ico-upload` and `ico-chevron-down` were missing too, which the
+export button and the folder chevron would have hit. All three are defined now.
+
 ### How this gets verified
 
 Against a running browser, over CDP, asserting on something independent of the
@@ -1817,6 +1850,30 @@ and loaded. The corrupt path gets deliberately malformed JSON, asserting the
 `.bak` appears and the original bytes survive inside it. An export is re-imported
 by Chrome. Folder depth, an attempted cycle, and deleting a folder with children
 are pure store logic and get unit tests.
+
+**Done on 2026-08-06.** 53 unit tests, clippy clean, formatting clean. The
+profile was copied aside first and `bookmarks.json` came back byte for byte on
+the same SHA-256 it started with. Driven against a running build:
+
+| | |
+|---|---|
+| Bar shows the root level only | A folder and a loose bookmark; the two filed pages were not on it |
+| Folder chip opens its contents | Nested folder as a submenu, link, and Open all |
+| Submenu drills in | Replaced the menu with the inner folder's contents |
+| Manager renders a tree | Indents of 10, 26 and 42px, in tree order, with item counts |
+| Move to, on a folder | Offered nothing: the only other folder was its own descendant |
+| Move up | Root order swapped, and the bar followed through `brume://bookmarks` |
+| Move down at the end | Disabled rather than offered and refused |
+| History day headings | Today, Yesterday, Tuesday |
+| Clear the last hour | 90 visits to 82; all 82 older ones intact, the 8 recent ones gone |
+| Bookmark search | Showed each hit's folder path, "in Reading / Later" |
+
+**The export dialog is the one thing not driven.** `blocking_save_file` opens a
+native modal, and putting one on the desktop is exactly what the testing rule
+forbids, so it would also hang an unattended run. The HTML it writes is unit
+tested, including nesting and escaping; the dialog itself is the installer
+shell's already-proven pattern. Worth saying plainly rather than implying the
+whole path was exercised.
 
 ---
 

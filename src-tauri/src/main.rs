@@ -17,6 +17,7 @@ mod audio;
 mod browser;
 mod contextmenu;
 mod downloads;
+mod export;
 mod find;
 mod history;
 mod import;
@@ -94,6 +95,7 @@ fn main() {
             browser::toggle_bookmarks_bar,
             store::history,
             store::clear_history,
+            store::release_history,
             store::remove_visit,
             store::bookmarks,
             store::suggest,
@@ -106,8 +108,10 @@ fn main() {
             store::reorder_bookmark,
             import::import_sources,
             import::import_bookmarks,
+            export::export_bookmarks,
             store::downloads,
             downloads::cancel_download,
+            downloads::retry_download,
             store::clear_downloads,
             store::reveal_download,
             profile::clear_site_data,
