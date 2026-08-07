@@ -2019,6 +2019,56 @@ window id.
 
 ---
 
+## 0.8.0: Power tools
+
+In progress. The theme is the things a browser owes someone who wants to look
+underneath it, plus the two layout features cut from 0.7.0.
+
+### DevTools costs nothing, and the reason is the whole premise
+
+`Webview::open_devtools` is gated behind `any(debug_assertions, feature =
+"devtools")`, so without the feature a release build has no such method and the
+browser ships unable to inspect anything. Adding the feature to a project whose
+entire pitch is size is the sort of thing worth measuring before doing.
+
+Measured on 2026-08-07: the release binary went from 5,544,960 bytes to
+5,527,040. That is 17,920 *smaller*, which is codegen noise across an LTO build
+that also gained the new code, not a saving. The honest reading is **no
+measurable cost**.
+
+The reason there is nothing to pay is the point of the project. DevTools is part
+of the WebView2 runtime, not part of Brume: the feature flag only gates a method
+that forwards to `OpenDevToolsWindow`. An Electron application ships its own copy
+of the inspector; Brume borrows the one already on the machine, exactly as it
+borrows the renderer.
+
+Bound to F12 and Ctrl+Shift+I. Both, because F12 is what people reach for and
+Ctrl+Shift+I is what the Chromium menus advertise. Verified on 2026-08-07: a
+`devtools://devtools/bundled/devtools_app.html` target appears after the call.
+
+### View source is the runtime's too
+
+`view-source:` is Chromium's own scheme, so there is nothing to fetch and nothing
+to render. It also means the markup shown is the document that was actually
+loaded, rather than a second request that could come back different: a page that
+varies by cookie or by time would otherwise show source that never existed.
+
+The URL is built in Rust rather than typed, so it never passes through
+`search::resolve`. `view-source:` is deliberately **not** added to
+ALLOWED_SCHEMES: that list guards what a person can put in the address bar, and
+widening it to serve a menu item would be paying in the wrong place.
+
+Verified on 2026-08-07 against a running build: `view-source:https://example.com/`
+opened as its own target showing `<!doctype html><html lang="en">...` with
+Chromium's own line-wrap control. Note that `location.href` inside that document
+reports the original URL, not the `view-source:` one, which is Chromium's
+behaviour and worth knowing before writing a test that asserts on it.
+
+Refused on Brume's own new tab page and on a document already being viewed as
+source, since stacking the prefix gives a page about a page.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this

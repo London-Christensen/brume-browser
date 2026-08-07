@@ -1763,6 +1763,52 @@ pub fn print_page(app: AppHandle, window: tauri::Window) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Opens DevTools for the active tab.
+///
+/// Needs the `devtools` feature on tauri, not just a debug build: `open_devtools`
+/// is gated behind `any(debug_assertions, feature = "devtools")`, so without it a
+/// release build has no such method and the browser ships unable to inspect
+/// anything. The size that costs is measured in BUILD_NOTES rather than assumed.
+///
+/// Opens WebView2's own DevTools window, which is a separate top-level window
+/// belonging to the runtime. Brume neither draws nor positions it.
+#[tauri::command]
+pub fn open_devtools(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    active_webview(&app, &state)?.open_devtools();
+    Ok(())
+}
+
+/// Opens the active tab's markup in a new tab.
+///
+/// `view-source:` is the runtime's own, so there is nothing to render here and
+/// nothing to fetch: Chromium serves the document it already has, which also
+/// means the source shown is the one that was actually loaded rather than a
+/// second request that could come back different.
+///
+/// Built here rather than typed, so it never goes through `search::resolve`.
+/// `view-source:` is deliberately **not** in ALLOWED_SCHEMES: that list guards
+/// what a person can put in the address bar, and adding a scheme there to serve
+/// a button would widen the address bar to pay for a menu item.
+#[tauri::command]
+pub async fn view_source(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    let current = {
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        tabs.active_tab().and_then(|t| t.nav.current().cloned())
+    };
+    let Some(url) = current else {
+        return Ok(());
+    };
+    // Nothing to look at: Brume's own new tab page, and anything already being
+    // viewed as source. Stacking the prefix twice gives a page about a page.
+    if is_new_tab(&url) || url.starts_with("view-source:") {
+        return Ok(());
+    }
+    open_tab_inner(&app, &state, Some(format!("view-source:{url}")), false)
+        .map_err(|e| e.to_string())
+}
+
 /// Toggles fullscreen.
 ///
 /// The chrome goes with it. Tauri's fullscreen covers the whole window, and the

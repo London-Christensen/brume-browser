@@ -103,6 +103,11 @@ const BINDINGS: &[(&str, &str)] = &[
     ("CmdOrCtrl+Shift+A", "search_tabs"),
     ("CmdOrCtrl+P", "print"),
     ("F11", "fullscreen"),
+    // Both, because both are muscle memory and neither is taken. F12 is the
+    // one people reach for; Ctrl+Shift+I is what the Chromium menus advertise.
+    ("F12", "devtools"),
+    ("CmdOrCtrl+Shift+I", "devtools"),
+    ("CmdOrCtrl+U", "view_source"),
 ];
 
 fn action_for(shortcut: &Shortcut) -> Option<&'static str> {
@@ -284,6 +289,13 @@ pub fn handle(app: &AppHandle, action: &str) {
             browser::go_home(app, w).await
         }),
         "print" => log(browser::print_page(app.clone(), win)),
+        "devtools" => log(browser::open_devtools(app.clone(), win)),
+        "view_source" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::view_source(app, w).await
+        }),
 
         // Resize webviews, so they go through spawn like the tab commands.
         "fullscreen" => spawn(app, |app| async move {

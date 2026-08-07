@@ -84,6 +84,8 @@ fn main() {
             browser::set_panel,
             browser::set_find_bar,
             browser::print_page,
+            browser::open_devtools,
+            browser::view_source,
             browser::toggle_fullscreen,
             browser::reset_zoom,
             browser::set_zoom,

@@ -29,7 +29,7 @@ tauri-build = { version = "2", features = [] }
 #
 # The cost is that Tauri may change these APIs in a minor release. They are
 # confined to browser.rs so that a breaking change has one place to be fixed.
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = ["unstable", "devtools"] }
 
 # Auto-update. The three plugins are one feature between them: updater fetches
 # and verifies, dialog asks the user first, process performs the relaunch.
