@@ -207,6 +207,13 @@ struct Tab {
     /// refuse to close. Refusing is the point: a pinned tab is one you have said
     /// you want kept, so Ctrl+W landing on it would defeat the pinning.
     pinned: bool,
+    /// Whether reader mode has replaced this tab's document.
+    ///
+    /// Tracked here rather than asked of the page, because the page cannot
+    /// answer: a content webview holds no capabilities. It is also cleared by
+    /// navigation, since the reader belongs to the document it replaced and the
+    /// next one arrives untouched.
+    reader: bool,
     /// Whether the page is making noise, and whether it has been silenced.
     ///
     /// Both mirrored from the runtime by audio.rs, like `can_back` and `zoom`.
@@ -603,6 +610,8 @@ pub struct BrowserState {
     /// Zoom of the active tab. 1.0 is 100%; the chrome hides the control at
     /// that value rather than showing "100%" permanently.
     pub zoom: f64,
+    /// Whether the active tab is showing its article rather than its page.
+    pub reader: bool,
     /// Whether tabs run down the side. Published for the same reason the
     /// bookmarks bar is: the chrome relaying itself out and the page being
     /// resized to match come off one update rather than two that can race.
@@ -651,6 +660,7 @@ fn snapshot(
         bookmarks_bar,
         panel_open,
         sidebar,
+        reader: active.is_some_and(|t| t.reader),
         zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
         // Reported as absent once the tab is gone, so a split that outlived its
         // partner cannot leave the strip marking a tab that is not there.
@@ -1037,6 +1047,11 @@ fn spawn_tab_webview(
                             tab.nav.loading = true;
                             // The old page's title does not describe the new one.
                             tab.title.clear();
+                            // The reader belongs to the document it replaced.
+                            // The next one arrives untouched, so the flag would
+                            // otherwise claim a page was in reader mode when it
+                            // is showing the site exactly as sent.
+                            tab.reader = false;
                         }
                     }
                     publish(&nav_handle, &win);
@@ -1108,6 +1123,25 @@ fn spawn_tab_webview(
                 // opening an IPC channel to the entire internet for a cosmetic
                 // feature.
                 if let Some(win) = window_of_tab(&title_handle, id) {
+                    // The reader saying it found nothing. It cannot call a
+                    // command - a content webview holds no capabilities - so it
+                    // reports through the one thing the runtime relays either
+                    // way. See reader.rs.
+                    if title == crate::reader::FAILED_SENTINEL {
+                        {
+                            let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                            if let Some(tab) = tabs.tab_mut(id) {
+                                tab.reader = false;
+                            }
+                        }
+                        let _ = title_handle.emit_to(
+                            &win.chrome,
+                            crate::reader::READER_STATE_EVENT,
+                            "failed",
+                        );
+                        publish(&title_handle, &win);
+                        return;
+                    }
                     {
                         let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
                         if let Some(tab) = tabs.tab_mut(id) {
@@ -1551,6 +1585,7 @@ fn park_tab(app: &AppHandle, state: &WindowState, url: String, pinned: bool) -> 
         audible: false,
         muted: false,
         loaded: false,
+        reader: false,
     });
     id
 }
@@ -1635,6 +1670,7 @@ fn open_tab_inner(
             audible: false,
             muted: false,
             loaded: true,
+            reader: false,
         });
         tabs.active = id;
 
@@ -1956,6 +1992,55 @@ pub async fn set_split(
 pub fn open_devtools(app: AppHandle, window: tauri::Window) -> Result<(), String> {
     let state = state_for(&app, window.label());
     active_webview(&app, &state)?.open_devtools();
+    Ok(())
+}
+
+/// Turns reader mode on for the active tab, or off again.
+///
+/// Off is a reload rather than an undo. The reader replaces the document, so the
+/// only honest way back is to ask the server for it again: anything else would
+/// be Brume reconstructing a page it had already thrown away.
+///
+/// Async because turning it off reloads, and because turning it on shows a page,
+/// which means the panel has to get out of the way first.
+#[tauri::command]
+pub async fn toggle_reader(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    let Some(tab_id) = active_tab_id_in(&state) else {
+        return Ok(());
+    };
+    let (label, was_on, url) = {
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        match tabs.items.iter().find(|t| t.id == tab_id) {
+            Some(t) => (t.label.clone(), t.reader, t.nav.current().cloned()),
+            None => return Ok(()),
+        }
+    };
+
+    // Brume's own new tab page is not an article, and neither is a document
+    // already being read. Refusing beats replacing a page that has nothing on it.
+    if !was_on && url.as_deref().is_some_and(is_new_tab) {
+        return Ok(());
+    }
+
+    {
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        if let Some(tab) = tabs.tab_mut(tab_id) {
+            tab.reader = !was_on;
+        }
+    }
+
+    show_page(&app, &state)?;
+    if was_on {
+        // The original, from the server. See the doc comment.
+        active_webview(&app, &state)?
+            .reload()
+            .map_err(|e| e.to_string())?;
+    } else {
+        let dark = app.state::<crate::settings::SettingsState>().is_dark(&app);
+        crate::reader::apply(&app, &label, dark)?;
+    }
+    publish(&app, &state);
     Ok(())
 }
 
@@ -2870,6 +2955,7 @@ mod tests {
             audible: false,
             muted: false,
             loaded: true,
+            reader: false,
         };
         assert_eq!(tab.display_title(), "New tab");
 

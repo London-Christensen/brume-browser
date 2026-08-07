@@ -49,6 +49,9 @@ $MAP = [ordered]@{
     'back'            = 'arrow-left'
     'forward'         = 'arrow-right'
     'reload'          = 'rotate-cw'
+    # Reader view. Lines of prose rather than a book: the feature strips a page
+    # back to its text, and a book would suggest something is being saved.
+    'reader'          = 'letter-text'
     'home'            = 'house'
 
     # --- tabs ---------------------------------------------------------------

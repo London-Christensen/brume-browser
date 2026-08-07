@@ -667,6 +667,7 @@
       .ico-check { -webkit-mask-image: url("assets/brand/icons/check.svg"); mask-image: url("assets/brand/icons/check.svg"); }
       .ico-chevron-right { -webkit-mask-image: url("assets/brand/icons/chevron-right.svg"); mask-image: url("assets/brand/icons/chevron-right.svg"); }
       .ico-chevron-down { -webkit-mask-image: url("assets/brand/icons/chevron-down.svg"); mask-image: url("assets/brand/icons/chevron-down.svg"); }
+      .ico-reader { -webkit-mask-image: url("assets/brand/icons/reader.svg"); mask-image: url("assets/brand/icons/reader.svg"); }
       .ico-upload { -webkit-mask-image: url("assets/brand/icons/upload.svg"); mask-image: url("assets/brand/icons/upload.svg"); }
       /* Used by the rename button since 0.5.0 and never defined, so it painted
          a solid square: `.ico` fills with currentColor and relies on the mask
@@ -678,6 +679,12 @@
          single, deliberate signal that this page is saved. */
       .btn[data-on="true"] {
         color: var(--brume-lamplight);
+      }
+      /* Reader mode found nothing to show. Dimmed briefly rather than raising a
+         dialog: it is information, not a decision, and the button's own tooltip
+         carries the words. */
+      .btn[data-failed="true"] {
+        opacity: 0.45;
       }
 
       /* --- address bar --------------------------------------------------- */
@@ -1607,6 +1614,9 @@
       <button class="btn zoom-btn" id="zoom" title="Reset zoom to 100%" aria-label="Reset zoom" hidden>
         <span id="zoom-level">100%</span>
       </button>
+      <button class="btn" id="reader" title="Reader view" aria-label="Reader view">
+        <span class="ico ico-reader"></span>
+      </button>
       <button class="btn" id="bookmark" title="Bookmark this page" aria-label="Bookmark this page">
         <span class="ico ico-bookmark"></span>
       </button>
@@ -2100,6 +2110,10 @@
         loading = state.loading;
         el("progress").dataset.loading = String(state.loading);
 
+        el("reader").dataset.on = String(!!state.reader);
+        el("reader").title = state.reader
+          ? "Show the original page"
+          : "Reader view";
         el("bookmark").dataset.on = String(state.bookmarked);
         el("bookmark").title = state.bookmarked
           ? "Remove bookmark"
@@ -3709,6 +3723,25 @@
       });
 
       listen("brume://open-find", openFind);
+
+      el("reader").addEventListener("click", () => call("toggle_reader"));
+
+      /* A page with no article to show says so.
+       *
+       * Reported through the title, because a content webview holds no
+       * capabilities and cannot call anything: see reader.rs. Shown for a few
+       * seconds rather than as a dialog, since it is information rather than a
+       * decision. */
+      listen("brume://reader-state", () => {
+        const btn = el("reader");
+        const was = btn.title;
+        btn.title = "No article found on this page";
+        btn.dataset.failed = "true";
+        setTimeout(() => {
+          btn.title = was;
+          delete btn.dataset.failed;
+        }, 2600);
+      });
 
       el("new-tab").addEventListener("click", () => call("open_tab", { url: null }));
       // Right-click on the new tab button offers the window variants. The strip

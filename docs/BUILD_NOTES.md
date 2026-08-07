@@ -2311,6 +2311,50 @@ has already demonstrated what this project's migrations cost when they go wrong.
 A named profile gets a subdirectory; the one everybody already has stays exactly
 where it is.
 
+### `document.title` strips whitespace, and it broke the failure signal
+
+Reader mode's one hard problem is reporting that a page has no article. The page
+cannot call a command, so it reports through the title, which the runtime relays
+either way as `DocumentTitleChanged`.
+
+The sentinel was first written as `" brume-reader-failed"`, with a leading space
+so a real page could not produce it by accident. **The space made it unmatchable.**
+`document.title`'s getter strips and collapses ASCII whitespace per the HTML
+spec, so the space is gone before Brume ever sees the string. Measured on
+2026-08-07: the page set a leading space and the runtime reported a title
+beginning at `b`. The comparison could never be true, and the effect was a page
+with no article silently claiming to be in reader mode.
+
+It is `brume::reader::no-article` now, with uniqueness from the shape of the
+string rather than from whitespace that does not survive the trip.
+
+The second half of that fix was found the same way. Setting the title is the
+signal, but **leaving it set puts Brume's plumbing in the tab strip**: the tab
+was showing `brume::reader::no-article` as the page's name. The script restores
+the original after a short timeout, which is long enough for the runtime to raise
+the change event and short enough that nothing renders in between.
+
+### Reader mode, verified
+
+2026-08-07, against a running build:
+
+| | |
+|---|---|
+| A Wikipedia article | Title and host extracted, 24 paragraphs kept, 0 scripts, 0 navs |
+| A second article | 117 paragraphs, 0 scripts |
+| Turning it off | Reader markup gone, 12 navs back, real title restored |
+| example.com, which has no article | Declined, flag cleared, button dimmed, page untouched |
+| The tab strip after a decline | Shows "Example Domain", not the sentinel |
+
+Turning it off reloads rather than undoing. The reader replaces the document, so
+asking the server again is the only honest way back: anything else would be Brume
+reconstructing a page it had thrown away.
+
+The reader icon was added to the kit properly rather than borrowing `menu`.
+`build-icons.ps1` maps `reader` to Lucide's `letter-text`, and regenerating wrote
+45 icons with only the new one changing, which is incidental evidence that the
+generator is deterministic.
+
 ---
 
 ## Known hard problems, deliberately deferred

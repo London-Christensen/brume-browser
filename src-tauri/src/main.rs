@@ -25,6 +25,7 @@ mod memory;
 mod overlay;
 mod permissions;
 mod profile;
+mod reader;
 mod search;
 mod settings;
 mod shortcuts;
@@ -86,6 +87,7 @@ fn main() {
             browser::print_page,
             browser::open_devtools,
             browser::view_source,
+            browser::toggle_reader,
             browser::set_split,
             browser::set_tab_sidebar,
             browser::toggle_tab_sidebar,
