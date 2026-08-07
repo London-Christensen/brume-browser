@@ -1,6 +1,6 @@
 [package]
 name = "brume-setup"
-version = "0.5.0"
+version = "0.6.0"
 description = "Installer for Brume"
 authors = ["london-christensen"]
 edition = "2021"
