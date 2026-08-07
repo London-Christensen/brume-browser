@@ -1581,6 +1581,198 @@ the one number that was always comfortably better than an Electron equivalent.
 
 ---
 
+## 0.6.0 plan: Library
+
+Planned, not built. Written down because the 0.X releases so far were assembled
+from whatever happened to be next on a list, and they read as a pile of unrelated
+work rather than as a release.
+
+### Themes are a planning device, and they do not ship
+
+Each `0.X.0` now gets a theme, used here and in planning only. The names stay out
+of release notes and tags: a name on a release page means a full `X.0.0`, and
+spending that signal on a minor release would cost more than it buys.
+
+| Release | Theme | What it covers |
+|---|---|---|
+| 0.6.0 | Library | Bookmarks, history and downloads: organising them, and getting them back out |
+| 0.7.0 | Windows | A second window, moving a tab into it, split view, a tab sidebar |
+| 0.8.0 | Power tools | DevTools, view source, custom search engines, per-site zoom |
+| 1.0.0 | Shield | Content blocking, unchanged from the decision of 2026-08-03 |
+
+Library goes first because every item in it finishes something already half
+built. `import.rs` walks Chrome's folder tree and throws the structure away.
+`store.history` has taken a query parameter since 0.3.0 and no caller passes one.
+Import exists and export does not. None of that is new construction, and the one
+piece that is, folders, has been deferred twice because it changes a file format.
+That is not the sort of work that ever happens as an item on a list.
+
+### bookmarks.json discards everything it cannot parse
+
+Found while planning this, and it is why the release is ordered the way it is.
+`store.rs:202` loads bookmarks like this:
+
+```rust
+let loaded = fs::read_to_string(&store.bookmarks_path)
+    .ok()
+    .and_then(|raw| serde_json::from_str::<Vec<Bookmark>>(strip_bom(&raw)).ok())
+    .unwrap_or_default();
+```
+
+A parse failure becomes an empty `Vec`, and the next edit writes that empty list
+back over the file. There is no `.bak`, which `settings.rs:202` does have, so the
+bytes are gone rather than merely unreadable. A missing file and a corrupt file
+are also indistinguishable here, and only one of those is normal.
+
+It is latent today only because `Bookmark` has not changed since it was written.
+Adding a field is precisely what makes it fire. So the fix lands first, before
+the struct is touched: a missing file stays silent, and a file that is present
+but does not parse is renamed to `bookmarks.json.bak` before anything starts
+empty. The net has to exist before the change that needs it, or the first person
+to find this loses their bookmarks.
+
+### The folder model is one array, not a tree
+
+`Bookmark` gains two fields, both `#[serde(default)]`:
+
+```rust
+#[serde(default)] pub parent: Option<u64>,   // None is root
+#[serde(default)] pub is_folder: bool,       // url unused when true
+```
+
+The top level stays a JSON array, and that is the entire point: an existing
+`bookmarks.json` is already a valid new one, so no migration step exists to be
+got wrong, and the corrupt-file path above is never entered by the upgrade
+itself. Ids keep coming from one space, so the `max + 1` allocation at
+`store.rs:353` and `:383` keeps working and a folder can never collide with a
+bookmark.
+
+Two alternatives were considered and rejected. A separate `folders.json` types
+better, with no unused `url` hanging off a folder, but two files cannot be
+written atomically together, so a crash between the writes leaves bookmarks
+pointing at folders that do not exist, and `parent` would refer into a second id
+space. A nested `enum` mirrors Chromium's own format and makes cycles and orphans
+impossible by construction, and it can even stay backward compatible through
+`#[serde(untagged)]`, because an old object with no children still matches the
+link variant. That last part is the objection: untagged variants fail silently
+and pick the nearest match, and the one code path already caught destroying data
+without a trace is the wrong place to put something clever.
+
+Invariants live in one place rather than at every call site. On load, a `parent`
+that does not resolve to an entry with `is_folder` set is reset to root, which
+covers dangling ids, references to a bookmark rather than a folder, and files
+edited by hand. On move, walking up from the destination must not reach the
+folder being moved, or a folder can be made its own ancestor and vanish from the
+tree while still taking up space in the file.
+
+### What that model does not solve, stated rather than glossed
+
+Ids come from `max + 1`, so deleting the highest-numbered entry frees that id for
+the next thing created. Today that is harmless. With parent pointers it means a
+stale reference can resolve to a different folder made later, and a bookmark
+turns up somewhere nobody put it. Validating parents on load does not catch this,
+because the id does resolve, just to the wrong entry.
+
+It is left open deliberately. Closing it properly needs a persisted counter,
+which means a top-level `next_id`, which turns the array into an object, which is
+the shape change this whole design exists to avoid. Timestamp ids would also work
+and are the fallback if it ever bites in practice.
+
+### Deleting a folder promotes its children
+
+Chrome and Edge delete the subtree. Brume does not, and the reason is two
+sections up: this is a file with no recovery path, and its load routine has
+already been caught discarding the lot. Deleting a folder moves its contents up
+one level, so no single click can lose a collection. The cost is a genuine
+surprise, because a folder full of bookmarks scatters into the level above
+instead of tidying away.
+
+### The bar reuses overlay.rs rather than growing a second mechanism
+
+A folder menu hanging off the bookmarks bar has to paint over the page, and the
+page sits above the chrome in Win32 z-order. That is the 0.5.0 finding that
+produced `overlay.rs`, and the address bar dropdown already does the whole dance:
+raise the chrome HWND, report the overlay bottom edge through `syncOverlay()`,
+and keep that height out of `chrome_extent()` so no content webview is moved.
+Folder menus take the same path.
+
+Overflow needs less than it looks. The bar measures rather than counts, so a
+folder is one more chip of variable width. What is new is nesting, which makes
+the overflow menu renderer recursive.
+
+### Reordering needs a path that is not dragging
+
+Drag and drop is the obvious way to reorder a bookmark. It is also untestable
+here: driving it needs synthetic input, which is barred, so a drag-only feature
+could never be verified. Move up, move down and move to folder go in the
+manager's context menu and on the keyboard, which makes the behaviour reachable
+over CDP and is better for anyone not using a mouse. Dragging then becomes a
+second path to commands that already exist rather than the only one.
+
+### History search already exists, and exposing it changes what it costs
+
+`store.history(query, limit)` at `store.rs:265` filters on the query, and the
+command is registered. The panel has simply never sent one, so the search box is
+a box wired to a parameter that has been sitting there since 0.3.0.
+
+Adding it invalidates a comment. `store.rs:142` says history is not cached
+"because it is large and read only when the user actually opens the panel", which
+holds exactly while there is no search box. With one, 20,000 lines are read and
+parsed on every keystroke, which is word for word the bug fixed in 0.3.0 under
+"searching history re-read the whole file per keystroke". So the box is
+debounced, the parse is cached while the panel is open and dropped when it
+closes, and that comment is rewritten in the same change. A comment that states
+the opposite of what the code does is worse than none.
+
+Date grouping is front end work over `visited_at`. Clearing by range extends
+`clear_history` with a cutoff, and `compact_history` already writes a filtered
+file back, so the shape is there.
+
+### Import stops flattening, and export is the missing half
+
+`collect()` at `import.rs:129` already recurses. It takes a parent id and emits
+folders as it descends instead of discarding them, and the test
+`nested_folders_are_flattened_not_dropped` inverts into one asserting the tree
+survives. The comment at `import.rs:20`, explaining that a tree cannot survive
+the trip, goes with it.
+
+Each import lands in its own dated folder, so a second import of the same source
+never collides and is one deletion to undo. That keeps the add-only rule, which
+was chosen because a two-way sync would remove bookmarks the source and Brume
+both hold.
+
+Export writes the whole tree as one Netscape bookmark HTML file, nested
+`<DL><DT>` with `ADD_DATE`, which Chrome, Edge and Firefox all still read. It is
+string building, so it costs no dependency, and it doubles as the manual backup
+this file has never had. The save dialog makes the command `async`, for the
+reason `blocking_pick_folder` already documents.
+
+### Downloads
+
+A failed or cancelled download offers a retry, re-issuing the original URL from
+the start. It is not a resume: range requests need the partial file tracked and
+server support detected, with a fallback to a full retry anyway, and that is its
+own feature rather than part of this one.
+
+### Non-goals for 0.6.0
+
+Content blocking, which stays at 1.0.0. Multiple windows and split view, which
+are 0.7.0 and which fight assumptions running through `chrome_extent()`,
+`overlay.rs`, session restore and `browser_state`. DevTools and user agent
+switching, which are 0.8.0. Sync, Firefox import, and any move to a database.
+
+### How this gets verified
+
+Against a running browser, over CDP, asserting on something independent of the
+UI that claims success. Bookmarks are read from `bookmarks.json` on disk rather
+than from the panel. The upgrade path gets a real 0.5.0-shaped file dropped in
+and loaded. The corrupt path gets deliberately malformed JSON, asserting the
+`.bak` appears and the original bytes survive inside it. An export is re-imported
+by Chrome. Folder depth, an attempted cycle, and deleting a folder with children
+are pure store logic and get unit tests.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
