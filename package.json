@@ -1,6 +1,6 @@
 {
   "name": "brume",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "A lightweight Windows web browser built with Tauri and the native WebView2 runtime",
   "private": true,
   "type": "module",
