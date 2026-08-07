@@ -2109,6 +2109,48 @@ width as the independent check rather than Brume's indicator:
 1920 / 1.5 is exactly 1280, which is what makes the width an assertion rather
 than a coincidence.
 
+### Custom engines, without churning the tested path
+
+`SearchEngine` is `&'static str` in every field, which a name typed into Settings
+can never be. The tempting move is to make it owned, and that rewrites the type
+every address bar test is built on.
+
+Instead `resolve` was split. `resolve_with(input, template)` holds the whole
+decision, and `resolve(input, engine_id, dark)` is a thin front for it that looks
+the template up among the built-ins. Production calls `selected` then
+`resolve_with`; the tests still call `resolve`, so they exercise the real
+decision rather than a parallel copy of it.
+
+`resolve` and `engine_by_id` are `#[cfg(test)]` now, and that is worth stating
+rather than hiding behind an `allow`: neither can see a user-defined engine, so
+neither has any business in production any more.
+
+**Validation is where the security is.** A template must be http or https, which
+keeps `javascript:` from being smuggled in behind the address bar - the same
+thing `ALLOWED_SCHEMES` exists to stop, arriving by a different door. And it must
+contain `{query}`, or every search lands on the same page and reads as broken
+rather than as misconfigured. Both are tested, including `data:` and `file:`.
+
+Ids are generated (`custom-N`, highest seen plus one) rather than derived from
+the name. Two engines called the same thing would otherwise collide, and renaming
+one would orphan the `search_engine` setting pointing at it. Ids are never
+reused after a deletion, for the reason tab and window labels are not.
+
+Removing the engine that is currently selected moves the setting back to the
+default. Left pointing at a deleted id, every search would fall back silently and
+the list would show nothing selected.
+
+Verified on 2026-08-07 against a running build:
+
+| | |
+|---|---|
+| Add an engine | `custom-1`, listed after the built-ins and marked custom |
+| Select it and search | `https://www.mojeek.com/search?q=hello+world` |
+| `javascript:...{query}` | Refused |
+| A template with no `{query}` | Refused |
+| Removing a built-in | Refused |
+| Removing the selected engine | Fell back to duckduckgo, search still worked |
+
 ---
 
 ## Known hard problems, deliberately deferred

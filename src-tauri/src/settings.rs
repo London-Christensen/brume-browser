@@ -87,6 +87,15 @@ pub struct Settings {
     /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
+    /// Search engines the user added themselves.
+    ///
+    /// Kept apart from the built-in list rather than merged into it: the
+    /// built-ins carry themed variants and their own landing pages, all as
+    /// `&'static str`, and a name typed into Settings can never be one of those.
+    /// Its own key, added in 0.8.0, for the reason the session keys record.
+    #[serde(default)]
+    pub custom_engines: Vec<CustomEngine>,
+
     /// Zoom remembered per site, keyed by origin. 1.0 is never stored.
     ///
     /// Per origin rather than per page, matching how every browser does it and
@@ -133,6 +142,19 @@ pub struct SessionTab {
     pub pinned: bool,
 }
 
+/// A search engine the user added.
+///
+/// No themed variants: Brume has no way to know how a stranger's engine themes
+/// itself, and inventing a parameter would send searches somewhere that ignores
+/// it at best.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CustomEngine {
+    /// Generated, not typed. See `add_custom_engine`.
+    pub id: String,
+    pub name: String,
+    pub template: String,
+}
+
 /// One window's worth of session.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SessionWindow {
@@ -171,6 +193,7 @@ impl Default for Settings {
             session_tabs: Vec::new(),
             session_active: 0,
             session_windows: Vec::new(),
+            custom_engines: Vec::new(),
             site_zoom: std::collections::HashMap::new(),
             window: None,
         }
@@ -308,9 +331,17 @@ impl SettingsState {
     }
 
     pub fn set_search_engine(&self, id: &str) -> Result<(), String> {
-        // Resolved through engine_by_id so an unknown id cannot be stored;
-        // it falls back to the default rather than leaving search broken.
-        let resolved = crate::search::engine_by_id(id).id.to_string();
+        // A custom engine's id is legitimate too, so the built-in list is no
+        // longer the whole answer. Still validated rather than stored blind: an
+        // id naming nothing falls back to the default, so a hand-edited file
+        // cannot leave search silently broken.
+        let known = crate::search::ENGINES.iter().any(|e| e.id == id)
+            || self.get().custom_engines.iter().any(|e| e.id == id);
+        let resolved = if known {
+            id.to_string()
+        } else {
+            crate::search::DEFAULT_ENGINE_ID.to_string()
+        };
         self.update(|s| s.search_engine = resolved)
     }
 
@@ -381,6 +412,50 @@ impl SettingsState {
 
     pub fn window(&self) -> Option<WindowGeometry> {
         self.get().window
+    }
+
+    pub fn custom_engines(&self) -> Vec<CustomEngine> {
+        self.get().custom_engines
+    }
+
+    /// Adds an engine and returns its id.
+    ///
+    /// The id is generated rather than derived from the name, so two engines
+    /// called the same thing do not collide and renaming one later cannot
+    /// orphan the `search_engine` setting pointing at it.
+    pub fn add_custom_engine(&self, name: &str, template: &str) -> Result<String, String> {
+        let existing = self.get().custom_engines;
+        // Highest suffix seen plus one, so an id is never reused after a
+        // deletion. A reused id would silently re-point the selected engine.
+        let next = existing
+            .iter()
+            .filter_map(|e| e.id.strip_prefix("custom-"))
+            .filter_map(|n| n.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let id = format!("custom-{next}");
+        let created = id.clone();
+        self.update(|s| {
+            s.custom_engines.push(CustomEngine {
+                id: id.clone(),
+                name: name.to_string(),
+                template: template.to_string(),
+            })
+        })?;
+        Ok(created)
+    }
+
+    /// Removes an engine, and falls back if it was the one selected.
+    pub fn remove_custom_engine(&self, id: &str) -> Result<(), String> {
+        self.update(|s| {
+            s.custom_engines.retain(|e| e.id != id);
+            // Left pointing at a deleted engine, every search would fall back
+            // silently. Moving the setting makes it visible in the list too.
+            if s.search_engine == id {
+                s.search_engine = crate::search::DEFAULT_ENGINE_ID.to_string();
+            }
+        })
     }
 
     /// The zoom remembered for an origin, or 1.0 if it has none.
@@ -508,9 +583,9 @@ pub fn set_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
 pub fn engine_homepage(app: tauri::AppHandle) -> String {
     let state = app.state::<SettingsState>();
     let dark = state.is_dark(&app);
-    crate::search::engine_by_id(&state.get().search_engine)
-        .home_for(dark)
-        .to_string()
+    // A custom engine's home is its own origin, which is the closest honest
+    // answer: Brume cannot know what a stranger's engine calls its front page.
+    crate::search::selected(&state, dark).home
 }
 
 /// How many sites Brume is remembering a zoom for.

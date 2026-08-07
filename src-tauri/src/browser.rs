@@ -1723,7 +1723,11 @@ pub async fn navigate(app: AppHandle, window: tauri::Window, input: String) -> R
     let target = {
         let settings = app.state::<crate::settings::SettingsState>();
         let engine_id = settings.get().search_engine;
-        crate::search::resolve(&input, &engine_id, settings.is_dark(&app))
+        // Through `selected` rather than `resolve`, so a user-defined engine is
+        // reachable. `engine_id` alone can only name a built-in.
+        let _ = engine_id;
+        let engine = crate::search::selected(&settings, settings.is_dark(&app));
+        crate::search::resolve_with(&input, &engine.template)
     };
     if target.is_empty() {
         return Ok(());

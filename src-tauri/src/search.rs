@@ -7,6 +7,7 @@
 //! accumulates edge cases forever.
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, State};
 
 /// A search engine, as a name and a URL template.
 ///
@@ -163,6 +164,10 @@ pub const ENGINES: &[SearchEngine] = &[
 
 pub const DEFAULT_ENGINE_ID: &str = "duckduckgo";
 
+/// Test-only since 0.8.0, for the same reason `resolve` is: an engine id can
+/// name a user-defined engine now, and this can only ever return a built-in.
+/// `selected` is what production uses, and it falls back the same way.
+#[cfg(test)]
 pub fn engine_by_id(id: &str) -> &'static SearchEngine {
     ENGINES
         .iter()
@@ -263,8 +268,25 @@ impl SearchEngine {
     }
 }
 
-/// Resolves address bar input to a URL to navigate to.
+/// Resolves address bar input against a built-in engine, by id.
+///
+/// Test-only since 0.8.0. Production goes through `selected`, because an engine
+/// id can now name a user-defined one and only settings knows about those. This
+/// stays because every test for the address bar heuristic is written against it,
+/// and it forwards to `resolve_with`, which is the path production takes: the
+/// tests still exercise the real decision rather than a parallel copy.
+#[cfg(test)]
 pub fn resolve(input: &str, engine_id: &str, dark: bool) -> String {
+    resolve_with(input, engine_by_id(engine_id).template_for(dark))
+}
+
+/// The same decision, against a template the caller already chose.
+///
+/// Split out in 0.8.0 for user-defined engines, whose template is a `String`
+/// read from settings and so can never be one of the `&'static str`s in
+/// `ENGINES`. Keeping `resolve` in front of it means every test written against
+/// the built-in engines still exercises this exact path.
+pub fn resolve_with(input: &str, template: &str) -> String {
     let trimmed = input.trim();
 
     if trimmed.is_empty() {
@@ -282,14 +304,127 @@ pub fn resolve(input: &str, engine_id: &str, dark: bool) -> String {
         return format!("https://{trimmed}");
     }
 
-    engine_by_id(engine_id)
-        .template_for(dark)
-        .replace("{query}", &encode_query(trimmed))
+    template.replace("{query}", &encode_query(trimmed))
+}
+
+/// An engine as the UI sees it: built-in or user-defined, both owned.
+///
+/// `SearchEngine` cannot serve here because every field is `&'static str`, which
+/// a name typed into Settings can never be.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineView {
+    pub id: String,
+    pub name: String,
+    pub template: String,
+    pub home: String,
+    /// Whether it can be edited or removed. Built-ins cannot.
+    pub custom: bool,
+}
+
+/// Every engine, built-in first, then the user's own in the order added.
+pub fn all_engines(settings: &crate::settings::SettingsState, dark: bool) -> Vec<EngineView> {
+    let mut out: Vec<EngineView> = ENGINES
+        .iter()
+        .map(|e| EngineView {
+            id: e.id.to_string(),
+            name: e.name.to_string(),
+            template: e.template_for(dark).to_string(),
+            home: e.home_for(dark).to_string(),
+            custom: false,
+        })
+        .collect();
+
+    out.extend(settings.custom_engines().into_iter().map(|e| EngineView {
+        // A custom engine has no themed variant and no separate landing page.
+        // Its home is its own origin, which is the closest honest answer:
+        // Brume has no way to know what a stranger's search engine calls its
+        // front page, and guessing would send new tabs somewhere that 404s.
+        home: origin_of(&e.template),
+        id: e.id,
+        name: e.name,
+        template: e.template,
+        custom: true,
+    }));
+
+    out
+}
+
+/// The template and landing page for whichever engine is selected.
+///
+/// Falls back to the default engine when the id names nothing, which covers a
+/// custom engine deleted while it was still the chosen one.
+pub fn selected(settings: &crate::settings::SettingsState, dark: bool) -> EngineView {
+    let id = settings.get().search_engine;
+    let engines = all_engines(settings, dark);
+    engines
+        .iter()
+        .find(|e| e.id == id)
+        .cloned()
+        .unwrap_or_else(|| engines[0].clone())
+}
+
+/// Scheme and host of a template, for a custom engine's landing page.
+fn origin_of(template: &str) -> String {
+    tauri::Url::parse(template)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
+        .unwrap_or_default()
+}
+
+/// Whether a template is usable as a search engine.
+///
+/// Two rules, both load-bearing. It must be https or http, because anything else
+/// is either a scheme Brume refuses anyway or a way to get `javascript:` behind
+/// the address bar. And it must contain `{query}`, or the engine silently sends
+/// every search to the same page and looks broken rather than misconfigured.
+pub fn validate_template(template: &str) -> Result<(), String> {
+    let lower = template.trim().to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("A search URL has to start with https:// or http://".into());
+    }
+    if !template.contains("{query}") {
+        return Err("Put {query} where the search terms should go".into());
+    }
+    if tauri::Url::parse(template.trim()).is_err() {
+        return Err("That is not a valid address".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn search_engines() -> Vec<SearchEngine> {
-    ENGINES.to_vec()
+pub fn search_engines(
+    app: AppHandle,
+    settings: State<'_, crate::settings::SettingsState>,
+) -> Vec<EngineView> {
+    all_engines(&settings, settings.is_dark(&app))
+}
+
+/// Adds a user-defined engine. Returns its id.
+#[tauri::command]
+pub fn add_search_engine(
+    settings: State<'_, crate::settings::SettingsState>,
+    name: String,
+    template: String,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the engine a name".into());
+    }
+    validate_template(&template)?;
+    settings.add_custom_engine(name, template.trim())
+}
+
+/// Removes a user-defined engine. Built-ins are refused.
+#[tauri::command]
+pub fn remove_search_engine(
+    settings: State<'_, crate::settings::SettingsState>,
+    id: String,
+) -> Result<(), String> {
+    if ENGINES.iter().any(|e| e.id == id) {
+        return Err("That one is built in".into());
+    }
+    settings.remove_custom_engine(&id)
 }
 
 #[cfg(test)]
@@ -298,6 +433,50 @@ mod tests {
 
     fn ddg(input: &str) -> String {
         resolve(input, DEFAULT_ENGINE_ID, true)
+    }
+
+    #[test]
+    fn a_custom_engine_template_must_be_http_and_carry_the_query() {
+        assert!(validate_template("https://s.example/?q={query}").is_ok());
+        assert!(validate_template("http://s.example/?q={query}").is_ok());
+
+        // The security half. Anything but http(s) is either refused downstream
+        // anyway or is a way to get a script behind the address bar, which is
+        // exactly what ALLOWED_SCHEMES exists to stop.
+        for bad in [
+            "javascript:alert(1)?{query}",
+            "file:///c:/x?{query}",
+            "data:text/html,{query}",
+            "about:blank?{query}",
+        ] {
+            assert!(
+                validate_template(bad).is_err(),
+                "{bad} must not be usable as a search engine"
+            );
+        }
+
+        // The usability half. Without a placeholder every search goes to the
+        // same page, which reads as broken rather than as misconfigured.
+        assert!(validate_template("https://s.example/").is_err());
+    }
+
+    #[test]
+    fn a_custom_engine_resolves_the_same_way_a_built_in_does() {
+        // Straight through resolve_with, which is the production path, so a
+        // custom engine cannot behave differently from a built-in.
+        let template = "https://s.example/?q={query}";
+        // `+` rather than %20: this is a query string, and that is what form
+        // encoding uses. Every engine in ENGINES is fed the same way.
+        assert_eq!(
+            resolve_with("hello world", template),
+            "https://s.example/?q=hello+world"
+        );
+        // And an address is still an address, whatever the engine is.
+        assert_eq!(
+            resolve_with("https://example.com/a", template),
+            "https://example.com/a"
+        );
+        assert_eq!(resolve_with("  ", template), "");
     }
 
     #[test]

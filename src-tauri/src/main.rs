@@ -123,6 +123,8 @@ fn main() {
             permissions::list_permissions,
             permissions::set_permission,
             search::search_engines,
+            search::add_search_engine,
+            search::remove_search_engine,
             settings::get_settings,
             settings::set_auto_update,
             settings::set_search_engine,

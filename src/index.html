@@ -960,6 +960,56 @@
         outline-offset: 2px;
       }
 
+      /* Adding an engine: a name, a URL and a button on one row. The URL takes
+         the space because it is the long one and the one worth reading back. */
+      .engine-add {
+        display: flex;
+        gap: 6px;
+        padding: 8px 10px 2px;
+      }
+      .engine-add input {
+        min-width: 0;
+        padding: 5px 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--elev-1);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+      }
+      .engine-add input:first-child {
+        flex: 0 0 108px;
+      }
+      .engine-add input:nth-child(2) {
+        flex: 1 1 auto;
+      }
+      .engine-add input:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      .engine-error:not(:empty) {
+        padding: 4px 10px 8px;
+        color: var(--danger, #e5484d);
+        font-size: 11.5px;
+      }
+      /* Only on a user-defined engine, and only worth reading on hover: the
+         row's job is choosing, not managing. */
+      .engine-remove {
+        flex: 0 0 auto;
+        color: var(--fg-muted);
+        font-size: 11px;
+        opacity: 0;
+        transition: opacity 110ms ease;
+      }
+      .engine:hover .engine-remove,
+      .engine:focus-within .engine-remove {
+        opacity: 1;
+      }
+      .engine-remove:hover {
+        color: var(--fg);
+        text-decoration: underline;
+      }
+
       .engine {
         display: flex;
         align-items: center;
@@ -3062,8 +3112,66 @@
             await call("set_search_engine", { id: engine.id });
             renderPanel();
           });
+
+          // Only the user's own can be removed. A built-in has nowhere to come
+          // back from, so offering it would be a one-way door.
+          if (engine.custom) {
+            const rm = document.createElement("span");
+            rm.className = "engine-remove";
+            rm.title = "Remove this engine";
+            rm.textContent = "Remove";
+            rm.addEventListener("click", async (event) => {
+              // Or removing it also selects it on the way out.
+              event.stopPropagation();
+              await call("remove_search_engine", { id: engine.id });
+              renderPanel();
+            });
+            btn.appendChild(rm);
+          }
           search.appendChild(btn);
         }
+
+        /* Adding one.
+         *
+         * Two fields rather than a dialog, for the same reason renaming a
+         * bookmark happens in place: it is a name and a URL, and a modal for
+         * two short strings is more ceremony than the edit deserves. */
+        const addRow = document.createElement("div");
+        addRow.className = "engine-add";
+        const engName = document.createElement("input");
+        engName.type = "text";
+        engName.placeholder = "Name";
+        engName.spellcheck = false;
+        const engUrl = document.createElement("input");
+        engUrl.type = "text";
+        engUrl.placeholder = "https://example.com/search?q={query}";
+        engUrl.spellcheck = false;
+        const engAdd = document.createElement("button");
+        engAdd.className = "action";
+        engAdd.textContent = "Add";
+        const engErr = document.createElement("div");
+        engErr.className = "engine-error";
+
+        engAdd.addEventListener("click", async () => {
+          engErr.textContent = "";
+          try {
+            // The backend validates rather than the field: it is the one that
+            // has to be right, and a check here would be a second copy of the
+            // rule that could disagree with it.
+            await invoke("add_search_engine", {
+              name: engName.value,
+              template: engUrl.value,
+            });
+            engName.value = "";
+            engUrl.value = "";
+            renderPanel();
+          } catch (e) {
+            engErr.textContent = String(e);
+          }
+        });
+
+        addRow.append(engName, engUrl, engAdd);
+        search.append(addRow, engErr);
         form.appendChild(search);
 
         // --- privacy ---
