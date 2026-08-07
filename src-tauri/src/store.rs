@@ -76,6 +76,20 @@ pub struct Bookmark {
     pub url: String,
     pub title: String,
     pub added_at: i64,
+    /// The folder this sits in. `None` is the root of the bar.
+    ///
+    /// A pointer rather than nesting, so the file stays a flat JSON array and
+    /// every bookmarks.json written before folders existed is still a valid one.
+    /// `#[serde(default)]` is load-bearing rather than tidy: without it those
+    /// files fail to parse outright.
+    #[serde(default)]
+    pub parent: Option<u64>,
+    /// A folder rather than a link. `url` is unused and empty when this is set.
+    ///
+    /// Folders share the id space with bookmarks, which is why `max + 1` still
+    /// allocates safely and a folder can never collide with a link.
+    #[serde(default)]
+    pub is_folder: bool,
 }
 
 /// A finished download, kept on disk.
@@ -209,6 +223,150 @@ fn read_bookmarks(raw: Option<&str>) -> BookmarksFile {
     }
 }
 
+/// Forces the bookmark list back into a shape the rest of the code can trust.
+///
+/// Every invariant lives here rather than at each call site, so there is one
+/// place to read and one place to get wrong. Two things are repaired:
+///
+///   1. A `parent` that does not name a real folder is reset to root. That
+///      covers a dangling id, a link used as a parent, and a file edited by
+///      hand.
+///   2. A cycle is broken by detaching whatever cannot reach the root. A folder
+///      that is its own ancestor would otherwise be invisible in the tree while
+///      still taking up space in the file, and every walk over it would loop.
+///
+/// Run on load, so nothing downstream ever has to cope with a broken tree. The
+/// second pass is quadratic in the worst case, which is irrelevant here: this is
+/// a bookmarks list, and it runs once at startup.
+fn repair_tree(items: &mut [Bookmark]) {
+    let folders: std::collections::HashSet<u64> =
+        items.iter().filter(|b| b.is_folder).map(|b| b.id).collect();
+    for b in items.iter_mut() {
+        if let Some(p) = b.parent {
+            if !folders.contains(&p) {
+                b.parent = None;
+            }
+        }
+    }
+
+    // Anything that can walk up to the root is fine. Grow that set until it
+    // stops growing; whatever is left over is in a cycle.
+    let mut rooted: std::collections::HashSet<u64> = items
+        .iter()
+        .filter(|b| b.parent.is_none())
+        .map(|b| b.id)
+        .collect();
+    loop {
+        let mut grew = false;
+        for b in items.iter() {
+            if rooted.contains(&b.id) {
+                continue;
+            }
+            if let Some(p) = b.parent {
+                if rooted.contains(&p) {
+                    rooted.insert(b.id);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for b in items.iter_mut() {
+        if !rooted.contains(&b.id) {
+            b.parent = None;
+        }
+    }
+}
+
+/// Removes one entry, lifting a folder's direct children up a level.
+///
+/// Split from `Store::remove_bookmark` so the promotion can be tested without a
+/// disk. Only direct children move: anything deeper keeps its own parent and
+/// travels with it.
+fn remove_entry(items: &mut Vec<Bookmark>, id: u64) {
+    let Some(pos) = items.iter().position(|b| b.id == id) else {
+        return;
+    };
+    let gone = items.remove(pos);
+    if gone.is_folder {
+        for b in items.iter_mut() {
+            if b.parent == Some(id) {
+                b.parent = gone.parent;
+            }
+        }
+    }
+}
+
+/// Moves an entry to position `index` among its siblings.
+///
+/// Split out because the arithmetic is the easy part to get wrong, and it was:
+/// the first version moved an entry that was already in the right place, past
+/// unrelated entries sitting between it and its next sibling. Sibling order came
+/// out correct, so the UI would have looked right while the file churned on
+/// every no-op move.
+///
+/// Two rules keep it honest. An entry already at `index` is left alone. And the
+/// insertion point is taken from the sibling that should precede it, not from
+/// the end of the array, so an entry stays next to its own siblings instead of
+/// drifting past everything else.
+fn move_within_siblings(items: &mut Vec<Bookmark>, id: u64, index: usize) {
+    let Some(from) = items.iter().position(|b| b.id == id) else {
+        return;
+    };
+    let parent = items[from].parent;
+
+    let sibs: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.parent == parent)
+        .map(|(i, _)| i)
+        .collect();
+    // It is its own sibling, so this cannot be empty and cannot miss.
+    let current = sibs.iter().position(|&i| i == from).unwrap_or(0);
+    let target = index.min(sibs.len().saturating_sub(1));
+    if current == target {
+        return;
+    }
+
+    let entry = items.remove(from);
+    // Recomputed after the removal: every later index has shifted down by one.
+    let sibs: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.parent == parent)
+        .map(|(i, _)| i)
+        .collect();
+    let to = if index == 0 {
+        sibs.first().copied().unwrap_or(items.len())
+    } else if let Some(&prev) = sibs.get(index - 1) {
+        prev + 1
+    } else {
+        // Past the end of the sibling list means straight after the last one.
+        sibs.last().map(|&i| i + 1).unwrap_or(items.len())
+    };
+    items.insert(to, entry);
+}
+
+/// Whether moving `id` under `new_parent` would make it its own ancestor.
+///
+/// Checked before a move rather than repaired after one, because refusing is
+/// honest and detaching the subtree afterwards would silently move things the
+/// user never touched.
+fn would_cycle(items: &[Bookmark], id: u64, new_parent: Option<u64>) -> bool {
+    let mut cursor = new_parent;
+    // Bounded by the list length: a malformed file cannot spin this forever.
+    for _ in 0..=items.len() {
+        match cursor {
+            None => return false,
+            Some(p) if p == id => return true,
+            Some(p) => cursor = items.iter().find(|b| b.id == p).and_then(|b| b.parent),
+        }
+    }
+    true
+}
+
 /// Moves an unreadable bookmarks file aside so its contents survive.
 ///
 /// Mirrors settings.rs, including overwriting an older `.bak`: two corruptions
@@ -252,7 +410,7 @@ impl Store {
         // list back over the file. There was no `.bak` either, so the bookmarks
         // were not merely unreadable, they were gone, and nothing said so.
         let raw = fs::read_to_string(&store.bookmarks_path).ok();
-        let loaded = match read_bookmarks(raw.as_deref()) {
+        let mut loaded = match read_bookmarks(raw.as_deref()) {
             BookmarksFile::Parsed(items) => items,
             BookmarksFile::Missing => Vec::new(),
             BookmarksFile::Unreadable => {
@@ -260,6 +418,7 @@ impl Store {
                 Vec::new()
             }
         };
+        repair_tree(&mut loaded);
         *store.bookmarks.lock().expect("bookmarks mutex poisoned") = loaded;
 
         store.compact_history();
@@ -387,7 +546,7 @@ impl Store {
             .lock()
             .expect("bookmarks mutex poisoned")
             .iter()
-            .any(|b| b.url == url)
+            .any(|b| !b.is_folder && b.url == url)
     }
 
     /// Adds a bookmark, or removes it if the URL is already bookmarked.
@@ -403,7 +562,7 @@ impl Store {
         let (snapshot, now_bookmarked) = {
             let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
 
-            if let Some(pos) = items.iter().position(|b| b.url == url) {
+            if let Some(pos) = items.iter().position(|b| !b.is_folder && b.url == url) {
                 items.remove(pos);
                 (items.clone(), false)
             } else {
@@ -413,6 +572,10 @@ impl Store {
                     url: url.to_string(),
                     title: title.to_string(),
                     added_at: now_unix(),
+                    // The star bookmarks to the root. Filing it somewhere is a
+                    // separate action, in the manager.
+                    parent: None,
+                    is_folder: false,
                 });
                 (items.clone(), true)
             }
@@ -434,7 +597,7 @@ impl Store {
             return false;
         }
         let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
-        if items.iter().any(|b| b.url == url) {
+        if items.iter().any(|b| !b.is_folder && b.url == url) {
             return false;
         }
         let next_id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
@@ -445,6 +608,8 @@ impl Store {
             // The source's own date, so an import does not claim every
             // bookmark was made today and reorder the bar by accident.
             added_at,
+            parent: None,
+            is_folder: false,
         });
         true
     }
@@ -475,10 +640,90 @@ impl Store {
         self.persist_bookmarks(&snapshot)
     }
 
+    /// Removes a bookmark, or a folder without its contents.
+    ///
+    /// Deleting a folder moves what was inside it up one level rather than
+    /// taking it along. Chrome and Edge delete the subtree, and this
+    /// deliberately does not: bookmarks.json has no undo and, until 0.6.0, no
+    /// backup either, so no single click should be able to lose a collection.
+    /// The cost is that emptying a folder scatters its contents into the level
+    /// above instead of tidying them away.
     pub fn remove_bookmark(&self, id: u64) -> Result<(), String> {
         let snapshot = {
             let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
-            items.retain(|b| b.id != id);
+            remove_entry(&mut items, id);
+            items.clone()
+        };
+        self.persist_bookmarks(&snapshot)
+    }
+
+    /// Creates a folder and returns its id.
+    ///
+    /// Empty titles are rejected rather than defaulted: an unnamed folder in the
+    /// bar is a blank chip nobody can identify or find again.
+    pub fn create_folder(&self, title: &str, parent: Option<u64>) -> Result<u64, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("a folder needs a name".into());
+        }
+        let (snapshot, id) = {
+            let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+            if let Some(p) = parent {
+                if !items.iter().any(|b| b.id == p && b.is_folder) {
+                    return Err("no such folder".into());
+                }
+            }
+            let id = items.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+            items.push(Bookmark {
+                id,
+                url: String::new(),
+                title: title.to_string(),
+                added_at: now_unix(),
+                parent,
+                is_folder: true,
+            });
+            (items.clone(), id)
+        };
+        self.persist_bookmarks(&snapshot)?;
+        Ok(id)
+    }
+
+    /// Files a bookmark or folder under another folder, or at the root.
+    pub fn move_bookmark(&self, id: u64, parent: Option<u64>) -> Result<(), String> {
+        let snapshot = {
+            let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+            if !items.iter().any(|b| b.id == id) {
+                return Ok(());
+            }
+            if let Some(p) = parent {
+                if p == id {
+                    return Err("a folder cannot contain itself".into());
+                }
+                if !items.iter().any(|b| b.id == p && b.is_folder) {
+                    return Err("no such folder".into());
+                }
+                if would_cycle(&items, id, parent) {
+                    return Err("that would put a folder inside itself".into());
+                }
+            }
+            match items.iter_mut().find(|b| b.id == id) {
+                Some(b) => b.parent = parent,
+                None => return Ok(()),
+            }
+            items.clone()
+        };
+        self.persist_bookmarks(&snapshot)
+    }
+
+    /// Moves an entry to a position among its siblings.
+    ///
+    /// Order is the array's own order within a parent, so there is no position
+    /// field to keep consistent. `index` counts only siblings; anything past the
+    /// end lands last.
+    pub fn reorder_bookmark(&self, id: u64, index: usize) -> Result<(), String> {
+        let snapshot = {
+            let mut items = self.bookmarks.lock().expect("bookmarks mutex poisoned");
+            move_within_siblings(&mut items, id, index);
             items.clone()
         };
         self.persist_bookmarks(&snapshot)
@@ -520,6 +765,11 @@ impl Store {
             .expect("bookmarks mutex poisoned")
             .iter()
         {
+            // A folder has no URL to go to. Offering one would put a row in the
+            // dropdown that navigates nowhere.
+            if b.is_folder {
+                continue;
+            }
             if let Some(r) = rank(&b.url, &b.title) {
                 if seen.insert(b.url.clone()) {
                     scored.push((
@@ -859,6 +1109,42 @@ pub fn remove_bookmark(app: AppHandle, store: State<'_, Store>, id: u64) -> Resu
 }
 
 #[tauri::command]
+pub fn create_folder(
+    app: AppHandle,
+    store: State<'_, Store>,
+    title: String,
+    parent: Option<u64>,
+) -> Result<u64, String> {
+    let id = store.create_folder(&title, parent)?;
+    notify_bookmarks(&app);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn move_bookmark(
+    app: AppHandle,
+    store: State<'_, Store>,
+    id: u64,
+    parent: Option<u64>,
+) -> Result<(), String> {
+    store.move_bookmark(id, parent)?;
+    notify_bookmarks(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_bookmark(
+    app: AppHandle,
+    store: State<'_, Store>,
+    id: u64,
+    index: usize,
+) -> Result<(), String> {
+    store.reorder_bookmark(id, index)?;
+    notify_bookmarks(&app);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn downloads(store: State<'_, Store>, limit: Option<usize>) -> DownloadsView {
     store.downloads(limit.unwrap_or(200))
 }
@@ -1057,17 +1343,146 @@ mod tests {
         assert!(matches!(read_bookmarks(Some("[]")), BookmarksFile::Parsed(b) if b.is_empty()));
     }
 
+    /// Shorthand for the tree tests. `p` is the parent, `f` whether it folders.
+    fn node(id: u64, p: Option<u64>, f: bool) -> Bookmark {
+        Bookmark {
+            id,
+            url: if f {
+                String::new()
+            } else {
+                format!("https://{id}.test/")
+            },
+            title: format!("n{id}"),
+            added_at: id as i64,
+            parent: p,
+            is_folder: f,
+        }
+    }
+
+    #[test]
+    fn a_bookmarks_file_written_before_folders_existed_still_loads() {
+        // The upgrade path, and the reason both fields carry serde(default).
+        // Without them this parses as corrupt and 0.6.0 eats everyone's
+        // bookmarks the first time they open it.
+        let old = r#"[{"id":1,"url":"https://a.test/","title":"A","added_at":5}]"#;
+        let BookmarksFile::Parsed(items) = read_bookmarks(Some(old)) else {
+            panic!("a pre-folder bookmarks file must still parse");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].parent, None, "it lands at the root");
+        assert!(!items[0].is_folder);
+    }
+
+    #[test]
+    fn repair_drops_parents_that_do_not_name_a_real_folder() {
+        let mut items = vec![
+            node(1, None, true),      // a real folder
+            node(2, Some(1), false),  // correctly filed, must be left alone
+            node(3, Some(99), false), // parent does not exist
+            node(4, Some(2), false),  // parent is a bookmark, not a folder
+        ];
+        repair_tree(&mut items);
+        assert_eq!(items[1].parent, Some(1), "a valid parent is not touched");
+        assert_eq!(items[2].parent, None, "a dangling parent goes to root");
+        assert_eq!(items[3].parent, None, "a link cannot be a parent");
+    }
+
+    #[test]
+    fn repair_breaks_a_cycle_rather_than_looping_on_it() {
+        // Two folders each claiming the other. Reachable from nothing, so both
+        // detach; without this every walk over the tree spins forever.
+        let mut items = vec![node(1, Some(2), true), node(2, Some(1), true)];
+        repair_tree(&mut items);
+        assert!(items.iter().all(|b| b.parent.is_none()));
+    }
+
+    #[test]
+    fn repair_leaves_a_healthy_tree_exactly_as_it_found_it() {
+        // The control. Without it, "reset every parent to root" would pass all
+        // three tests above.
+        let before = vec![
+            node(1, None, true),
+            node(2, Some(1), true),
+            node(3, Some(2), false),
+            node(4, None, false),
+        ];
+        let mut after = before.clone();
+        repair_tree(&mut after);
+        let parents: Vec<_> = after.iter().map(|b| b.parent).collect();
+        assert_eq!(parents, vec![None, Some(1), Some(2), None]);
+    }
+
+    #[test]
+    fn a_folder_cannot_be_moved_inside_itself_or_its_own_descendant() {
+        let items = vec![
+            node(1, None, true),
+            node(2, Some(1), true),
+            node(3, Some(2), true),
+            node(4, None, true),
+        ];
+        assert!(would_cycle(&items, 1, Some(1)), "into itself");
+        assert!(would_cycle(&items, 1, Some(3)), "into its own grandchild");
+        assert!(!would_cycle(&items, 1, Some(4)), "into an unrelated folder");
+        assert!(!would_cycle(&items, 1, None), "out to the root");
+    }
+
+    #[test]
+    fn deleting_a_folder_keeps_what_was_inside_it() {
+        // The deliberate difference from Chrome. Direct children come up one
+        // level; a grandchild stays with its own parent and travels with it.
+        let mut items = vec![
+            node(1, None, true),
+            node(2, Some(1), true),
+            node(3, Some(2), false),
+            node(4, Some(1), false),
+        ];
+        remove_entry(&mut items, 1);
+        assert_eq!(items.len(), 3, "nothing else was removed");
+        assert_eq!(items[0].parent, None, "the subfolder came up to root");
+        assert_eq!(items[1].parent, Some(2), "the grandchild stayed put");
+        assert_eq!(items[2].parent, None, "the loose bookmark came up too");
+    }
+
+    #[test]
+    fn reordering_counts_siblings_and_ignores_everything_else() {
+        // Interleaved parents, so a naive absolute-index move lands wrong.
+        let order = |items: &[Bookmark]| items.iter().map(|b| b.id).collect::<Vec<_>>();
+        let start = vec![
+            node(1, None, true),
+            node(10, Some(1), false),
+            node(20, None, false),
+            node(11, Some(1), false),
+            node(12, Some(1), false),
+        ];
+
+        let mut items = start.clone();
+        move_within_siblings(&mut items, 12, 0);
+        assert_eq!(order(&items), vec![1, 12, 10, 20, 11], "to the front");
+
+        let mut items = start.clone();
+        move_within_siblings(&mut items, 10, 2);
+        assert_eq!(order(&items), vec![1, 20, 11, 12, 10], "to the back");
+
+        let mut items = start.clone();
+        move_within_siblings(&mut items, 10, 99);
+        assert_eq!(
+            order(&items),
+            vec![1, 20, 11, 12, 10],
+            "past the end is last"
+        );
+
+        // Already first, so nothing should move: not even past the unrelated
+        // entry sitting between it and its next sibling.
+        let mut items = start.clone();
+        move_within_siblings(&mut items, 10, 0);
+        assert_eq!(order(&items), order(&start), "a no-op move changes nothing");
+    }
+
     #[test]
     fn a_bom_does_not_make_the_bookmarks_file_look_unreadable() {
         // Without strip_bom in this path, a file Notepad had touched would be
         // moved aside and every bookmark would vanish from the UI.
-        let one = serde_json::to_string(&vec![Bookmark {
-            id: 1,
-            url: "https://a.test/".into(),
-            title: "A".into(),
-            added_at: 5,
-        }])
-        .unwrap();
+        let one = serde_json::to_string(&vec![node(1, None, false)]).unwrap();
         let out = read_bookmarks(Some(&format!("\u{feff}{one}")));
         assert!(matches!(out, BookmarksFile::Parsed(b) if b.len() == 1));
     }

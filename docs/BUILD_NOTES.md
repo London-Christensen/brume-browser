@@ -1686,6 +1686,32 @@ edited by hand. On move, walking up from the destination must not reach the
 folder being moved, or a folder can be made its own ancestor and vanish from the
 tree while still taking up space in the file.
 
+**The model landed on 2026-08-06** as `parent`, `is_folder`, `repair_tree`,
+`would_cycle`, `create_folder`, `move_bookmark` and `reorder_bookmark`, with
+`remove_bookmark` changed to promote. Driven against a running build, with the
+real profile restored byte for byte afterwards: a pre-folder file loaded and
+defaulted to root, a folder was created and a bookmark filed into it, and both
+reached disk. Moving a folder into its own descendant and into itself were each
+refused, while an unrelated move still succeeded, which is the control that
+stops "refuse everything" passing. Deleting the outer of two nested folders
+brought the inner one up and left the grandchild attached to it; deleting that
+one returned the bookmark to root. Nothing was lost at any step.
+
+`repair_tree` was checked the same way, on a hand-damaged file carrying a
+dangling parent, a link used as a parent, a two-folder cycle and one correctly
+filed bookmark as the control. All four faults went to root, the control kept its
+parent, all six entries survived, and no `.bak` was written, because the file
+parsed perfectly well and was merely inconsistent. Those are different failures
+and they get different treatment.
+
+`reorder_bookmark` was wrong on the first attempt, which is the argument for
+splitting it out. Moving an entry that was already in position relocated it past
+unrelated entries sitting between it and its next sibling. Sibling order came out
+correct, so the manager would have looked right while the file churned on every
+no-op move. It now leaves an entry alone when it is already at the requested
+index, and takes its insertion point from the preceding sibling rather than the
+end of the array.
+
 ### What that model does not solve, stated rather than glossed
 
 Ids come from `max + 1`, so deleting the highest-numbered entry frees that id for
