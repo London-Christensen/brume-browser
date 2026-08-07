@@ -1877,6 +1877,88 @@ whole path was exercised.
 
 ---
 
+## 0.7.0 plan: Windows
+
+Planned, and being built. 0.6.0 shipped; this is the next theme, and it is the
+one that argues with the architecture rather than extending it.
+
+### What the release is, and what it is not
+
+A second window, a private window, moving a tab between windows, and session
+restore that remembers more than one of them.
+
+Split view and a vertical tab sidebar were both in the original sketch and are
+**deliberately out**. Neither needs the work below, because both live inside a
+single window, so bundling them would mean two hard problems in one release with
+nothing shared between them. They move to 0.8.0.
+
+### The capability file is the part to get right
+
+`capabilities/default.json` reads `"windows": ["main"]` and
+`"webviews": ["chrome"]`, and carries a standing warning never to widen it,
+because the content webview renders arbitrary websites and anything granted to it
+is granted to every page the user visits.
+
+A second window needs both to match more than one thing. The only safe way is a
+glob that cannot ever match a content webview:
+
+```text
+  chrome webview   chrome-main, chrome-win-2, ...   capability matches chrome-*
+  content webview  tab-1, tab-2, ...                matched by nothing
+```
+
+The two namespaces staying disjoint **is** the protection. That was previously a
+naming convention and is now a security boundary, so it is stated on
+`WindowState::chrome` where the label is built rather than only here.
+
+### One global state becomes one per window
+
+`Browser` held `tabs`, `closed`, `panel_open`, `find_open` and `overlay_bottom`.
+Every one of those is a property of a single window's chrome. They move to a
+`WindowState`, and `Browser` becomes a map of them keyed by window label, plus
+the two counters that must stay global.
+
+Tab ids move from `Tabs` to `Browser`. They have to be unique across the whole
+app, because a webview label is `tab-{id}` and labels are app-wide, and because a
+tab keeps its id when it moves between windows: reallocating on the way would
+make it a different tab as far as every handler watching it is concerned.
+
+The map holds `Arc<WindowState>` so a caller takes its window's state and drops
+the map lock immediately. Holding the map while laying a window out would
+serialise every window against every other, and a command that opened a window
+while holding it would deadlock outright.
+
+### Three ways to find the window you are acting on
+
+Not one, because the callers genuinely differ.
+
+A **command** takes `tauri::Window` and reads its label. That is the common case
+and it is exact: the chrome that invoked it belongs to the window it is for.
+
+An **event handler on a content webview** knows a tab and nothing else, so
+`window_of_tab` scans the windows for the one holding it. A scan rather than a
+`window` field on `Tab`, so that moving a tab between windows is only moving it
+between two lists. A second record of where a tab lives is a second thing that
+can be left pointing at the old window.
+
+A **global shortcut** has no originating webview at all, so `focused_state` asks
+Tauri which window is focused and falls back to any window. The fallback matters:
+a keystroke arriving in the gap between one window losing focus and the next
+gaining it should still do something rather than nothing.
+
+### Sequenced so the refactor is not debugged alongside the feature
+
+Everything above is threading a window label through code that never had one, and
+it is about 70 call sites in `browser.rs` before the other modules are touched.
+It lands **first, with one window still**, and has to behave exactly as 0.6.0 did
+before a second window is added at all. Adding both at once would mean every bug
+having two possible causes.
+
+The same reasoning put the bookmarks recovery fix before the folder model in
+0.6.0, and that ordering was right.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
