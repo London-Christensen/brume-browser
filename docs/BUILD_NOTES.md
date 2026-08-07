@@ -1957,6 +1957,66 @@ having two possible causes.
 The same reasoning put the bookmarks recovery fix before the folder model in
 0.6.0, and that ordering was right.
 
+### Session restore needed a third key, not a changed one
+
+`session_tabs` and `session_active` describe one window. The obvious move is to
+turn the first into a list of lists, and it is the wrong one for exactly the
+reason those keys already document: serde rejects a field of the wrong type
+outright, and an unparseable settings file is moved aside wholesale, so every
+install upgrading from 0.6.0 would have lost its entire settings file to get a
+feature it had not asked for.
+
+So `session_windows` is a new key with `#[serde(default)]`. It is read when it
+has anything in it, and the two old keys are the fallback when it does not, which
+is precisely the upgrade case: a 0.6.0 session becomes one window. The old keys
+are still written to disk untouched rather than cleared, so a downgrade restores
+the session it last understood instead of opening to nothing.
+
+Geometry is deliberately **not** per window. A window is identified by its label,
+labels are not stable across runs, and remembering where `win-3` sat tells you
+nothing about which window that is next launch. The first window takes the saved
+geometry and the rest are offset from wherever they open.
+
+### Verified against a running build
+
+2026-08-07, 56 unit tests, clippy clean, formatting clean. The profile was copied
+aside and `bookmarks.json` came back on its original SHA-256.
+
+| | |
+|---|---|
+| Single window after the refactor | Still builds, loads, and answers commands |
+| The `chrome-*` capability | Chrome can still invoke; nothing else was widened |
+| Two windows | Independent tab lists, ids globally unique across both |
+| Opening tabs in one window | The other is untouched |
+| Move tab to new window | Third window with that page; source lost the tab |
+| Closing one window's last tab | That window closed, the other two kept running |
+| Session across a hard kill | Both windows restored, with the right tabs in each |
+| A 0.6.0-shaped settings.json | Restored as one window, right active tab, no `.bak` |
+
+**One claim in this plan was wrong and the test caught it.** The note on
+`next_tab_id` said ids must be globally unique partly "because a tab keeps its id
+when it moves between windows". It does not: `move_tab_to_new_window` rebuilds
+the tab, so it arrives with a fresh id, measured as 4 becoming 5. Global
+uniqueness is still required, but for the other reason on its own, which is that
+two windows would otherwise both allocate `tab-1` and the second `add_child`
+would collide with the first. The comment now says that and says what the move
+actually does.
+
+WebView2 exposes no way to reparent a webview between windows, which is also why
+the move loses scroll position and anything typed into a form. That is stated on
+the command rather than left to be discovered.
+
+### The test harness only knew one window
+
+`Resolve-BrumeTarget` returned the first match and had no way to say which
+window. It takes an `-Index` now, defaulting to 0, so every existing caller is
+unchanged and a second window is reachable.
+
+There is no way to ask CDP which window a target belongs to: targets are webviews
+and a window is a Win32 concept above them. Order is what the runtime reports
+consistently, so index is the honest handle rather than something dressed up as a
+window id.
+
 ---
 
 ## Known hard problems, deliberately deferred

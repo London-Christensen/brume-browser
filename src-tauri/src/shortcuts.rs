@@ -35,7 +35,7 @@
 //! while dispatching to the main thread - so calling it here deadlocks exactly as
 //! it would from a synchronous command. See BUILD_NOTES.md.
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::browser;
@@ -53,6 +53,13 @@ pub const OPEN_TAB_SEARCH_EVENT: &str = "brume://open-tab-search";
 /// doing nothing.
 const BINDINGS: &[(&str, &str)] = &[
     ("CmdOrCtrl+T", "new_tab"),
+    // Ctrl+N is a new window and Ctrl+Shift+N a private one, which is what
+    // every browser binds them to. Ctrl+Shift+N used to be a private *tab*
+    // here, because there were no windows to open; that moves to Ctrl+Shift+P
+    // rather than being dropped.
+    ("CmdOrCtrl+N", "new_window"),
+    ("CmdOrCtrl+Shift+N", "private_window"),
+    ("CmdOrCtrl+Shift+P", "private_tab"),
     ("CmdOrCtrl+W", "close_tab"),
     ("CmdOrCtrl+Shift+T", "reopen_tab"),
     ("CmdOrCtrl+Tab", "next_tab"),
@@ -96,7 +103,6 @@ const BINDINGS: &[(&str, &str)] = &[
     ("CmdOrCtrl+Shift+A", "search_tabs"),
     ("CmdOrCtrl+P", "print"),
     ("F11", "fullscreen"),
-    ("CmdOrCtrl+Shift+N", "private_tab"),
 ];
 
 fn action_for(shortcut: &Shortcut) -> Option<&'static str> {
@@ -150,10 +156,32 @@ pub fn set_active(app: &AppHandle, active: bool) {
 }
 
 /// Runs the action behind a binding.
+///
+/// Every action here resolves the focused window before doing anything. A global
+/// shortcut arrives with no webview attached, so without that it would act on
+/// whichever window happened to be first in the map rather than the one in front.
 pub fn handle(app: &AppHandle, action: &str) {
+    // Nothing to act on. Possible in the moment between the last window closing
+    // and the process exiting, when the accelerators are briefly still armed.
+    let Some(win) = browser::focused_window(app) else {
+        return;
+    };
+
     match action {
         "new_tab" => spawn(app, |app| async move {
-            browser::open_tab(app, None, None).await
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::open_tab(app, w, None, None).await
+        }),
+
+        "new_window" => spawn(
+            app,
+            |app| async move { browser::open_window(app, None).await },
+        ),
+
+        "private_window" => spawn(app, |app| async move {
+            browser::open_window(app, Some(true)).await
         }),
 
         "close_tab" => {
@@ -171,7 +199,10 @@ pub fn handle(app: &AppHandle, action: &str) {
         ),
 
         "private_tab" => spawn(app, |app| async move {
-            browser::open_tab(app, None, Some(true)).await
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::open_tab(app, w, None, Some(true)).await
         }),
 
         "next_tab" | "prev_tab" => {
@@ -208,52 +239,70 @@ pub fn handle(app: &AppHandle, action: &str) {
 
         // Owned by the chrome: it holds the address bar.
         "focus_address" => {
-            let _ = app.emit_to(browser::CHROME_LABEL, FOCUS_ADDRESS_EVENT, ());
+            browser::emit_to_focused_chrome(app, FOCUS_ADDRESS_EVENT, ());
         }
 
         // The chrome opens the bar and focuses the field; opening it resizes a
         // webview, so the chrome calls set_find_bar rather than doing it here.
         "find" => {
-            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_FIND_EVENT, ());
+            browser::emit_to_focused_chrome(app, OPEN_FIND_EVENT, ());
         }
 
         // Also the chrome's: it already has the tab list from brume://state, so
         // searching it needs nothing from here beyond the keystroke.
         "search_tabs" => {
-            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_TAB_SEARCH_EVENT, ());
+            browser::emit_to_focused_chrome(app, OPEN_TAB_SEARCH_EVENT, ());
         }
 
         // Spawned, not called inline. These used to be sync commands that only
         // talked to an existing webview, but each one now closes the panel first
         // so the result is actually visible, and that re-lays-out webviews.
-        "reload" => spawn(app, |app| async move { browser::reload(app).await }),
-        "back" => spawn(app, |app| async move { browser::go_back(app).await }),
-        "forward" => spawn(app, |app| async move { browser::go_forward(app).await }),
+        "reload" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::reload(app, w).await
+        }),
+        "back" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::go_back(app, w).await
+        }),
+        "forward" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::go_forward(app, w).await
+        }),
         // Alt+Home, not Ctrl+Home. Ctrl+Home is "scroll to top of document" in
         // every browser and belongs to the page, not to us.
-        "home" => spawn(app, |app| async move { browser::go_home(app).await }),
-        "print" => log(browser::print_page(app.clone())),
+        "home" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::go_home(app, w).await
+        }),
+        "print" => log(browser::print_page(app.clone(), win)),
 
         // Resize webviews, so they go through spawn like the tab commands.
-        "fullscreen" => spawn(
-            app,
-            |app| async move { browser::toggle_fullscreen(app).await },
-        ),
+        "fullscreen" => spawn(app, |app| async move {
+            let Some(w) = browser::focused_window(&app) else {
+                return Ok(());
+            };
+            browser::toggle_fullscreen(app, w).await
+        }),
         "bookmarks_bar" => spawn(app, |app| async move {
             browser::toggle_bookmarks_bar(app).await
         }),
-        "bookmark" => log(browser::toggle_bookmark_active(app.clone()).map(|_| ())),
+        "bookmark" => log(browser::toggle_bookmark_active(app.clone(), win).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.
         "history" | "settings" | "downloads" => {
-            let _ = app.emit_to(browser::CHROME_LABEL, OPEN_PANEL_EVENT, action.to_string());
+            browser::emit_to_focused_chrome(app, OPEN_PANEL_EVENT, action.to_string());
         }
         "clear_data" => {
-            let _ = app.emit_to(
-                browser::CHROME_LABEL,
-                OPEN_PANEL_EVENT,
-                "settings".to_string(),
-            );
+            browser::emit_to_focused_chrome(app, OPEN_PANEL_EVENT, "settings".to_string());
         }
 
         other => eprintln!("[shortcuts] unhandled action: {other}"),

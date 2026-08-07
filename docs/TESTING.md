@@ -17,12 +17,27 @@ with no focus, and with the window parked off-screen.
 Start-BrumeDebug -OffScreen          # launch with the debug port, out of sight
 Invoke-BrumeJs 'document.title'      # evaluate in the chrome webview
 Invoke-BrumeJs -Target content 'location.href'
+Invoke-BrumeJs -Index 1 'document.title'   # the second window's chrome
 Get-BrumeShot -Target content -Out page.png
 Stop-BrumeDebug
 ```
 
 `-OffScreen` moves the window to `(-4000, -4000)`. It still renders and still
 screenshots; it simply never appears on your desktop.
+
+## More than one window
+
+`-Index` picks between windows, 0 being the first. With a single window open it
+is the only one, so anything written before 0.7.0 keeps working unchanged.
+
+It is an index rather than a window id because there is nothing better to use:
+CDP enumerates *webviews*, and a window is a Win32 concept sitting above them, so
+a target cannot say which window it belongs to. Order is the one thing the
+runtime reports consistently.
+
+Only the first window is moved off-screen. A window opened during a test appears
+on the desktop, which is worth knowing before running one while using the
+machine.
 
 ## Driving the UI
 

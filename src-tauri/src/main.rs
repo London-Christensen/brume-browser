@@ -77,6 +77,8 @@ fn main() {
             browser::stop_loading,
             browser::browser_state,
             browser::open_tab,
+            browser::open_window,
+            browser::move_tab_to_new_window,
             browser::close_tab,
             browser::activate_tab,
             browser::set_panel,

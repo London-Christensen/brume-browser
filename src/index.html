@@ -1822,6 +1822,13 @@
             call("set_tab_muted", { id: tab.id, muted: !tab.muted })
           );
           separator();
+          // Disabled on the last tab: the window it would move to is the window
+          // it is already in, and the source would close out from under it.
+          // Offering it and then doing nothing is worse than saying no.
+          add("Move to new window", allTabs.length > 1, () =>
+            call("move_tab_to_new_window", { id: tab.id })
+          );
+          separator();
           // A pinned tab cannot be closed, so offer nothing that pretends it can.
           add("Close tab", !tab.pinned, () => call("close_tab", { id: tab.id }));
           add(
@@ -3458,6 +3465,23 @@
       listen("brume://open-find", openFind);
 
       el("new-tab").addEventListener("click", () => call("open_tab", { url: null }));
+      // Right-click on the new tab button offers the window variants. The strip
+      // has no menu bar to hang them off, and Ctrl+N alone leaves them
+      // undiscoverable for anyone who does not already know the shortcut.
+      el("new-tab").addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openMenu(event, (add, separator) => {
+          add("New tab", true, () => call("open_tab", { url: null }));
+          add("New private tab", true, () =>
+            call("open_tab", { url: null, private: true })
+          );
+          separator();
+          add("New window", true, () => call("open_window", {}));
+          add("New private window", true, () =>
+            call("open_window", { private: true })
+          );
+        });
+      });
 
       // A wheel over the strip scrolls it sideways. There is no vertical axis
       // here to give the gesture to, and reaching a tab should not require

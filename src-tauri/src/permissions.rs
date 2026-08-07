@@ -46,7 +46,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Deferral, ICoreWebView2PermissionRequestedEventArgs, COREWEBVIEW2_PERMISSION_KIND,
     COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
@@ -144,6 +144,10 @@ pub fn watch(app: &AppHandle, label: &str) {
         return;
     };
     let handle = app.clone();
+    // Kept so the prompt reaches the window this tab is actually in. A request
+    // from a background window raising its prompt over the foreground one would
+    // be asking about a page the user cannot see.
+    let tab_label = label.to_string();
 
     let _ = webview.with_webview(move |platform| {
         let _ = (|| unsafe {
@@ -194,8 +198,9 @@ pub fn watch(app: &AppHandle, label: &str) {
                         )
                     });
 
-                    let _ = handle.emit_to(
-                        crate::browser::CHROME_LABEL,
+                    crate::browser::emit_to_tab_chrome(
+                        &handle,
+                        &tab_label,
                         PERMISSION_EVENT,
                         PermissionRequest {
                             id,

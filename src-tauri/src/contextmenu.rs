@@ -142,9 +142,19 @@ pub fn watch(app: &AppHandle, label: &str) {
                                 // which dispatches to the main thread and blocks
                                 // on it - the deadlock browser.rs documents.
                                 tauri::async_runtime::spawn(async move {
-                                    if let Err(e) =
-                                        crate::browser::open_tab(app, Some(url), Some(as_private))
-                                            .await
+                                    // The window this menu was raised in, so a
+                                    // link opened from a second window lands
+                                    // there rather than in the first.
+                                    let Some(w) = crate::browser::focused_window(&app) else {
+                                        return;
+                                    };
+                                    if let Err(e) = crate::browser::open_tab(
+                                        app,
+                                        w,
+                                        Some(url),
+                                        Some(as_private),
+                                    )
+                                    .await
                                     {
                                         eprintln!("[contextmenu] could not open link: {e}");
                                     }

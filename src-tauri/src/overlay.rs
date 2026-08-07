@@ -49,8 +49,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// `SWP_NOACTIVATE` matters: without it, raising the chrome steals focus from
 /// whatever had it, and the thing that has focus while this runs is the address
 /// bar the user is typing into.
-pub fn set_chrome_on_top(app: &AppHandle, on_top: bool) {
-    let Some(chrome) = app.get_webview(crate::browser::CHROME_LABEL) else {
+pub fn set_chrome_on_top(app: &AppHandle, chrome_label: &str, on_top: bool) {
+    // Named rather than looked up from a constant: there is one chrome per
+    // window from 0.7.0, and raising the wrong one would leave the window that
+    // asked with its dropdown still behind the page.
+    let Some(chrome) = app.get_webview(chrome_label) else {
         return;
     };
 

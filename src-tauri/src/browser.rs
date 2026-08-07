@@ -24,8 +24,9 @@
 //! This is the only module that touches Tauri's `unstable` multiwebview API, so
 //! that a breaking change upstream has exactly one place to be repaired.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{
@@ -58,7 +59,13 @@ const FIND_BAR_HEIGHT: f64 = 36.0;
 const BOOKMARKS_BAR_HEIGHT: f64 = 32.0;
 
 pub const WINDOW_LABEL: &str = "main";
-pub const CHROME_LABEL: &str = "chrome";
+
+/// How far a new window is offset from the last one, in logical pixels.
+///
+/// Enough that the title bar and one edge of the window underneath stay visible.
+/// A window opening exactly on top of another is indistinguishable from nothing
+/// having happened.
+const NEW_WINDOW_OFFSET: f64 = 32.0;
 
 /// Nudges the chrome to re-read the downloads list. Carries no payload: the
 /// panel asks for the list itself, so the event only has to say "something
@@ -239,7 +246,6 @@ struct Tabs {
     /// Id, not index. An index would silently point at the wrong tab the moment
     /// one before it is closed.
     active: u32,
-    next_id: u32,
 }
 
 impl Tabs {
@@ -264,7 +270,22 @@ impl Tabs {
 /// covers the accidental Ctrl+W without keeping a shadow history for the session.
 const CLOSED_TAB_LIMIT: usize = 10;
 
-pub struct Browser {
+/// Everything that belongs to one window.
+///
+/// All of this was global until 0.7.0, when it stopped being able to be. Tabs,
+/// the panel, the find bar and the overlay are each a property of one window's
+/// chrome, and a second window has its own of every one of them.
+pub struct WindowState {
+    /// This window's own label, so state can find its way back to its window.
+    window: String,
+    /// The label of this window's chrome webview.
+    ///
+    /// **Must keep the `chrome-` prefix.** `capabilities/default.json` grants
+    /// Brume's commands to `chrome-*` and nothing else, and content webviews are
+    /// `tab-*`. The two namespaces staying disjoint is the whole protection: a
+    /// content webview that ever matched `chrome-*` would be handed the IPC
+    /// bridge for every site on the internet.
+    chrome: String,
     tabs: Mutex<Tabs>,
     /// URLs of recently closed tabs, most recent last, for Ctrl+Shift+T.
     ///
@@ -272,6 +293,9 @@ pub struct Browser {
     /// where you were, not the trail you took to get there - which is what the
     /// shortcut is actually for, and it avoids persisting a per-tab history
     /// stack for tabs that no longer exist.
+    ///
+    /// Per window, so Ctrl+Shift+T in one window cannot resurrect a tab closed
+    /// in another one that is still open next to it.
     closed: Mutex<Vec<String>>,
     /// Whether the chrome is expanded over the whole window to show history,
     /// bookmarks or settings.
@@ -301,6 +325,29 @@ pub struct Browser {
     overlay_bottom: AtomicU32,
 }
 
+pub struct Browser {
+    /// Per-window state, keyed by window label.
+    ///
+    /// `Arc` so a caller can take its window's state and drop this lock before
+    /// doing anything with it. Holding the map while laying a window out would
+    /// serialise every window against every other one, and worse, a command that
+    /// opened a window while holding it would deadlock.
+    windows: Mutex<HashMap<String, Arc<WindowState>>>,
+    /// Tab ids, allocated across every window rather than per window.
+    ///
+    /// Globally unique because a webview label is `tab-{id}` and labels are
+    /// unique app-wide. Per-window counters would hand two windows the same
+    /// `tab-1`, and the second `add_child` would collide with the first.
+    ///
+    /// Note that a tab does **not** keep its id when it moves between windows:
+    /// `move_tab_to_new_window` rebuilds it, so it arrives with a fresh one.
+    /// Measured, 2026-08-07. WebView2 gives no way to reparent a webview, which
+    /// is the same reason the move loses scroll position.
+    next_tab_id: AtomicU32,
+    /// Suffix for the next window label. `main` is 1 and never reused.
+    next_window: AtomicU32,
+}
+
 /// How much vertical space the chrome occupies right now.
 ///
 /// Not a constant any more: the find bar and the bookmarks bar each add their
@@ -310,11 +357,15 @@ pub struct Browser {
 ///
 /// Summed rather than branched, so a third row later is one more term and not a
 /// rewrite of the arithmetic.
-fn chrome_extent(app: &AppHandle) -> f64 {
-    let find_open = app.state::<Browser>().find_open.load(Ordering::Relaxed);
+fn chrome_extent(app: &AppHandle, state: &WindowState) -> f64 {
+    let find_open = state.find_open.load(Ordering::Relaxed);
     // Read from settings rather than mirrored into `Browser`. One source of
     // truth: a copy here would be the thing that eventually disagrees with the
     // file after a failed write.
+    //
+    // Still app-wide rather than per window: the bookmarks bar is a preference,
+    // and a bar that was showing in one window and not the next would read as a
+    // bug rather than a feature.
     let bookmarks_bar = app
         .state::<crate::settings::SettingsState>()
         .show_bookmarks_bar();
@@ -340,6 +391,21 @@ fn extent_for(find_open: bool, bookmarks_bar: bool) -> f64 {
 impl Default for Browser {
     fn default() -> Self {
         Self {
+            windows: Mutex::new(HashMap::new()),
+            next_tab_id: AtomicU32::new(1),
+            // `main` takes 1, so the next window is `win-2`. Never reused, for
+            // the same reason tab labels are not: a stale handler writing into
+            // a window that took a recycled label is not worth the tidiness.
+            next_window: AtomicU32::new(2),
+        }
+    }
+}
+
+impl WindowState {
+    fn new(window: &str) -> Self {
+        Self {
+            window: window.to_string(),
+            chrome: chrome_label(window),
             tabs: Mutex::new(Tabs::default()),
             closed: Mutex::new(Vec::new()),
             panel_open: AtomicBool::new(false),
@@ -347,6 +413,105 @@ impl Default for Browser {
             overlay_bottom: AtomicU32::new(0),
         }
     }
+}
+
+impl Browser {
+    /// This window's state, created on first use.
+    fn window(&self, label: &str) -> Arc<WindowState> {
+        self.windows
+            .lock()
+            .expect("windows mutex poisoned")
+            .entry(label.to_string())
+            .or_insert_with(|| Arc::new(WindowState::new(label)))
+            .clone()
+    }
+
+    /// Forgets a window's state once it has closed.
+    fn forget(&self, label: &str) {
+        self.windows
+            .lock()
+            .expect("windows mutex poisoned")
+            .remove(label);
+    }
+
+    /// Every open window's state.
+    fn all(&self) -> Vec<Arc<WindowState>> {
+        self.windows
+            .lock()
+            .expect("windows mutex poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn next_tab_id(&self) -> u32 {
+        self.next_tab_id.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// The chrome webview label for a window.
+///
+/// See `WindowState::chrome`: the `chrome-` prefix is what the capability file
+/// matches on, so this is a security boundary rather than a naming convention.
+pub fn chrome_label(window_label: &str) -> String {
+    format!("chrome-{window_label}")
+}
+
+/// The state of the window a command came from.
+///
+/// Commands take `tauri::Window` and hand it here. Before 0.7.0 they read one
+/// global `Browser`, which is why so many signatures changed at once.
+pub fn state_for(app: &AppHandle, window_label: &str) -> Arc<WindowState> {
+    app.state::<Browser>().window(window_label)
+}
+
+/// The window holding a given tab.
+///
+/// A scan rather than a `window` field on `Tab`. There are a handful of windows
+/// and a few dozen tabs, so the cost is nothing, and it means moving a tab
+/// between windows is only moving it between two lists: there is no second
+/// record of where it lives that could be left pointing at the old one.
+fn window_of_tab(app: &AppHandle, id: u32) -> Option<Arc<WindowState>> {
+    app.state::<Browser>().all().into_iter().find(|w| {
+        w.tabs
+            .lock()
+            .expect("tabs mutex poisoned")
+            .items
+            .iter()
+            .any(|t| t.id == id)
+    })
+}
+
+/// The window holding the tab with this webview label.
+fn window_of_tab_label(app: &AppHandle, label: &str) -> Option<Arc<WindowState>> {
+    app.state::<Browser>().all().into_iter().find(|w| {
+        w.tabs
+            .lock()
+            .expect("tabs mutex poisoned")
+            .items
+            .iter()
+            .any(|t| t.label == label)
+    })
+}
+
+/// The window the user is actually in.
+///
+/// For callers with no window to hand: a global shortcut fires against whatever
+/// is focused, and a tray or menu action has no originating webview at all.
+/// Falls back to any window, so a keystroke arriving in the gap between one
+/// window losing focus and the next gaining it still does something sensible
+/// rather than nothing.
+pub fn focused_state(app: &AppHandle) -> Option<Arc<WindowState>> {
+    let browser = app.state::<Browser>();
+    let all = browser.all();
+    all.iter()
+        .find(|w| {
+            app.get_window(&w.window)
+                .and_then(|win| win.is_focused().ok())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .or_else(|| all.first().cloned())
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +594,9 @@ fn snapshot(tabs: &Tabs, bookmarked: bool, bookmarks_bar: bool, panel_open: bool
 /// holding the tabs lock is exactly the pattern that turns into a deadlock the
 /// first time something calls in the other order. The settings read below is
 /// there for the same reason and is deliberately done before the tabs lock too.
-fn current_state(app: &AppHandle) -> BrowserState {
+fn current_state(app: &AppHandle, state: &WindowState) -> BrowserState {
     let active_url = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         tabs.active_tab()
             .and_then(|t| t.nav.current().cloned())
             .unwrap_or_default()
@@ -445,9 +609,8 @@ fn current_state(app: &AppHandle) -> BrowserState {
         .state::<crate::settings::SettingsState>()
         .show_bookmarks_bar();
 
-    let browser = app.state::<Browser>();
-    let panel_open = browser.panel_open.load(Ordering::Relaxed);
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    let panel_open = state.panel_open.load(Ordering::Relaxed);
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
     snapshot(&tabs, bookmarked, bookmarks_bar, panel_open)
 }
 
@@ -462,10 +625,8 @@ fn current_state(app: &AppHandle) -> BrowserState {
 /// Returns whether it was open, so a caller can skip a relayout it does not need.
 /// `swap` rather than a load and a store, so two of these racing cannot both
 /// decide they were the one that closed it.
-fn dismiss_panel(app: &AppHandle) -> bool {
-    app.state::<Browser>()
-        .panel_open
-        .swap(false, Ordering::Relaxed)
+fn dismiss_panel(state: &WindowState) -> bool {
+    state.panel_open.swap(false, Ordering::Relaxed)
 }
 
 /// Pushes current state to the chrome.
@@ -473,14 +634,14 @@ fn dismiss_panel(app: &AppHandle) -> bool {
 /// The chrome never asks; it is told. A one-way feed means the tab strip and the
 /// buttons cannot disagree with reality after a link click, a redirect, or a
 /// background tab finishing its load.
-fn publish(app: &AppHandle) {
-    let state = current_state(app);
+fn publish(app: &AppHandle, win: &WindowState) {
+    let state = current_state(app, win);
 
     // The window title tracks the active tab, the way every browser's does.
     // Driven from the same place as the rest of the state so the two cannot
     // disagree - a title left showing a page you have navigated away from is a
     // small thing that reads as broken.
-    if let Some(window) = app.get_window(WINDOW_LABEL) {
+    if let Some(window) = app.get_window(&win.window) {
         // The tab's *raw* title, not its display title.
         //
         // TabView carries display_title(), which falls back to the host and then
@@ -490,8 +651,7 @@ fn publish(app: &AppHandle) {
         // The window wants the opposite fallback: no page title yet means the
         // application name on its own.
         let raw_title = {
-            let browser = app.state::<Browser>();
-            let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            let tabs = win.tabs.lock().expect("tabs mutex poisoned");
             tabs.active_tab()
                 .map(|t| t.title.clone())
                 .unwrap_or_default()
@@ -504,7 +664,7 @@ fn publish(app: &AppHandle) {
         let _ = window.set_title(&title);
     }
 
-    let _ = app.emit_to(CHROME_LABEL, "brume://state", state);
+    let _ = app.emit_to(&win.chrome, "brume://state", state);
 }
 
 // ---------------------------------------------------------------------------
@@ -515,26 +675,23 @@ fn publish(app: &AppHandle) {
 ///
 /// Child webviews take no part in any layout system - they are rectangles the
 /// host places by hand, so this runs on every resize and scale-factor change.
-fn relayout(app: &AppHandle) -> tauri::Result<()> {
-    let Some(window) = app.get_window(WINDOW_LABEL) else {
+fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
+    let Some(window) = app.get_window(&state.window) else {
         return Ok(());
     };
 
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
 
-    let panel_open = app.state::<Browser>().panel_open.load(Ordering::Relaxed);
+    let panel_open = state.panel_open.load(Ordering::Relaxed);
 
     // How tall the chrome is when it is only chrome. Grows with the find bar.
-    let extent = chrome_extent(app);
+    let extent = chrome_extent(app, state);
 
     // An overlay grows the chrome without taking anything from the page.
     // overlay.rs raises the chrome above the content webview so the extra height
     // covers the top of the page instead of pushing it down.
-    let overlay = app
-        .state::<Browser>()
-        .overlay_bottom
-        .load(Ordering::Relaxed) as f64;
+    let overlay = state.overlay_bottom.load(Ordering::Relaxed) as f64;
 
     // With the panel open the chrome takes the whole window and every content
     // webview is hidden. That is what keeps history, bookmarks and settings
@@ -551,14 +708,13 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
     // the content webview being handed a negative height.
     let content_height = (size.height - extent).max(0.0);
 
-    if let Some(chrome) = app.get_webview(CHROME_LABEL) {
+    if let Some(chrome) = app.get_webview(&state.chrome) {
         chrome.set_position(LogicalPosition::new(0.0, 0.0))?;
         chrome.set_size(LogicalSize::new(size.width, chrome_height))?;
     }
 
     let (active_label, inactive_labels) = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         (
             tabs.active_tab().map(|t| t.label.clone()),
             tabs.items
@@ -599,6 +755,7 @@ fn relayout(app: &AppHandle) -> tauri::Result<()> {
 /// Creates a content webview for one tab and registers its event handlers.
 fn spawn_tab_webview(
     app: &AppHandle,
+    state: &WindowState,
     id: u32,
     label: &str,
     url: &str,
@@ -607,7 +764,7 @@ fn spawn_tab_webview(
     // An error, not a silent Ok. Returning Ok here registered a tab that had no
     // webview behind it and reported success, which is the worst of both: the
     // tab strip grew a row that rendered nothing and nothing anywhere said why.
-    let Some(window) = app.get_window(WINDOW_LABEL) else {
+    let Some(window) = app.get_window(&state.window) else {
         return Err(tauri::Error::WindowNotFound);
     };
 
@@ -615,7 +772,7 @@ fn spawn_tab_webview(
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
     // Matches whatever the chrome currently occupies, so a tab opened while the
     // find bar is up is not born 36px too tall and overlapping it.
-    let extent = chrome_extent(app);
+    let extent = chrome_extent(app, state);
     let content_height = (size.height - extent).max(0.0);
 
     let parsed = url.parse().unwrap_or_else(|_| {
@@ -665,7 +822,12 @@ fn spawn_tab_webview(
                 // to the main thread and then blocks waiting on it - the same
                 // deadlock the async commands below exist to avoid.
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = open_tab_inner(&handle, Some(target), opener_private) {
+                    // Into the window the opening tab is in, so a link opened
+                    // from a second window does not land in the first.
+                    let Some(state) = window_of_tab(&handle, id) else {
+                        return;
+                    };
+                    if let Err(e) = open_tab_inner(&handle, &state, Some(target), opener_private) {
                         eprintln!("[browser] new-window request failed: {e}");
                     }
                 });
@@ -705,7 +867,9 @@ fn spawn_tab_webview(
                     // rather than breaking the build.
                     _ => {}
                 }
-                let _ = download_handle.emit_to(CHROME_LABEL, DOWNLOADS_EVENT, ());
+                // Every window: the downloads list is app-wide, so a panel open
+                // in another window is just as stale.
+                notify_downloads_everywhere(&download_handle);
                 // Always allow. Brume is recording, not gatekeeping.
                 true
             })
@@ -744,17 +908,22 @@ fn spawn_tab_webview(
                 // start: link clicks, form submissions, redirects, JavaScript.
                 // Recording here rather than only in `navigate` is what keeps
                 // the address bar honest.
-                {
-                    let browser = nav_handle.state::<Browser>();
-                    let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-                    if let Some(tab) = tabs.tab_mut(id) {
-                        tab.nav.set_url(url.to_string());
-                        tab.nav.loading = true;
-                        // The old page's title does not describe the new one.
-                        tab.title.clear();
+                // Looked up rather than captured. The window is known when this
+                // webview is built, but a tab can be moved to another one
+                // afterwards, and a captured label would then update the window
+                // the tab used to be in.
+                if let Some(win) = window_of_tab(&nav_handle, id) {
+                    {
+                        let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                        if let Some(tab) = tabs.tab_mut(id) {
+                            tab.nav.set_url(url.to_string());
+                            tab.nav.loading = true;
+                            // The old page's title does not describe the new one.
+                            tab.title.clear();
+                        }
                     }
+                    publish(&nav_handle, &win);
                 }
-                publish(&nav_handle);
                 true
             })
             .on_page_load(move |_webview, payload| {
@@ -764,9 +933,11 @@ fn spawn_tab_webview(
                 // store is written after releasing it. Taking the store's lock
                 // while holding this one would establish a lock order that the
                 // bookmark path takes in reverse.
+                let Some(win) = window_of_tab(&load_handle, id) else {
+                    return;
+                };
                 let visit = {
-                    let browser = load_handle.state::<Browser>();
-                    let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+                    let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
                     match tabs.tab_mut(id) {
                         Some(tab) => {
                             tab.nav.loading = !finished;
@@ -804,7 +975,7 @@ fn spawn_tab_webview(
                     save_session(&load_handle);
                 }
 
-                publish(&load_handle);
+                publish(&load_handle, &win);
             })
             .on_document_title_changed(move |_webview, title| {
                 // Titles arrive from the runtime, not from the page over IPC.
@@ -814,14 +985,15 @@ fn spawn_tab_webview(
                 // command. Having pages report their own titles would have meant
                 // opening an IPC channel to the entire internet for a cosmetic
                 // feature.
-                {
-                    let browser = title_handle.state::<Browser>();
-                    let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-                    if let Some(tab) = tabs.tab_mut(id) {
-                        tab.title = title;
+                if let Some(win) = window_of_tab(&title_handle, id) {
+                    {
+                        let mut tabs = win.tabs.lock().expect("tabs mutex poisoned");
+                        if let Some(tab) = tabs.tab_mut(id) {
+                            tab.title = title;
+                        }
                     }
+                    publish(&title_handle, &win);
                 }
-                publish(&title_handle);
             }),
         LogicalPosition::new(0.0, extent),
         LogicalSize::new(size.width, content_height),
@@ -912,46 +1084,109 @@ fn save_geometry(app: &AppHandle) {
 /// such stack to persist - the runtime's history dies with the webview.
 /// Reopening where you were is the part worth keeping.
 fn save_session(app: &AppHandle) {
-    let (saved, active) = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    // Ordered by window label so the restored order is stable rather than
+    // whatever the map happened to iterate in. `main` sorts before `win-N`,
+    // which is also the order they were opened in.
+    let mut states = app.state::<Browser>().all();
+    states.sort_by(|a, b| a.window.cmp(&b.window));
 
-        // Private tabs are left out: a session file naming them would outlive
-        // the browsing they were supposed to keep off disk.
-        let saved: Vec<crate::settings::SessionTab> = tabs
-            .items
-            .iter()
-            .filter(|t| !t.private)
-            .filter_map(|t| {
-                t.nav.current().and_then(|u| {
-                    // A tab still on about:blank has nowhere to be restored to.
-                    (!u.starts_with("about:")).then(|| crate::settings::SessionTab {
-                        url: u.clone(),
-                        pinned: t.pinned,
+    let windows: Vec<crate::settings::SessionWindow> = states
+        .iter()
+        .map(|state| {
+            let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+
+            // Private tabs are left out: a session file naming them would
+            // outlive the browsing they were supposed to keep off disk.
+            let saved: Vec<crate::settings::SessionTab> = tabs
+                .items
+                .iter()
+                .filter(|t| !t.private)
+                .filter_map(|t| {
+                    t.nav.current().and_then(|u| {
+                        // A tab still on about:blank has nowhere to restore to.
+                        (!u.starts_with("about:")).then(|| crate::settings::SessionTab {
+                            url: u.clone(),
+                            pinned: t.pinned,
+                        })
                     })
                 })
-            })
-            .collect();
+                .collect();
 
-        // Position within the filtered list, not the tab id.
-        let active = tabs
-            .items
-            .iter()
-            .filter(|t| t.nav.current().is_some_and(|u| !u.starts_with("about:")))
-            .position(|t| t.id == tabs.active)
-            .unwrap_or(0);
+            // Position within the filtered list, not the tab id.
+            let active = tabs
+                .items
+                .iter()
+                .filter(|t| t.nav.current().is_some_and(|u| !u.starts_with("about:")))
+                .position(|t| t.id == tabs.active)
+                .unwrap_or(0);
 
-        (saved, active)
-    };
+            crate::settings::SessionWindow {
+                tabs: saved,
+                active,
+            }
+        })
+        // A window whose tabs were all private has nothing to restore, and an
+        // empty window on next launch would be a puzzle rather than a session.
+        .filter(|w| !w.tabs.is_empty())
+        .collect();
 
     let _ = app
         .state::<crate::settings::SettingsState>()
-        .set_session(saved, active);
+        .set_session(windows);
 }
 
-/// Builds the window, the chrome, and the first tab.
+/// Builds the first window and restores the session into it and any others.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    let saved = app.state::<crate::settings::SettingsState>().window();
+    let session = app.state::<crate::settings::SettingsState>().session();
+
+    // The first window takes the saved geometry; any others are offset from it
+    // by `build_window`. One saved geometry rather than one per window, because
+    // a window is identified by its label and labels are not stable across runs:
+    // remembering where "win-3" was tells you nothing about which window that is
+    // the next time.
+    let first = session.first().cloned().unwrap_or_default();
+    build_window(app, WINDOW_LABEL, Some(&first), true)?;
+
+    // Everything after the first. Restored in order, each with its own tabs.
+    for saved in session.iter().skip(1) {
+        let label = next_window_label(app);
+        if let Err(e) = build_window(app, &label, Some(saved), false) {
+            // One window failing is not a reason to lose the rest of the
+            // session, or to leave the browser with nothing on screen.
+            eprintln!("[browser] could not restore a window: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+/// The label for the next window. `main` is taken; the rest are `win-N`.
+fn next_window_label(app: &AppHandle) -> String {
+    let n = app
+        .state::<Browser>()
+        .next_window
+        .fetch_add(1, Ordering::Relaxed);
+    format!("win-{n}")
+}
+
+/// Builds one window, its chrome, and its tabs.
+///
+/// `restore` is the session for this window, or `None` for a plain new window
+/// which gets a single homepage tab. `use_geometry` applies the saved size and
+/// position, which only the first window does: a second window opening exactly
+/// on top of the first is indistinguishable from nothing having happened.
+fn build_window(
+    app: &AppHandle,
+    label: &str,
+    restore: Option<&crate::settings::SessionWindow>,
+    use_geometry: bool,
+) -> tauri::Result<()> {
+    let state = state_for(app, label);
+    let saved = if use_geometry {
+        app.state::<crate::settings::SettingsState>().window()
+    } else {
+        None
+    };
 
     // Size is taken from the saved geometry, but position is applied *after* the
     // window exists - checking whether coordinates are on a real display needs
@@ -961,7 +1196,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         _ => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
     };
 
-    let window = tauri::window::WindowBuilder::new(app, WINDOW_LABEL)
+    let window = tauri::window::WindowBuilder::new(app, label)
         .title("Brume")
         .inner_size(width, height)
         .min_inner_size(480.0, 360.0)
@@ -1000,13 +1235,24 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         if g.maximized {
             let _ = window.maximize();
         }
+    } else if !use_geometry {
+        // Offset from wherever the last window is, so a new one is visibly a
+        // new one rather than sitting exactly on top of the old.
+        if let Ok(pos) = window.outer_position() {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let logical: LogicalPosition<f64> = pos.to_logical(scale);
+            let _ = window.set_position(LogicalPosition::new(
+                logical.x + NEW_WINDOW_OFFSET,
+                logical.y + NEW_WINDOW_OFFSET,
+            ));
+        }
     }
 
     let scale = window.scale_factor()?;
     let size: LogicalSize<f64> = window.inner_size()?.to_logical(scale);
 
     window.add_child(
-        WebviewBuilder::new(CHROME_LABEL, WebviewUrl::App("index.html".into()))
+        WebviewBuilder::new(&state.chrome, WebviewUrl::App("index.html".into()))
             // The chrome must never leave its own origin.
             //
             // This is the one webview that holds capabilities, so a website
@@ -1035,59 +1281,62 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         LogicalSize::new(size.width, CHROME_HEIGHT),
     )?;
 
-    // Rebuild last session's tabs, or open the homepage if there is none.
+    // Rebuild this window's tabs, or open the homepage if there are none.
     //
     // Restored in order, then the previously active one is brought to the front.
     // A tab that fails to build is skipped rather than aborting the launch: one
     // bad saved URL should not leave the browser with no window worth looking at.
-    let (session, session_active) = app.state::<crate::settings::SettingsState>().session();
+    let empty = crate::settings::SessionWindow::default();
+    let restore = restore.unwrap_or(&empty);
+    let session = &restore.tabs;
+    let session_active = restore.active;
 
     if session.is_empty() {
-        open_tab_inner(app, None, false)?;
+        open_tab_inner(app, &state, None, false)?;
     } else {
         // Parked, not opened. Every saved tab used to get a webview and a page
         // load right here, so a session of twenty tabs meant twenty renderers
         // and twenty network requests before the window was usable, for pages
         // nobody had asked to see yet. Now only the one that was in front is
         // built, below; the rest load when they are first clicked.
-        for saved in &session {
-            park_tab(app, saved.url.clone(), saved.pinned);
+        for saved in session {
+            park_tab(app, &state, saved.url.clone(), saved.pinned);
         }
         // Sorted once, after the lot are in. Stable, so tabs keep the order they
         // were saved in within each group.
         {
-            let browser = app.state::<Browser>();
-            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
             tabs.items.sort_by_key(|t| !t.pinned);
         }
         // Whichever was in front last time comes back in front, falling back to
         // the first if the saved index no longer points at anything.
-        let front = tab_id_at(app, session_active).or_else(|| tab_id_at(app, 0));
+        let front = tab_id_at_in(&state, session_active).or_else(|| tab_id_at_in(&state, 0));
         if let Some(id) = front {
             {
-                let browser = app.state::<Browser>();
-                let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+                let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
                 tabs.active = id;
             }
             // The only one built at launch. A failure here is not fatal: the
             // fallback below still leaves a usable window.
-            if let Err(e) = load_parked(app, id) {
+            if let Err(e) = load_parked(app, &state, id) {
                 eprintln!("[browser] could not load the restored tab: {e}");
             }
         }
         // Nothing restored, so there is no tab at all. Fall back rather than
         // leave an empty window.
-        if tab_id_at(app, 0).is_none() {
-            open_tab_inner(app, None, false)?;
+        if tab_id_at_in(&state, 0).is_none() {
+            open_tab_inner(app, &state, None, false)?;
         }
-        relayout(app)?;
-        publish(app);
+        relayout(app, &state)?;
+        publish(app, &state);
     }
 
     let event_handle = app.clone();
+    let event_state = state.clone();
+    let geometry_owner = use_geometry;
     window.on_window_event(move |event| match event {
         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-            let _ = relayout(&event_handle);
+            let _ = relayout(&event_handle, &event_state);
         }
         // Shortcuts are registered globally, so they are armed only while Brume
         // is in front - otherwise Brume would be holding Ctrl+T hostage for
@@ -1102,7 +1351,23 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         // record one final position. The cost is that a hard kill loses the
         // last move, which is a fair trade for not thrashing the disk.
         WindowEvent::CloseRequested { .. } => {
-            save_geometry(&event_handle);
+            // Only the first window writes geometry. Every window writing it
+            // would mean the last one closed decides where the *first* one
+            // opens next time, which is not what anyone moved it for.
+            if geometry_owner {
+                save_geometry(&event_handle);
+            }
+            // Saved before the state is forgotten, so this window's tabs are
+            // still in the list being written.
+            save_session(&event_handle);
+        }
+        // Destroyed rather than CloseRequested: the close can still be
+        // cancelled, and forgetting a window that then stays open would leave
+        // it with no tabs and no way to get any.
+        WindowEvent::Destroyed => {
+            event_handle.state::<Browser>().forget(&event_state.window);
+            // Written again now the window is really gone, or a session saved
+            // moments earlier would restore a window the user just closed.
             save_session(&event_handle);
         }
         _ => {}
@@ -1121,13 +1386,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 /// than duplicated so there is still one place that knows how a tab maps to a
 /// webview label.
 pub fn active_content_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
-    active_webview(app)
+    let state = focused_state(app).ok_or_else(|| "No window.".to_string())?;
+    active_webview(app, &state)
 }
 
-fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
+fn active_webview(app: &AppHandle, state: &WindowState) -> Result<tauri::webview::Webview, String> {
     let label = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         tabs.active_tab().map(|t| t.label.clone())
     };
 
@@ -1141,12 +1406,10 @@ fn active_webview(app: &AppHandle) -> Result<tauri::webview::Webview, String> {
 /// The strip gets a row with the saved URL and a title guessed from the host, so
 /// it looks like any other tab. The webview is built by `activate_tab` the first
 /// time it is actually looked at.
-fn park_tab(app: &AppHandle, url: String, pinned: bool) -> u32 {
-    let browser = app.state::<Browser>();
-    let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+fn park_tab(app: &AppHandle, state: &WindowState, url: String, pinned: bool) -> u32 {
+    let id = app.state::<Browser>().next_tab_id();
+    let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
-    let id = tabs.next_id;
-    tabs.next_id += 1;
     let label = format!("tab-{id}");
 
     let mut nav = NavState::default();
@@ -1170,10 +1433,9 @@ fn park_tab(app: &AppHandle, url: String, pinned: bool) -> u32 {
 ///
 /// Everything a live tab needs is set up here rather than at restore, which is
 /// the whole point: a restored tab you never click costs nothing.
-fn load_parked(app: &AppHandle, id: u32) -> tauri::Result<()> {
+fn load_parked(app: &AppHandle, state: &WindowState, id: u32) -> tauri::Result<()> {
     let Some((label, url)) = ({
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         tabs.items
             .iter()
             .find(|t| t.id == id && !t.loaded)
@@ -1188,11 +1450,10 @@ fn load_parked(app: &AppHandle, id: u32) -> tauri::Result<()> {
     };
 
     let target = if url.is_empty() { home_url(app) } else { url };
-    spawn_tab_webview(app, id, &label, &target, false)?;
+    spawn_tab_webview(app, state, id, &label, &target, false)?;
 
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         if let Some(tab) = tabs.tab_mut(id) {
             tab.loaded = true;
         }
@@ -1212,19 +1473,21 @@ fn load_parked(app: &AppHandle, id: u32) -> tauri::Result<()> {
 /// Split from the command so that `build` - which returns `tauri::Result` - can
 /// open the first tab through the same path, instead of the command's
 /// stringly-typed error being forced through a conversion at the call site.
-fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri::Result<()> {
+fn open_tab_inner(
+    app: &AppHandle,
+    state: &WindowState,
+    url: Option<String>,
+    private: bool,
+) -> tauri::Result<()> {
     let target = url.unwrap_or_else(|| home_url(app));
 
     // Before the layout below, not after: a tab opened from the panel has to end
     // up visible. The relayout at the end of this function is what applies it.
-    dismiss_panel(app);
+    dismiss_panel(state);
 
-    let (id, label, previous_active) = {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-
-        let id = tabs.next_id;
-        tabs.next_id += 1;
+    let id = app.state::<Browser>().next_tab_id();
+    let (label, previous_active) = {
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
         // Labels are never reused, even after a tab is closed. Reusing one risks
         // a stale handler from the old webview writing into the new tab.
@@ -1249,7 +1512,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
         });
         tabs.active = id;
 
-        (id, label, previous_active)
+        (label, previous_active)
     };
 
     // Roll back if the webview cannot be created.
@@ -1260,7 +1523,7 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
     // tab, so every subsequent navigate, reload and back resolved to a webview
     // that did not exist and failed. The chrome raises a dialog per failed
     // command, so the browser became unusable until that tab was closed.
-    let spawned = spawn_tab_webview(app, id, &label, &target, private);
+    let spawned = spawn_tab_webview(app, state, id, &label, &target, private);
 
     // Subscribe to the runtime's history events once the webview exists. Only
     // on success: there is nothing to watch otherwise.
@@ -1279,21 +1542,20 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
 
     if let Err(e) = spawned {
         {
-            let browser = app.state::<Browser>();
-            let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+            let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
             tabs.items.retain(|t| t.id != id);
             // Only restore the old active tab if it is still open.
             if tabs.items.iter().any(|t| t.id == previous_active) {
                 tabs.active = previous_active;
             }
         }
-        let _ = relayout(app);
-        publish(app);
+        let _ = relayout(app, state);
+        publish(app, state);
         return Err(e);
     }
 
-    relayout(app)?;
-    publish(app);
+    relayout(app, state)?;
+    publish(app, state);
     Ok(())
 }
 
@@ -1318,10 +1580,12 @@ fn open_tab_inner(app: &AppHandle, url: Option<String>, private: bool) -> tauri:
 #[tauri::command]
 pub async fn open_tab(
     app: AppHandle,
+    window: tauri::Window,
     url: Option<String>,
     private: Option<bool>,
 ) -> Result<(), String> {
-    open_tab_inner(&app, url, private.unwrap_or(false)).map_err(|e| e.to_string())
+    let state = state_for(&app, window.label());
+    open_tab_inner(&app, &state, url, private.unwrap_or(false)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1329,10 +1593,16 @@ pub async fn close_tab(app: AppHandle, id: u32) -> Result<(), String> {
     close_tab_inner(&app, id)
 }
 
+/// Closes a tab wherever it is.
+///
+/// Resolved from the tab rather than from a window parameter, so a shortcut and
+/// a middle-click on another window's strip both land on the right list.
 fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
+    let Some(state) = window_of_tab(app, id) else {
+        return Ok(());
+    };
     let (label, closed_last, reopen_url) = {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
         let Some(pos) = tabs.items.iter().position(|t| t.id == id) else {
             return Ok(());
@@ -1375,8 +1645,7 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
     // not follow.
     if let Some(url) = reopen_url {
         if !url.is_empty() && !url.starts_with("about:") {
-            let browser = app.state::<Browser>();
-            let mut closed = browser.closed.lock().expect("closed mutex poisoned");
+            let mut closed = state.closed.lock().expect("closed mutex poisoned");
             closed.push(url);
             // Trim from the front: the oldest entry is the one worth losing.
             if closed.len() > CLOSED_TAB_LIMIT {
@@ -1391,24 +1660,28 @@ fn close_tab_inner(app: &AppHandle, id: u32) -> Result<(), String> {
     }
 
     if closed_last {
-        // Closing the final tab closes the browser, as it does everywhere else.
-        if let Some(window) = app.get_window(WINDOW_LABEL) {
+        // Closing the final tab closes the window, as it does everywhere else.
+        // With more than one window open that now closes one window rather than
+        // the browser, which is also what everywhere else does.
+        if let Some(window) = app.get_window(&state.window) {
             let _ = window.close();
         }
         return Ok(());
     }
 
-    relayout(app).map_err(|e| e.to_string())?;
+    relayout(app, &state).map_err(|e| e.to_string())?;
     save_session(app);
-    publish(app);
+    publish(app, &state);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
+    let Some(state) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
     let previous = {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         let previous = tabs.active;
         if tabs.items.iter().any(|t| t.id == id) {
             tabs.active = id;
@@ -1418,7 +1691,7 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
 
     // A tab restored from last session has no webview until now. Built before
     // the layout below, or there would be nothing to position.
-    load_parked(&app, id).map_err(|e| e.to_string())?;
+    load_parked(&app, &state, id).map_err(|e| e.to_string())?;
 
     // The one arriving comes back first, so it is ready by the time it is shown.
     // The one leaving is only queued: see memory.rs for why it is not immediate.
@@ -1427,9 +1700,9 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
         crate::memory::suspend_later(&app, previous);
     }
     // Clicking a tab is asking to see it, so the panel gets out of the way.
-    dismiss_panel(&app);
-    relayout(&app).map_err(|e| e.to_string())?;
-    publish(&app);
+    dismiss_panel(&state);
+    relayout(&app, &state).map_err(|e| e.to_string())?;
+    publish(&app, &state);
     Ok(())
 }
 
@@ -1440,7 +1713,8 @@ pub async fn activate_tab(app: AppHandle, id: u32) -> Result<(), String> {
 /// Async because it can close the panel, and closing the panel re-lays-out
 /// webviews. Same rule as `set_panel`.
 #[tauri::command]
-pub async fn navigate(app: AppHandle, input: String) -> Result<(), String> {
+pub async fn navigate(app: AppHandle, window: tauri::Window, input: String) -> Result<(), String> {
+    let state = state_for(&app, window.label());
     let target = {
         let settings = app.state::<crate::settings::SettingsState>();
         let engine_id = settings.get().search_engine;
@@ -1456,9 +1730,9 @@ pub async fn navigate(app: AppHandle, input: String) -> Result<(), String> {
 
     // After the parse, so a typo in the address bar does not close the panel on
     // its way to reporting itself.
-    show_page(&app)?;
+    show_page(&app, &state)?;
 
-    active_webview(&app)?
+    active_webview(&app, &state)?
         .navigate(url)
         .map_err(|e| e.to_string())
 }
@@ -1467,10 +1741,10 @@ pub async fn navigate(app: AppHandle, input: String) -> Result<(), String> {
 ///
 /// Every caller is `async` for this reason: `relayout` moves and resizes
 /// webviews, which is the thing sync commands must not do from the main thread.
-fn show_page(app: &AppHandle) -> Result<(), String> {
-    if dismiss_panel(app) {
-        relayout(app).map_err(|e| e.to_string())?;
-        publish(app);
+fn show_page(app: &AppHandle, state: &WindowState) -> Result<(), String> {
+    if dismiss_panel(state) {
+        relayout(app, state).map_err(|e| e.to_string())?;
+        publish(app, state);
     }
     Ok(())
 }
@@ -1482,8 +1756,11 @@ fn show_page(app: &AppHandle) -> Result<(), String> {
 /// match the chrome would be a large amount of work for something people expect
 /// to look exactly like it does everywhere else.
 #[tauri::command]
-pub fn print_page(app: AppHandle) -> Result<(), String> {
-    active_webview(&app)?.print().map_err(|e| e.to_string())
+pub fn print_page(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    active_webview(&app, &state)?
+        .print()
+        .map_err(|e| e.to_string())
 }
 
 /// Toggles fullscreen.
@@ -1492,13 +1769,11 @@ pub fn print_page(app: AppHandle) -> Result<(), String> {
 /// content webview is positioned relative to that window, so `relayout` puts the
 /// page over the full screen once the toolbar is out of the way.
 #[tauri::command]
-pub async fn toggle_fullscreen(app: AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_window(WINDOW_LABEL) else {
-        return Ok(());
-    };
+pub async fn toggle_fullscreen(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
     let now = window.is_fullscreen().map_err(|e| e.to_string())?;
     window.set_fullscreen(!now).map_err(|e| e.to_string())?;
-    relayout(&app).map_err(|e| e.to_string())?;
+    relayout(&app, &state).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1509,23 +1784,24 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<(), String> {
 /// because an empty homepage means "follow the search engine", so the
 /// destination can change without the homepage setting itself changing.
 #[tauri::command]
-pub async fn go_home(app: AppHandle) -> Result<(), String> {
+pub async fn go_home(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
     let target = home_url(&app);
     let url = target
         .parse()
         .map_err(|_| format!("Homepage is not a valid address: {target}"))?;
 
-    show_page(&app)?;
-    active_webview(&app)?
+    show_page(&app, &state)?;
+    active_webview(&app, &state)?
         .navigate(url)
         .map_err(|e| e.to_string())
 }
 
 /// Walks the active tab's history by `delta` entries.
-fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
+fn traverse(app: &AppHandle, state: &WindowState, forward: bool) -> Result<(), String> {
     // The runtime decides whether there is anywhere to go. Brume no longer
     // tracks an index it could disagree about.
-    let webview = active_webview(app)?;
+    let webview = active_webview(app, state)?;
     crate::history::go(&webview, forward)?;
     // No publish here. Moving fires the webview's own navigation and history
     // events, and those publish with values the runtime has actually settled on.
@@ -1548,9 +1824,11 @@ fn traverse(app: &AppHandle, forward: bool) -> Result<(), String> {
 /// changed, for the same reason `update_traverse` does: these events fire freely
 /// and republishing on every one of them would rebuild the tab strip constantly.
 pub fn update_audio(app: &AppHandle, tab_id: u32, audible: bool, muted: bool) {
+    let Some(state) = window_of_tab(app, tab_id) else {
+        return;
+    };
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         let Some(tab) = tabs.tab_mut(tab_id) else {
             return;
         };
@@ -1560,7 +1838,7 @@ pub fn update_audio(app: &AppHandle, tab_id: u32, audible: bool, muted: bool) {
         tab.audible = audible;
         tab.muted = muted;
     }
-    publish(app);
+    publish(app, &state);
 }
 
 /// Whether the tab behind a webview label is private.
@@ -1569,8 +1847,10 @@ pub fn update_audio(app: &AppHandle, tab_id: u32, audible: bool, muted: bool) {
 /// inherits. Same rule `on_new_window` follows: the page asking is already in a
 /// private context, so what it opens is too.
 pub fn tab_is_private(app: &AppHandle, label: &str) -> bool {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    let Some(state) = window_of_tab_label(app, label) else {
+        return false;
+    };
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
     tabs.items
         .iter()
         .find(|t| t.label == label)
@@ -1579,8 +1859,8 @@ pub fn tab_is_private(app: &AppHandle, label: &str) -> bool {
 
 /// The webview label for a tab id, for modules that need to reach one.
 pub fn tab_label(app: &AppHandle, id: u32) -> Option<String> {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    let state = window_of_tab(app, id)?;
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
     tabs.items
         .iter()
         .find(|t| t.id == id)
@@ -1588,9 +1868,11 @@ pub fn tab_label(app: &AppHandle, id: u32) -> Option<String> {
 }
 
 pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
+    let Some(state) = window_of_tab(app, tab_id) else {
+        return;
+    };
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         let Some(tab) = tabs.tab_mut(tab_id) else {
             return;
         };
@@ -1599,7 +1881,7 @@ pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
         }
         tab.nav.zoom = zoom;
     }
-    publish(app);
+    publish(app, &state);
 }
 
 /// Sets the active tab's zoom. `1.0` is 100%.
@@ -1609,11 +1891,12 @@ pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
 /// the level can be driven from a test, which is the only way to prove the
 /// ZoomFactorChanged watcher actually fires.
 #[tauri::command]
-pub fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
-    let Some(tab_id) = active_tab_id(&app) else {
+pub fn set_zoom(app: AppHandle, window: tauri::Window, factor: f64) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    let Some(tab_id) = active_tab_id_in(&state) else {
         return Ok(());
     };
-    let webview = active_webview(&app)?;
+    let webview = active_webview(&app, &state)?;
     let actual = crate::history::set_zoom(&webview, factor)?;
 
     // Updated from the value read back, not left to the event. A programmatic
@@ -1625,14 +1908,16 @@ pub fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
 
 /// Puts the active tab back to 100%.
 #[tauri::command]
-pub fn reset_zoom(app: AppHandle) -> Result<(), String> {
-    set_zoom(app, 1.0)
+pub fn reset_zoom(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    set_zoom(app, window, 1.0)
 }
 
 pub fn update_traverse(app: &AppHandle, tab_id: u32, can_back: bool, can_forward: bool) {
+    let Some(state) = window_of_tab(app, tab_id) else {
+        return;
+    };
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         let Some(tab) = tabs.tab_mut(tab_id) else {
             return;
         };
@@ -1642,19 +1927,21 @@ pub fn update_traverse(app: &AppHandle, tab_id: u32, can_back: bool, can_forward
         tab.nav.can_back = can_back;
         tab.nav.can_forward = can_forward;
     }
-    publish(app);
+    publish(app, &state);
 }
 
 #[tauri::command]
-pub async fn go_back(app: AppHandle) -> Result<(), String> {
-    show_page(&app)?;
-    traverse(&app, false)
+pub async fn go_back(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    show_page(&app, &state)?;
+    traverse(&app, &state, false)
 }
 
 #[tauri::command]
-pub async fn go_forward(app: AppHandle) -> Result<(), String> {
-    show_page(&app)?;
-    traverse(&app, true)
+pub async fn go_forward(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    show_page(&app, &state)?;
+    traverse(&app, &state, true)
 }
 
 /// Reloads the active tab.
@@ -1665,9 +1952,12 @@ pub async fn go_forward(app: AppHandle) -> Result<(), String> {
 /// error pages has no `location` worth calling, so the old approach failed
 /// silently on exactly the pages a reload button is most wanted on.
 #[tauri::command]
-pub async fn reload(app: AppHandle) -> Result<(), String> {
-    show_page(&app)?;
-    active_webview(&app)?.reload().map_err(|e| e.to_string())
+pub async fn reload(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    show_page(&app, &state)?;
+    active_webview(&app, &state)?
+        .reload()
+        .map_err(|e| e.to_string())
 }
 
 /// Stops the active tab loading.
@@ -1677,27 +1967,41 @@ pub async fn reload(app: AppHandle) -> Result<(), String> {
 /// through `with_webview` to the ICoreWebView2 directly, which is worth doing
 /// alongside the other interop work rather than on its own.
 #[tauri::command]
-pub fn stop_loading(app: AppHandle) -> Result<(), String> {
-    active_webview(&app)?
+pub fn stop_loading(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    active_webview(&app, &state)?
         .eval("window.stop()")
         .map_err(|e| e.to_string())?;
 
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
         if let Some(tab) = tabs.active_tab_mut() {
             tab.nav.loading = false;
         }
     }
-    publish(&app);
+    publish(&app, &state);
     Ok(())
 }
 
-/// Id of the active tab, for callers that act on "whatever is in front".
-pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+/// Id of the active tab in one window.
+fn active_tab_id_in(state: &WindowState) -> Option<u32> {
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
     tabs.active_tab().map(|t| t.id)
+}
+
+/// Id of the active tab in the focused window.
+///
+/// For callers that act on "whatever is in front" and have no window of their
+/// own: global shortcuts, and interop modules reacting to a runtime event.
+pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
+    let state = focused_state(app)?;
+    active_tab_id_in(&state)
+}
+
+/// The tab at a position in one window's strip.
+fn tab_id_at_in(state: &WindowState, index: usize) -> Option<u32> {
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+    tabs.items.get(index).map(|t| t.id)
 }
 
 /// Pins or unpins a tab, moving it to keep pinned tabs at the front.
@@ -1708,9 +2012,11 @@ pub fn active_tab_id(app: &AppHandle) -> Option<u32> {
 /// so it lands where it would sit if it had never been pinned.
 #[tauri::command]
 pub async fn set_tab_pinned(app: AppHandle, id: u32, pinned: bool) -> Result<(), String> {
+    let Some(state) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
     {
-        let browser = app.state::<Browser>();
-        let mut tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
         let Some(pos) = tabs.items.iter().position(|t| t.id == id) else {
             return Ok(());
@@ -1727,7 +2033,7 @@ pub async fn set_tab_pinned(app: AppHandle, id: u32, pinned: bool) -> Result<(),
         tabs.items.insert(boundary, tab);
     }
     save_session(&app);
-    publish(&app);
+    publish(&app, &state);
     Ok(())
 }
 
@@ -1737,9 +2043,11 @@ pub async fn set_tab_pinned(app: AppHandle, id: u32, pinned: bool) -> Result<(),
 /// runtime's own history, which is not something WebView2 exposes.
 #[tauri::command]
 pub async fn duplicate_tab(app: AppHandle, id: u32) -> Result<(), String> {
+    let Some(state) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
     let source = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         tabs.items
             .iter()
             .find(|t| t.id == id)
@@ -1749,15 +2057,19 @@ pub async fn duplicate_tab(app: AppHandle, id: u32) -> Result<(), String> {
     let Some((Some(url), private)) = source else {
         return Ok(());
     };
-    open_tab_inner(&app, Some(url), private).map_err(|e| e.to_string())
+    // Into the window the original is in, not the focused one. They are almost
+    // always the same, and when they are not, beside the original is right.
+    open_tab_inner(&app, &state, Some(url), private).map_err(|e| e.to_string())
 }
 
 /// Closes every tab except `id`. Pinned tabs are kept.
 #[tauri::command]
 pub async fn close_other_tabs(app: AppHandle, id: u32) -> Result<(), String> {
+    let Some(state) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
     let doomed: Vec<u32> = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         tabs.items
             .iter()
             .filter(|t| t.id != id && !t.pinned)
@@ -1777,9 +2089,11 @@ pub async fn close_other_tabs(app: AppHandle, id: u32) -> Result<(), String> {
 /// comparing ids: ids ascend by creation, and pinning reorders.
 #[tauri::command]
 pub async fn close_tabs_to_right(app: AppHandle, id: u32) -> Result<(), String> {
+    let Some(state) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
     let doomed: Vec<u32> = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         match tabs.items.iter().position(|t| t.id == id) {
             Some(pos) => tabs.items[pos + 1..]
                 .iter()
@@ -1801,9 +2115,8 @@ pub async fn close_tabs_to_right(app: AppHandle, id: u32) -> Result<(), String> 
 /// Returns `None` when there is no tab there, so Ctrl+5 with three tabs open
 /// does nothing rather than jumping somewhere arbitrary.
 pub fn tab_id_at(app: &AppHandle, index: usize) -> Option<u32> {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
-    tabs.items.get(index).map(|t| t.id)
+    let state = focused_state(app)?;
+    tab_id_at_in(&state, index)
 }
 
 /// Id of the last tab, for Ctrl+9.
@@ -1811,23 +2124,29 @@ pub fn tab_id_at(app: &AppHandle, index: usize) -> Option<u32> {
 /// Ctrl+9 means "last tab", not "ninth tab", in every mainstream browser - it is
 /// the one number that is positional rather than an index.
 pub fn last_tab_id(app: &AppHandle) -> Option<u32> {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    let state = focused_state(app)?;
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
     tabs.items.last().map(|t| t.id)
 }
 
 /// Reopens the most recently closed tab. Does nothing when none were closed.
 ///
 /// Async for the same reason the tab commands are: it creates a webview.
+///
+/// Reopens into the focused window, from that window's own closed list. A tab
+/// closed in one window does not come back in another: the list is per window
+/// precisely so this cannot reach across.
 pub async fn reopen_closed_tab(app: AppHandle) -> Result<(), String> {
+    let Some(state) = focused_state(&app) else {
+        return Ok(());
+    };
     let url = {
-        let browser = app.state::<Browser>();
-        let mut closed = browser.closed.lock().expect("closed mutex poisoned");
+        let mut closed = state.closed.lock().expect("closed mutex poisoned");
         closed.pop()
     };
 
     match url {
-        Some(url) => open_tab_inner(&app, Some(url), false).map_err(|e| e.to_string()),
+        Some(url) => open_tab_inner(&app, &state, Some(url), false).map_err(|e| e.to_string()),
         None => Ok(()),
     }
 }
@@ -1835,10 +2154,11 @@ pub async fn reopen_closed_tab(app: AppHandle) -> Result<(), String> {
 /// Moves to the next or previous tab, wrapping at the ends.
 ///
 /// Wrapping rather than stopping: Ctrl+Tab on the last tab going nowhere feels
-/// broken, and every browser cycles.
+/// broken, and every browser cycles. Wraps within the focused window rather than
+/// crossing into another one, which is what every browser does too.
 pub fn neighbour_tab_id(app: &AppHandle, forward: bool) -> Option<u32> {
-    let browser = app.state::<Browser>();
-    let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+    let state = focused_state(app)?;
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
 
     let count = tabs.items.len();
     if count == 0 {
@@ -1857,20 +2177,20 @@ pub fn neighbour_tab_id(app: &AppHandle, forward: bool) -> Option<u32> {
 ///
 /// Everything after that arrives by event.
 #[tauri::command]
-pub fn browser_state(app: AppHandle) -> BrowserState {
-    current_state(&app)
+pub fn browser_state(app: AppHandle, window: tauri::Window) -> BrowserState {
+    let state = state_for(&app, window.label());
+    current_state(&app, &state)
 }
 
 /// Expands the chrome over the whole window, or restores it.
 ///
 /// Async for the same reason the tab commands are: it re-lays-out webviews.
 #[tauri::command]
-pub async fn set_panel(app: AppHandle, open: bool) -> Result<(), String> {
-    app.state::<Browser>()
-        .panel_open
-        .store(open, Ordering::Relaxed);
-    relayout(&app).map_err(|e| e.to_string())?;
-    publish(&app);
+pub async fn set_panel(app: AppHandle, window: tauri::Window, open: bool) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    state.panel_open.store(open, Ordering::Relaxed);
+    relayout(&app, &state).map_err(|e| e.to_string())?;
+    publish(&app, &state);
     Ok(())
 }
 
@@ -1882,10 +2202,9 @@ pub async fn set_panel(app: AppHandle, open: bool) -> Result<(), String> {
 /// a page full of highlighted matches after the bar is gone would be a state
 /// with no visible way to clear it.
 #[tauri::command]
-pub async fn set_find_bar(app: AppHandle, open: bool) -> Result<(), String> {
-    app.state::<Browser>()
-        .find_open
-        .store(open, Ordering::Relaxed);
+pub async fn set_find_bar(app: AppHandle, window: tauri::Window, open: bool) -> Result<(), String> {
+    let state = state_for(&app, window.label());
+    state.find_open.store(open, Ordering::Relaxed);
 
     if !open {
         // Best effort: a tab with no page, or an older runtime with no find
@@ -1893,8 +2212,8 @@ pub async fn set_find_bar(app: AppHandle, open: bool) -> Result<(), String> {
         let _ = crate::find::find_stop(app.clone());
     }
 
-    relayout(&app).map_err(|e| e.to_string())?;
-    publish(&app);
+    relayout(&app, &state).map_err(|e| e.to_string())?;
+    publish(&app, &state);
     Ok(())
 }
 
@@ -1910,8 +2229,12 @@ pub async fn set_bookmarks_bar(app: AppHandle, show: bool) -> Result<(), String>
     app.state::<crate::settings::SettingsState>()
         .set_show_bookmarks_bar(show)?;
 
-    relayout(&app).map_err(|e| e.to_string())?;
-    publish(&app);
+    // Every window, not just the one that asked. The bar is a preference, so a
+    // second window left showing the opposite would read as a bug.
+    for state in app.state::<Browser>().all() {
+        relayout(&app, &state).map_err(|e| e.to_string())?;
+        publish(&app, &state);
+    }
     Ok(())
 }
 
@@ -1927,14 +2250,16 @@ pub async fn set_bookmarks_bar(app: AppHandle, show: bool) -> Result<(), String>
 /// page is not moved and not hidden; see overlay.rs for why that needs a Win32
 /// call at all.
 #[tauri::command]
-pub async fn set_chrome_overlay(app: AppHandle, bottom: f64) -> Result<(), String> {
+pub async fn set_chrome_overlay(
+    app: AppHandle,
+    window: tauri::Window,
+    bottom: f64,
+) -> Result<(), String> {
+    let state = state_for(&app, window.label());
     // Clamped: the chrome asks for whatever it measured, and a runaway value
     // would cover the whole window with no visible way back to the page.
     let bottom = bottom.clamp(0.0, 720.0).round() as u32;
-    let previous = app
-        .state::<Browser>()
-        .overlay_bottom
-        .swap(bottom, Ordering::Relaxed);
+    let previous = state.overlay_bottom.swap(bottom, Ordering::Relaxed);
 
     if previous == bottom {
         return Ok(());
@@ -1943,11 +2268,11 @@ pub async fn set_chrome_overlay(app: AppHandle, bottom: f64) -> Result<(), Strin
     // Raise before laying out, drop after. Growing the chrome while it is still
     // underneath would paint the overlay behind the page for one frame.
     if bottom > 0 {
-        crate::overlay::set_chrome_on_top(&app, true);
+        crate::overlay::set_chrome_on_top(&app, &state.chrome, true);
     }
-    relayout(&app).map_err(|e| e.to_string())?;
+    relayout(&app, &state).map_err(|e| e.to_string())?;
     if bottom == 0 {
-        crate::overlay::set_chrome_on_top(&app, false);
+        crate::overlay::set_chrome_on_top(&app, &state.chrome, false);
     }
     Ok(())
 }
@@ -1963,10 +2288,10 @@ pub async fn toggle_bookmarks_bar(app: AppHandle) -> Result<(), String> {
 
 /// Bookmarks or un-bookmarks the active tab, and republishes so the star updates.
 #[tauri::command]
-pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
+pub fn toggle_bookmark_active(app: AppHandle, window: tauri::Window) -> Result<bool, String> {
+    let state = state_for(&app, window.label());
     let (url, title) = {
-        let browser = app.state::<Browser>();
-        let tabs = browser.tabs.lock().expect("tabs mutex poisoned");
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
         match tabs.active_tab() {
             Some(t) => (
                 t.nav.current().cloned().unwrap_or_default(),
@@ -1981,10 +2306,132 @@ pub fn toggle_bookmark_active(app: AppHandle) -> Result<bool, String> {
         .toggle_bookmark(&url, &title)?;
 
     // The star comes back through publish, but the bar renders the whole list
-    // and would otherwise not hear that it just gained or lost a row.
-    let _ = app.emit_to(CHROME_LABEL, BOOKMARKS_EVENT, ());
-    publish(&app);
+    // and would otherwise not hear that it just gained or lost a row. Every
+    // window's bar, since they all show the same list.
+    notify_bookmarks_everywhere(&app);
+    publish(&app, &state);
     Ok(bookmarked)
+}
+
+/// Tells every window's chrome that the bookmark list moved.
+///
+/// The list is app-wide, so a bar in a second window is just as stale after a
+/// change as the one that caused it.
+pub fn notify_bookmarks_everywhere(app: &AppHandle) {
+    for state in app.state::<Browser>().all() {
+        let _ = app.emit_to(&state.chrome, BOOKMARKS_EVENT, ());
+    }
+}
+
+/// Tells every window's chrome that the downloads list moved.
+pub fn notify_downloads_everywhere(app: &AppHandle) {
+    for state in app.state::<Browser>().all() {
+        let _ = app.emit_to(&state.chrome, DOWNLOADS_EVENT, ());
+    }
+}
+
+/// Sends an event to the chrome of whichever window holds a tab.
+///
+/// For the interop modules, whose handlers are attached to a content webview and
+/// so know a tab rather than a window.
+pub fn emit_to_tab_chrome<S: serde::Serialize + Clone>(
+    app: &AppHandle,
+    tab_label: &str,
+    event: &str,
+    payload: S,
+) {
+    if let Some(state) = window_of_tab_label(app, tab_label) {
+        let _ = app.emit_to(&state.chrome, event, payload);
+    }
+}
+
+/// Sends an event to the focused window's chrome.
+///
+/// For global shortcuts, which act on whatever is in front.
+pub fn emit_to_focused_chrome<S: serde::Serialize + Clone>(
+    app: &AppHandle,
+    event: &str,
+    payload: S,
+) {
+    if let Some(state) = focused_state(app) {
+        let _ = app.emit_to(&state.chrome, event, payload);
+    }
+}
+
+/// The focused window itself, for callers that have to hand one to a command.
+///
+/// A global shortcut has no originating webview, so this is how it says which
+/// window it meant.
+pub fn focused_window(app: &AppHandle) -> Option<tauri::Window> {
+    let state = focused_state(app)?;
+    app.get_window(&state.window)
+}
+
+/// Opens a new window, with one homepage tab.
+///
+/// Async for exactly the reason the tab commands are: it builds webviews, and a
+/// sync command doing that from the main thread deadlocks.
+#[tauri::command]
+pub async fn open_window(app: AppHandle, private: Option<bool>) -> Result<(), String> {
+    let label = next_window_label(&app);
+    build_window(&app, &label, None, false).map_err(|e| e.to_string())?;
+
+    // A private window is a normal window whose first tab is private. Every tab
+    // opened from it inherits that, the same way `on_new_window` already does,
+    // so the window stays private without a flag of its own to keep in step.
+    if private.unwrap_or(false) {
+        let state = state_for(&app, &label);
+        let first = {
+            let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+            tabs.items.first().map(|t| t.id)
+        };
+        open_tab_inner(&app, &state, None, true).map_err(|e| e.to_string())?;
+        if let Some(id) = first {
+            close_tab_inner(&app, id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves a tab into a window of its own.
+///
+/// The tab is rebuilt rather than reparented: WebView2 gives no way to move a
+/// webview between windows, so the page is reloaded at its current URL. Scroll
+/// position and anything typed into a form are lost, which is worth saying out
+/// loud because it is the one thing this cannot preserve.
+#[tauri::command]
+pub async fn move_tab_to_new_window(app: AppHandle, id: u32) -> Result<(), String> {
+    let Some(source) = window_of_tab(&app, id) else {
+        return Ok(());
+    };
+    // Nothing to do if it is the only tab: the window it would move to is the
+    // window it is already in, and closing the source would take it with it.
+    let url = {
+        let tabs = source.tabs.lock().expect("tabs mutex poisoned");
+        if tabs.items.len() < 2 {
+            return Ok(());
+        }
+        tabs.items
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.nav.current().cloned())
+    };
+    let Some(url) = url else {
+        return Ok(());
+    };
+
+    let label = next_window_label(&app);
+    let target = crate::settings::SessionWindow {
+        tabs: vec![crate::settings::SessionTab { url, pinned: false }],
+        active: 0,
+    };
+    build_window(&app, &label, Some(&target), false).map_err(|e| e.to_string())?;
+
+    // Only after the new window exists. Closing first would leave the tab gone
+    // with nowhere to arrive if the build failed.
+    close_tab_inner(&app, id)?;
+    save_session(&app);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1995,6 +2442,58 @@ mod tests {
     // exercised. Back and forward are WebView2's now, and verifying them needs a
     // running webview rather than a unit test - done through tools/cdp.ps1.
     // What is left here is the part Brume still decides for itself.
+
+    #[test]
+    fn a_chrome_label_can_never_be_mistaken_for_a_content_webview() {
+        // This is a security boundary, not a naming convention.
+        // capabilities/default.json grants Brume's commands to `chrome-*`, and
+        // content webviews are `tab-{id}`. If those namespaces ever overlapped,
+        // the capability would match a webview rendering an arbitrary website
+        // and hand it the IPC bridge for every command Brume exposes.
+        for window in ["main", "win-2", "win-99"] {
+            let chrome = chrome_label(window);
+            assert!(
+                chrome.starts_with("chrome-"),
+                "{chrome} must match the capability glob"
+            );
+            assert!(
+                !chrome.starts_with("tab-"),
+                "{chrome} must not look like a content webview"
+            );
+        }
+        // And from the other side: no tab label may match `chrome-*`.
+        for id in [0u32, 1, 7, 4242] {
+            let tab = format!("tab-{id}");
+            assert!(
+                !tab.starts_with("chrome-"),
+                "{tab} must not match the capability glob"
+            );
+        }
+    }
+
+    #[test]
+    fn window_labels_are_unique_and_never_reused() {
+        // A recycled label would let a stale handler write into whichever window
+        // took the name, which is the same reason tab labels are never reused.
+        let browser = Browser::default();
+        let first = browser.next_window.fetch_add(1, Ordering::Relaxed);
+        let second = browser.next_window.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(first, second);
+        // `main` is 1, so generated labels start past it and cannot collide.
+        assert!(first >= 2, "win-{first} would collide with main");
+    }
+
+    #[test]
+    fn tab_ids_are_allocated_across_windows_not_within_one() {
+        // Ids have to be unique app-wide: a webview label is `tab-{id}` and
+        // labels are app-wide, so per-window counters would hand two windows
+        // the same `tab-1`.
+        let browser = Browser::default();
+        let a = browser.next_tab_id();
+        let b = browser.next_tab_id();
+        assert_ne!(a, b);
+        assert_eq!(b, a + 1);
+    }
 
     #[test]
     fn a_fresh_tab_has_no_url_and_cannot_move() {

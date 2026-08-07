@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for Brume's chrome. Scoped to the chrome webview only - see below.",
+  "description": "Permissions for Brume's chrome. Scoped to chrome webviews only - see below.",
 
-  "windows": ["main"],
+  "//windows": "Every Brume window: `main` and then `win-2`, `win-3`. A window here only decides which windows the capability can apply in; the webview list below is what actually keeps it off the page.",
+  "windows": ["main", "win-*"],
 
-  "//": "SECURITY: this must never include the content webview. That webview renders arbitrary websites, and any capability granted to it is granted to every page the user visits. Tauri 2 denies by default, so the protection is simply never listing it here.",
-  "webviews": ["chrome"],
+  "//": "SECURITY: this must never match a content webview. Those render arbitrary websites, and any capability granted to one is granted to every page the user visits. Chrome webviews are `chrome-<window>` and content webviews are `tab-<id>`, so `chrome-*` cannot match a content webview as long as those two namings stay disjoint. That is enforced in browser.rs, where WindowState::chrome builds the label and the tab labels are built beside it. Tauri 2 denies by default, so anything not matched here has nothing.",
+  "webviews": ["chrome-*"],
 
   "permissions": [
     "core:default",

@@ -33,7 +33,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 /// A browser Brume can read bookmarks out of.
 #[derive(Serialize, Clone, Debug)]
@@ -331,11 +331,7 @@ pub fn import_bookmarks(
     // would otherwise rewrite the file a thousand times.
     store.flush_bookmarks()?;
 
-    let _ = app.emit_to(
-        crate::browser::CHROME_LABEL,
-        crate::browser::BOOKMARKS_EVENT,
-        (),
-    );
+    crate::browser::notify_bookmarks_everywhere(&app);
     Ok(added)
 }
 

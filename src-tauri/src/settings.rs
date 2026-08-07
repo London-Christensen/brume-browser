@@ -87,6 +87,20 @@ pub struct Settings {
     /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
+    /// Every window that was open, from 0.7.0 onwards.
+    ///
+    /// A third session key rather than a change to the two above, for the
+    /// reason they already document: serde rejects a field of the wrong type
+    /// outright and an unparseable settings file is moved aside wholesale, so
+    /// turning `session_tabs` into a list of lists would have cost every user
+    /// upgrading from 0.6.0 their entire settings file.
+    ///
+    /// The old keys are still read when this is empty, which is exactly the
+    /// upgrade case: a 0.6.0 session becomes one window. They are no longer
+    /// written, so a downgrade loses the session but nothing else.
+    #[serde(default)]
+    pub session_windows: Vec<SessionWindow>,
+
     /// Last window geometry, or `None` until the first window closes.
     ///
     /// Kept here rather than in its own file so it inherits this module's
@@ -104,6 +118,16 @@ pub struct SessionTab {
     pub url: String,
     #[serde(default)]
     pub pinned: bool,
+}
+
+/// One window's worth of session.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SessionWindow {
+    #[serde(default)]
+    pub tabs: Vec<SessionTab>,
+    /// Index into `tabs` of the one that was in front.
+    #[serde(default)]
+    pub active: usize,
 }
 
 /// Where the window was, in logical pixels.
@@ -133,6 +157,7 @@ impl Default for Settings {
             show_bookmarks_bar: false,
             session_tabs: Vec::new(),
             session_active: 0,
+            session_windows: Vec::new(),
             window: None,
         }
     }
@@ -311,17 +336,33 @@ impl SettingsState {
         self.update(|s| s.window = Some(geometry))
     }
 
-    /// Records the open tabs and which was in front.
-    pub fn set_session(&self, tabs: Vec<SessionTab>, active: usize) -> Result<(), String> {
+    /// Records every open window and which tab was in front in each.
+    pub fn set_session(&self, windows: Vec<SessionWindow>) -> Result<(), String> {
         self.update(|s| {
-            s.session_tabs = tabs;
-            s.session_active = active;
+            s.session_windows = windows;
+            // The 0.6.0 keys are left exactly as they were rather than cleared.
+            // A downgrade then still restores the session it last understood,
+            // instead of opening to nothing.
         })
     }
 
-    pub fn session(&self) -> (Vec<SessionTab>, usize) {
+    /// The session to restore, one entry per window.
+    ///
+    /// Falls back to the single-window keys when the new one is empty, which is
+    /// every install upgrading from 0.6.0 or earlier: their one session becomes
+    /// one window.
+    pub fn session(&self) -> Vec<SessionWindow> {
         let current = self.get();
-        (current.session_tabs, current.session_active)
+        if !current.session_windows.is_empty() {
+            return current.session_windows;
+        }
+        if current.session_tabs.is_empty() {
+            return Vec::new();
+        }
+        vec![SessionWindow {
+            tabs: current.session_tabs,
+            active: current.session_active,
+        }]
     }
 
     pub fn window(&self) -> Option<WindowGeometry> {

@@ -39,7 +39,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Maximum history entries kept on disk.
 ///
@@ -1181,11 +1181,9 @@ pub fn suggest(store: State<'_, Store>, query: String, limit: Option<usize>) -> 
 /// from the panel. Best effort: a failed emit is a stale bar, not a lost
 /// bookmark, and the bookmark is already on disk by this point.
 fn notify_bookmarks(app: &AppHandle) {
-    let _ = app.emit_to(
-        crate::browser::CHROME_LABEL,
-        crate::browser::BOOKMARKS_EVENT,
-        (),
-    );
+    // Every window. The list is app-wide, so a bar in a second window is just
+    // as stale after a change as the one that caused it.
+    crate::browser::notify_bookmarks_everywhere(app);
 }
 
 #[tauri::command]

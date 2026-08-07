@@ -36,7 +36,7 @@
 use std::sync::mpsc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use webview2_com::FindStartCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Environment15, ICoreWebView2Find, ICoreWebView2_2, ICoreWebView2_28,
@@ -134,7 +134,10 @@ fn read_state(find: &ICoreWebView2Find) -> windows_core::Result<FindState> {
 
 /// Pushes the current count to the find bar.
 fn emit(app: &AppHandle, state: FindState) {
-    let _ = app.emit_to(crate::browser::CHROME_LABEL, FIND_STATE_EVENT, state);
+    // The focused window's find bar. Find is a foreground interaction by
+    // nature: the bar that started the search is the one being typed into, and
+    // a background window cannot have one open that anybody is looking at.
+    crate::browser::emit_to_focused_chrome(app, FIND_STATE_EVENT, state);
 }
 
 /// Starts a search. The count arrives later on `FIND_STATE_EVENT`.

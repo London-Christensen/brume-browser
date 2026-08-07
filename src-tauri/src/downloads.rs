@@ -35,7 +35,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2DownloadOperation, ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_STATE,
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
@@ -164,11 +164,9 @@ fn watch_operation(app: &AppHandle, operation: &ICoreWebView2DownloadOperation) 
                         .state::<crate::store::Store>()
                         .update_download_progress(&url, received, total)
                     {
-                        let _ = handle.emit_to(
-                            crate::browser::CHROME_LABEL,
-                            crate::browser::DOWNLOADS_EVENT,
-                            (),
-                        );
+                        // Every window, because the downloads list is app-wide
+                        // and a panel open in another one is just as stale.
+                        crate::browser::notify_downloads_everywhere(&handle);
                     }
                 }
                 Ok(())
@@ -216,8 +214,12 @@ pub async fn cancel_download(app: AppHandle, url: String) -> Result<(), String> 
 /// started answering with a page rather than a file will navigate that tab, just
 /// as it would have the first time.
 #[tauri::command]
-pub async fn retry_download(app: AppHandle, url: String) -> Result<(), String> {
-    crate::browser::navigate(app, url).await
+pub async fn retry_download(
+    app: AppHandle,
+    window: tauri::Window,
+    url: String,
+) -> Result<(), String> {
+    crate::browser::navigate(app, window, url).await
 }
 
 /// The download's source URL, as an owned `String`.

@@ -110,7 +110,18 @@ function Get-BrumeTargets {
 # The chrome is therefore matched on the root path exactly, and the new tab page
 # is treated as content, which is what it is.
 function Resolve-BrumeTarget {
-    param([ValidateSet('chrome', 'content')][string]$Target = 'chrome')
+    # `Index` picks between windows, which there can be more than one of since
+    # 0.7.0. 0 is the first, and with one window open it is the only one, so
+    # every existing caller keeps working unchanged.
+    #
+    # There is no way to ask CDP which window a target belongs to: the targets
+    # are webviews and the window is a Win32 concept above them. What there is
+    # instead is order, which the runtime reports consistently, so index is the
+    # honest handle rather than something dressed up as a window id.
+    param(
+        [ValidateSet('chrome', 'content')][string]$Target = 'chrome',
+        [int]$Index = 0
+    )
 
     $pages = @(Get-BrumeTargets) | Where-Object { $_.type -eq 'page' }
     $pages = @($pages)
@@ -131,8 +142,11 @@ function Resolve-BrumeTarget {
     if ($found.Count -eq 0) {
         throw "No '$Target' target. Saw: $(($pages | ForEach-Object { $_.url }) -join ', ')"
     }
+    if ($Index -ge $found.Count) {
+        throw "Asked for '$Target' #$Index but only $($found.Count) exist."
+    }
 
-    $one = $found[0]
+    $one = $found[$Index]
     # Guard the exact failure described above: if this is ever not a single
     # target with a single socket URL, fail here with something readable rather
     # than downstream in a parameter binder.
@@ -201,10 +215,12 @@ function Invoke-BrumeJs {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Script,
         [ValidateSet('chrome', 'content')][string]$Target = 'chrome',
+        # Which window, when more than one is open. See Resolve-BrumeTarget.
+        [int]$Index = 0,
         [int]$TimeoutSeconds = 30
     )
 
-    $t = Resolve-BrumeTarget -Target $Target
+    $t = Resolve-BrumeTarget -Target $Target -Index $Index
     $reply = Send-CdpCommand -WebSocketUrl $t.webSocketDebuggerUrl -Method 'Runtime.evaluate' -Params @{
         expression    = $Script
         returnByValue = $true
