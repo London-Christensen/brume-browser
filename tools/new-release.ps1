@@ -309,8 +309,8 @@ if ($AttachLegacyFeed) {
     # and both get the same answer.
     $assets += $manifestPath
     Write-Output ''
-    Write-Output '      NOTE: attaching latest.json for pre-0.2.0-endpoint installs.'
-    Write-Output '            One release only. Do not pass -AttachLegacyFeed again.'
+    Write-Output '      NOTE: attaching latest.json for pre-0.3.0-endpoint installs.'
+    Write-Output '            Pass -AttachLegacyFeed on every release, not just this one.'
 }
 
 if (-not $Publish) {
