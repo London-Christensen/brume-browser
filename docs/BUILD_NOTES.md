@@ -2067,6 +2067,48 @@ behaviour and worth knowing before writing a test that asserts on it.
 Refused on Brume's own new tab page and on a document already being viewed as
 source, since stacking the prefix gives a page about a page.
 
+### Per-site zoom has to be reapplied on every navigation
+
+WebView2's zoom belongs to the **webview**, not to the document. Following a link
+from a site zoomed to 150% therefore leaves the next site at 150% too, which is
+not per-site zoom, it is a sticky webview. So the stored factor is applied on
+every load rather than once.
+
+Applied on load *finished*, not on navigation start: applying it earlier means
+the runtime resets the factor as the new document commits and the zoom silently
+does not stick. And spawned rather than called from inside the handler, because
+reentering a webview from its own event is what WebView2 warns against and what
+history.rs already avoids.
+
+Two paths, deliberately separate. `update_zoom` records what the user did and
+writes it to settings; `update_zoom_display` only moves the indicator. Applying a
+remembered zoom uses the second, or reading a value would immediately write it
+back and settings.json would be rewritten on every navigation to a site that has
+one.
+
+Keyed on scheme and host, the same shape `permissions.rs` uses: zooming one
+article is asking for the site to be bigger, not that URL. Only entries that
+differ from 100% are kept, so resetting a site removes its row rather than
+storing a 1.0, and a browser used for years does not accumulate one row per site
+ever visited. The comparison uses a tolerance rather than `==`, because the
+factor comes back from WebView2 as a float it stepped.
+
+**A private tab records nothing.** Writing its zoom would put a site it visited
+into settings.json, which is the one thing private browsing exists to avoid.
+
+Verified on 2026-08-07 against a running build, with the page's own reported
+width as the independent check rather than Brume's indicator:
+
+| | |
+|---|---|
+| example.com at 150% | `innerWidth` 1280, and `{"https://example.com":1.5}` on disk |
+| Navigating to example.org | Zoom 1, `innerWidth` 1920: it did not follow |
+| Returning to example.com | Back to 1.5 and 1280 on its own |
+| Zooming in a private tab | 200% in the session, nothing written to disk |
+
+1920 / 1.5 is exactly 1280, which is what makes the width an assertion rather
+than a coincidence.
+
 ---
 
 ## Known hard problems, deliberately deferred

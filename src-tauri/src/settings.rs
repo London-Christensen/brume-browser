@@ -87,6 +87,19 @@ pub struct Settings {
     /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
+    /// Zoom remembered per site, keyed by origin. 1.0 is never stored.
+    ///
+    /// Per origin rather than per page, matching how every browser does it and
+    /// how site permissions already work here: zooming one article on a site is
+    /// asking for that site to be bigger, not that URL.
+    ///
+    /// A map rather than a list, and only entries that differ from 100%, so a
+    /// browser that has been used for years does not accumulate a row per site
+    /// visited. Its own key, added in 0.8.0, for the reason the session keys
+    /// record.
+    #[serde(default)]
+    pub site_zoom: std::collections::HashMap<String, f64>,
+
     /// Every window that was open, from 0.7.0 onwards.
     ///
     /// A third session key rather than a change to the two above, for the
@@ -158,6 +171,7 @@ impl Default for Settings {
             session_tabs: Vec::new(),
             session_active: 0,
             session_windows: Vec::new(),
+            site_zoom: std::collections::HashMap::new(),
             window: None,
         }
     }
@@ -369,6 +383,46 @@ impl SettingsState {
         self.get().window
     }
 
+    /// The zoom remembered for an origin, or 1.0 if it has none.
+    pub fn site_zoom(&self, origin: &str) -> f64 {
+        self.get()
+            .site_zoom
+            .get(origin)
+            .copied()
+            .filter(|z| z.is_finite() && *z > 0.0)
+            .unwrap_or(1.0)
+    }
+
+    /// Remembers an origin's zoom, or forgets it when back at 100%.
+    ///
+    /// Removing rather than storing 1.0 keeps the file to sites that actually
+    /// differ, so resetting a site leaves no trace of having zoomed it.
+    pub fn set_site_zoom(&self, origin: &str, factor: f64) -> Result<(), String> {
+        if origin.is_empty() {
+            return Ok(());
+        }
+        self.update(|s| {
+            // Compared with a tolerance, not `==`: the factor comes back from
+            // WebView2 as a float it stepped, so an exact 1.0 is not guaranteed
+            // even when the user has reset it.
+            if (factor - 1.0).abs() < 0.005 {
+                s.site_zoom.remove(origin);
+            } else {
+                s.site_zoom.insert(origin.to_string(), factor);
+            }
+        })
+    }
+
+    /// Forgets every remembered zoom.
+    pub fn clear_site_zoom(&self) -> Result<(), String> {
+        self.update(|s| s.site_zoom.clear())
+    }
+
+    /// How many sites have a remembered zoom, for the Settings row.
+    pub fn site_zoom_count(&self) -> usize {
+        self.get().site_zoom.len()
+    }
+
     /// Whether the UI is currently dark.
     ///
     /// "system" is resolved by asking the window what the OS gave it, rather
@@ -457,6 +511,22 @@ pub fn engine_homepage(app: tauri::AppHandle) -> String {
     crate::search::engine_by_id(&state.get().search_engine)
         .home_for(dark)
         .to_string()
+}
+
+/// How many sites Brume is remembering a zoom for.
+#[tauri::command]
+pub fn zoomed_site_count(settings: State<'_, SettingsState>) -> usize {
+    settings.site_zoom_count()
+}
+
+/// Forgets every remembered site zoom.
+///
+/// One control rather than a list with a row per site. Unlike a permission,
+/// which is a decision worth reviewing one at a time, a zoom is visible the
+/// moment you open the site: the way to change one is to go there and change it.
+#[tauri::command]
+pub fn clear_site_zoom(settings: State<'_, SettingsState>) -> Result<(), String> {
+    settings.clear_site_zoom()
 }
 
 /// The running version, for the updates section of Settings.

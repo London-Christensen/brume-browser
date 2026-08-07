@@ -973,6 +973,11 @@ fn spawn_tab_webview(
                     // stale. Written here rather than only at quit, so an
                     // unexpected exit still has something to restore.
                     save_session(&load_handle);
+
+                    // On finish rather than on navigation start: applying it
+                    // earlier means the runtime resets the factor as the new
+                    // document commits, and the zoom silently does not stick.
+                    apply_site_zoom(&load_handle, id, &url);
                 }
 
                 publish(&load_handle, &win);
@@ -1914,6 +1919,93 @@ pub fn tab_label(app: &AppHandle, id: u32) -> Option<String> {
 }
 
 pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
+    let Some(state) = window_of_tab(app, tab_id) else {
+        return;
+    };
+    let origin = {
+        let mut tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        let Some(tab) = tabs.tab_mut(tab_id) else {
+            return;
+        };
+        if (tab.nav.zoom - zoom).abs() < 0.001 {
+            return;
+        }
+        tab.nav.zoom = zoom;
+        // Captured under the same lock, so the origin and the factor cannot be
+        // taken from either side of a navigation.
+        tab.nav.current().map(|u| origin_of(u)).unwrap_or_default()
+    };
+
+    // A private tab remembers nothing. Writing its zoom to settings would put a
+    // site it visited on disk, which is the one thing private browsing is for.
+    let private = {
+        let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+        tabs.items
+            .iter()
+            .find(|t| t.id == tab_id)
+            .is_some_and(|t| t.private)
+    };
+    if !private && !origin.is_empty() {
+        let _ = app
+            .state::<crate::settings::SettingsState>()
+            .set_site_zoom(&origin, zoom);
+    }
+
+    publish(app, &state);
+}
+
+/// Scheme and host, which is what a remembered zoom is keyed on.
+///
+/// Same shape permissions.rs uses, and for the same reason: zooming one article
+/// is asking for the site to be bigger, not that one URL.
+fn origin_of(url: &str) -> String {
+    tauri::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
+        .unwrap_or_default()
+}
+
+/// Applies a site's remembered zoom after it loads.
+///
+/// Spawned rather than called from the navigation handler. WebView2 warns
+/// against reentering a webview from inside its own event, which is the rule
+/// history.rs already follows by taking history state from `HistoryChanged`
+/// instead of reading it during `publish`.
+///
+/// Needed on every navigation because WebView2's zoom belongs to the *webview*,
+/// not the document: without this, following a link from a site zoomed to 150%
+/// leaves the next site at 150% too.
+fn apply_site_zoom(app: &AppHandle, tab_id: u32, url: &str) {
+    let origin = origin_of(url);
+    if origin.is_empty() {
+        return;
+    }
+    let wanted = app
+        .state::<crate::settings::SettingsState>()
+        .site_zoom(&origin);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(label) = tab_label(&app, tab_id) else {
+            return;
+        };
+        let Some(webview) = app.get_webview(&label) else {
+            return;
+        };
+        // Read back rather than assumed: SetZoomFactor does not raise
+        // ZoomFactorChanged, so nothing else would correct the indicator.
+        if let Ok(actual) = crate::history::set_zoom(&webview, wanted) {
+            update_zoom_display(&app, tab_id, actual);
+        }
+    });
+}
+
+/// Updates the indicator without writing the value back to settings.
+///
+/// Separate from `update_zoom` so applying a remembered zoom does not re-save
+/// the thing it just read, which would rewrite settings.json on every
+/// navigation to a site that has one.
+fn update_zoom_display(app: &AppHandle, tab_id: u32, zoom: f64) {
     let Some(state) = window_of_tab(app, tab_id) else {
         return;
     };

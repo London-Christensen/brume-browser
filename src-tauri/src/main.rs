@@ -130,6 +130,8 @@ fn main() {
             settings::engine_homepage,
             settings::set_theme,
             settings::app_version,
+            settings::zoomed_site_count,
+            settings::clear_site_zoom,
             find::find_start,
             find::find_next,
             find::find_previous,

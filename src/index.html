@@ -3068,6 +3068,32 @@
 
         // --- privacy ---
         const privacy = group("Privacy");
+
+        /* Remembered zoom, as one control rather than a list.
+         *
+         * A zoom is visible the moment you open the site, so the way to change
+         * one is to go there and change it. That is unlike a permission, which
+         * is a decision worth reviewing without visiting the site again, and is
+         * why that one below gets a row per entry and this does not. */
+        const zoomCount = (await call("zoomed_site_count")) || 0;
+        const zoomRow = row(
+          "Remembered zoom",
+          zoomCount
+            ? `${zoomCount} site${zoomCount === 1 ? "" : "s"} opens at a zoom you set. Reset one by visiting it and putting it back to 100%.`
+            : "Zoom a site and Brume opens it that way next time."
+        );
+        const zoomBtn = document.createElement("button");
+        zoomBtn.className = "action";
+        zoomBtn.textContent = "Forget all";
+        zoomBtn.disabled = zoomCount === 0;
+        zoomBtn.addEventListener("click", async () => {
+          zoomBtn.disabled = true;
+          await call("clear_site_zoom");
+          renderPanel();
+        });
+        zoomRow.control.appendChild(zoomBtn);
+        privacy.appendChild(zoomRow.row);
+
         const siteData = row(
           "Clear site data",
           "Cookies, cache and local storage for every site. History and bookmarks are cleared from their own tabs."
