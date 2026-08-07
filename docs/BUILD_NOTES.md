@@ -1631,6 +1631,27 @@ but does not parse is renamed to `bookmarks.json.bak` before anything starts
 empty. The net has to exist before the change that needs it, or the first person
 to find this loses their bookmarks.
 
+**Built and verified on 2026-08-06**, against a running debug build, with the
+real profile copied aside first and restored byte for byte afterwards. A file
+that is present and will not parse is renamed to `bookmarks.json.bak` byte for
+byte, confirmed by SHA-256 on both sides, and no replacement is written in its
+place.
+
+The control is the part that proves anything: a valid file loads, produces no
+`.bak`, is left untouched at its original hash, and the running app reported the
+bookmark back through the `bookmarks` command. Without that, a fix which simply
+backed up every file unconditionally would have passed the corrupt case just as
+well. A BOM-prefixed file, which is what Notepad leaves behind, also loads rather
+than being taken for damage, which is the mistake that already cost a real bug in
+`settings.rs`.
+
+Startup writes no bookmarks file at all. With the file deleted outright, nothing
+is created until something is bookmarked, so the loss this fixes happened on the
+first edit rather than the moment the app opened. A slower fuse, the same
+outcome. One reading during the first corrupt run showed a 2-byte `[]` file
+appearing with an older timestamp than the file it replaced; it did not reproduce
+from a clean profile and is not explained. Recorded rather than guessed at.
+
 ### The folder model is one array, not a tree
 
 `Bookmark` gains two fields, both `#[serde(default)]`:

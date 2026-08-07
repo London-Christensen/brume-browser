@@ -183,6 +183,52 @@ fn strip_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
+/// What was found in the bookmarks file.
+///
+/// Split out from `Store::load` so the decision can be tested without touching a
+/// disk, the same way `without_visit` is. The distinction that matters is the
+/// last variant: a file that is absent and a file that is unreadable are not the
+/// same thing, and treating them alike is what made this a data-loss bug.
+enum BookmarksFile {
+    /// Nothing on disk. Normal on first run, and nothing to preserve.
+    Missing,
+    /// Parsed cleanly.
+    Parsed(Vec<Bookmark>),
+    /// Present and unreadable. The bytes on disk are still the only copy.
+    Unreadable,
+}
+
+/// Classifies the bookmarks file. `None` in means it was not there at all.
+fn read_bookmarks(raw: Option<&str>) -> BookmarksFile {
+    let Some(text) = raw else {
+        return BookmarksFile::Missing;
+    };
+    match serde_json::from_str::<Vec<Bookmark>>(strip_bom(text)) {
+        Ok(items) => BookmarksFile::Parsed(items),
+        Err(_) => BookmarksFile::Unreadable,
+    }
+}
+
+/// Moves an unreadable bookmarks file aside so its contents survive.
+///
+/// Mirrors settings.rs, including overwriting an older `.bak`: two corruptions
+/// in a row means the first backup describes a list the user has already carried
+/// on without, so the newer file is the more useful one to keep.
+fn preserve_unreadable(path: &Path) {
+    let backup = path.with_extension("json.bak");
+    match fs::rename(path, &backup) {
+        Ok(()) => eprintln!(
+            "[store] {} could not be parsed; the original was kept at {}",
+            path.display(),
+            backup.display()
+        ),
+        Err(e) => eprintln!(
+            "[store] could not parse or preserve {}: {e}",
+            path.display()
+        ),
+    }
+}
+
 impl Store {
     pub fn load(app: &AppHandle) -> Self {
         let dir = app
@@ -199,10 +245,21 @@ impl Store {
             last_progress_emit: Mutex::new(Instant::now()),
         };
 
-        let loaded = fs::read_to_string(&store.bookmarks_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Vec<Bookmark>>(strip_bom(&raw)).ok())
-            .unwrap_or_default();
+        // A bookmarks file that exists but will not parse is kept, not replaced.
+        //
+        // This was `.ok().unwrap_or_default()`, which turned every parse failure
+        // into an empty list, and the next bookmark added then wrote that empty
+        // list back over the file. There was no `.bak` either, so the bookmarks
+        // were not merely unreadable, they were gone, and nothing said so.
+        let raw = fs::read_to_string(&store.bookmarks_path).ok();
+        let loaded = match read_bookmarks(raw.as_deref()) {
+            BookmarksFile::Parsed(items) => items,
+            BookmarksFile::Missing => Vec::new(),
+            BookmarksFile::Unreadable => {
+                preserve_unreadable(&store.bookmarks_path);
+                Vec::new()
+            }
+        };
         *store.bookmarks.lock().expect("bookmarks mutex poisoned") = loaded;
 
         store.compact_history();
@@ -972,5 +1029,46 @@ mod tests {
         let raw = "\u{feff}[]";
         assert!(serde_json::from_str::<Vec<Bookmark>>(strip_bom(raw)).is_ok());
         assert!(serde_json::from_str::<Vec<Bookmark>>(raw).is_err());
+    }
+
+    #[test]
+    fn a_missing_bookmarks_file_is_not_the_same_as_an_unreadable_one() {
+        // The entire point of the fix. Both used to produce an empty list, and
+        // the next edit wrote that back over whatever had been there.
+        assert!(matches!(read_bookmarks(None), BookmarksFile::Missing));
+        assert!(matches!(
+            read_bookmarks(Some("{not json")),
+            BookmarksFile::Unreadable
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_bookmarks_file_is_never_reported_as_empty() {
+        // Each of these is a real way the file gets damaged: a write truncated
+        // by a crash, a hand edit that drops a bracket, and the wrong shape
+        // entirely, which is what a type change to Bookmark would produce.
+        for raw in ["", "[{\"id\":1,", "{\"bookmarks\":[]}"] {
+            assert!(
+                matches!(read_bookmarks(Some(raw)), BookmarksFile::Unreadable),
+                "{raw:?} must not be mistaken for an empty list"
+            );
+        }
+        // An empty list, though, really is one, and must not go to .bak.
+        assert!(matches!(read_bookmarks(Some("[]")), BookmarksFile::Parsed(b) if b.is_empty()));
+    }
+
+    #[test]
+    fn a_bom_does_not_make_the_bookmarks_file_look_unreadable() {
+        // Without strip_bom in this path, a file Notepad had touched would be
+        // moved aside and every bookmark would vanish from the UI.
+        let one = serde_json::to_string(&vec![Bookmark {
+            id: 1,
+            url: "https://a.test/".into(),
+            title: "A".into(),
+            added_at: 5,
+        }])
+        .unwrap();
+        let out = read_bookmarks(Some(&format!("\u{feff}{one}")));
+        assert!(matches!(out, BookmarksFile::Parsed(b) if b.len() == 1));
     }
 }
