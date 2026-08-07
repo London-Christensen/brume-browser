@@ -122,6 +122,68 @@
          the right edge with no way to reach them, and the new tab button sat at
          x=2259 against a strip ending at 1920. On a 1200px window that starts
          at about 26 tabs, which is ordinary use. */
+      /* Tabs down the side.
+       *
+       * Done by repositioning the strip that already exists rather than by
+       * building a second one, so a tab is drawn by one piece of code in either
+       * layout and the two cannot drift apart.
+       *
+       * The chrome webview fills the window in this mode and the page is placed
+       * on top of the middle by relayout, so what shows here is the L around
+       * it: this column, and the toolbar band to the right of it. Everything
+       * else shifts right by the same amount the page does.
+       *
+       * --sidebar-w must match SIDEBAR_WIDTH in browser.rs.
+       */
+      body[data-sidebar="true"] {
+        --sidebar-w: 208px;
+        padding-left: var(--sidebar-w);
+      }
+      body[data-sidebar="true"] .tabs {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: var(--sidebar-w);
+        flex-direction: column;
+        align-items: stretch;
+        padding: 6px;
+        gap: 2px;
+        border-right: 1px solid var(--hairline);
+        background: var(--bg);
+      }
+      body[data-sidebar="true"] .tab-scroll {
+        flex: 1 1 auto;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 1px;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      /* Full width and a fixed height, so a vertical tab shows a title instead
+         of the three characters a horizontal one is down to at twenty tabs. */
+      body[data-sidebar="true"] .tab {
+        max-width: none;
+        width: 100%;
+        height: 30px;
+        flex: 0 0 30px;
+      }
+      /* The active marker moves to the leading edge: an underline on a stacked
+         row reads as a separator between two tabs rather than as a state. */
+      body[data-sidebar="true"] .tab[data-split="true"] {
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      body[data-sidebar="true"] .new-tab {
+        width: 100%;
+        margin-top: 4px;
+      }
+      /* A pinned tab keeps its place at the top rather than shrinking to an
+         icon: there is room for the title here, which is the point. */
+      body[data-sidebar="true"] .tab[data-pinned="true"] {
+        max-width: none;
+        width: 100%;
+      }
+
       .tabs {
         flex: 0 0 var(--tab-strip-h);
         display: flex;
@@ -2022,6 +2084,10 @@
       function render(state) {
         // Set before renderTabs, which reads it to mark the split tab.
         splitTabId = state.split ?? null;
+        // The layout switch. Driven from published state rather than read from
+        // settings here, so the chrome relaying itself out and the page being
+        // resized to match come off the same update.
+        document.body.dataset.sidebar = String(!!state.sidebar);
         renderTabs(state.tabs);
         // Kept so tab search filters the same list the strip drew, rather than
         // asking the backend for a second copy that could disagree.
@@ -3079,6 +3145,19 @@
           )
         );
         general.appendChild(bookmarksBar.row);
+
+        const tabSidebar = row(
+          "Tabs down the side",
+          "A vertical list on the left instead of a strip along the top, with room for the whole title. Ctrl+Shift+E toggles it."
+        );
+        tabSidebar.control.appendChild(
+          switchControl(
+            settings.show_tab_sidebar,
+            "Show tabs down the side",
+            (next) => call("set_tab_sidebar", { show: next })
+          )
+        );
+        general.appendChild(tabSidebar.row);
 
         form.appendChild(general);
 

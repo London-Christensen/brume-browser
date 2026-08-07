@@ -2189,6 +2189,58 @@ Verified on 2026-08-07, with each pane's own reported width as the check:
 Splitting the active tab with itself is refused: that is one pane and a gap down
 the side. The menu offers the active tab the way out instead of the way in.
 
+### The tab sidebar is an L, and one webview cannot be L-shaped
+
+The chrome is a single webview and therefore a single rectangle. Tabs down the
+side means chrome along the left *and* across the top, which no rectangle can be.
+
+The 0.5.0 z-order finding is what solves it. The content webview sits **above**
+the chrome, so the chrome takes the whole window and the page is placed on top of
+the middle. The L is what is left over. Nothing new was needed for this: it is
+the same property that made the panel work by growing the chrome to full size,
+used the other way round.
+
+So the layout gained a second dimension. `chrome_extent` was the only number
+positioning needed; there is now `chrome_inset` beside it, 0 normally and the
+sidebar width otherwise. `extent_for` takes the sidebar too, because the tab
+strip is no longer in the top band when it is on: the band is the toolbar and
+whatever is under it, and **the page gains back exactly the strip's height**.
+There is a test asserting that difference is 36px in all four bar combinations,
+which a branch per case would eventually get wrong.
+
+The strip is repositioned by CSS rather than rebuilt. `body[data-sidebar]` turns
+the same element into a fixed full-height column and shifts everything else right
+by the same amount the page moves. One piece of code draws a tab in either
+layout, so the two cannot drift.
+
+**It composes with split view**, and that is deliberate rather than lucky: the
+panes are measured from the inset, so splitting inside a sidebar layout divides
+the page area rather than the window.
+
+Verified on 2026-08-07:
+
+| | |
+|---|---|
+| Sidebar off | Chrome 76 tall, page 1920 x 981 |
+| Sidebar on | Chrome fills the window, page 1712 x 1017 |
+| The arithmetic | 1920 - 208 = 1712, and 981 + 36 = 1017 |
+| Tabs | Stacked: same x, y stepping by 31 |
+| Sidebar and split together | 855 each, which is (1920 - 208 - 2) / 2 |
+| Sidebar off again | Chrome back to 76, page back to 1920 x 981, strip horizontal |
+
+**A trap worth knowing before it reads as a bug.** A hidden webview keeps the
+size it last had, because `relayout` positions what is on screen and hides the
+rest. Querying "the content webview" after a layout change can therefore return
+stale dimensions from a tab that is not showing. Check `document.visibilityState`
+first: during this work a hidden pane reporting 855 wide looked exactly like the
+sidebar failing to resize anything, and it was not.
+
+**The `tab_` prefix trap caught a second victim.** The binding was first written
+as `tab_sidebar`, which the Ctrl+1..8 arm claims: it would have parsed "sidebar"
+as a digit and silently done nothing, exactly as `tab_search` did in 0.5.0. It is
+`sidebar` now, and the comment beside it says the mistake was made again rather
+than merely warning about it.
+
 ---
 
 ## Known hard problems, deliberately deferred

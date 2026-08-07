@@ -87,6 +87,8 @@ fn main() {
             browser::open_devtools,
             browser::view_source,
             browser::set_split,
+            browser::set_tab_sidebar,
+            browser::toggle_tab_sidebar,
             browser::toggle_fullscreen,
             browser::reset_zoom,
             browser::set_zoom,

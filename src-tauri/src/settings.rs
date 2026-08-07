@@ -87,6 +87,14 @@ pub struct Settings {
     /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
+    /// Whether tabs run down the side instead of across the top.
+    ///
+    /// A preference rather than per window, like the bookmarks bar and for the
+    /// same reason: a window that laid its tabs out differently from the one
+    /// next to it would read as a bug. Its own key, added in 0.8.0.
+    #[serde(default)]
+    pub show_tab_sidebar: bool,
+
     /// Search engines the user added themselves.
     ///
     /// Kept apart from the built-in list rather than merged into it: the
@@ -193,6 +201,7 @@ impl Default for Settings {
             session_tabs: Vec::new(),
             session_active: 0,
             session_windows: Vec::new(),
+            show_tab_sidebar: false,
             custom_engines: Vec::new(),
             site_zoom: std::collections::HashMap::new(),
             window: None,
@@ -375,6 +384,17 @@ impl SettingsState {
 
     pub fn set_show_bookmarks_bar(&self, show: bool) -> Result<(), String> {
         self.update(|s| s.show_bookmarks_bar = show)
+    }
+
+    pub fn show_tab_sidebar(&self) -> bool {
+        self.current
+            .lock()
+            .expect("settings mutex poisoned")
+            .show_tab_sidebar
+    }
+
+    pub fn set_show_tab_sidebar(&self, show: bool) -> Result<(), String> {
+        self.update(|s| s.show_tab_sidebar = show)
     }
 
     pub fn set_window(&self, geometry: WindowGeometry) -> Result<(), String> {

@@ -83,6 +83,11 @@ const BINDINGS: &[(&str, &str)] = &[
     ("Alt+Home", "home"),
     ("CmdOrCtrl+D", "bookmark"),
     ("CmdOrCtrl+Shift+B", "bookmarks_bar"),
+    // Named "sidebar", not "tab_sidebar". Anything starting `tab_` is claimed
+    // by the numbered-tab arm, which would try to parse "sidebar" as a digit
+    // and silently do nothing. That is the same trap "search_tabs" documents,
+    // and it was walked into again while writing this line.
+    ("CmdOrCtrl+Shift+E", "sidebar"),
     ("CmdOrCtrl+H", "history"),
     ("CmdOrCtrl+J", "downloads"),
     ("CmdOrCtrl+Comma", "settings"),
@@ -307,6 +312,10 @@ pub fn handle(app: &AppHandle, action: &str) {
         "bookmarks_bar" => spawn(app, |app| async move {
             browser::toggle_bookmarks_bar(app).await
         }),
+        "sidebar" => spawn(
+            app,
+            |app| async move { browser::toggle_tab_sidebar(app).await },
+        ),
         "bookmark" => log(browser::toggle_bookmark_active(app.clone(), win).map(|_| ())),
 
         // The chrome decides which view to show and toggles the panel itself.

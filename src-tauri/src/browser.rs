@@ -58,6 +58,13 @@ const FIND_BAR_HEIGHT: f64 = 36.0;
 /// does not get for as long as the bar is on.
 const BOOKMARKS_BAR_HEIGHT: f64 = 32.0;
 
+/// Width of the tab sidebar. Must match `--sidebar-w` in `src/index.html`.
+///
+/// Wide enough for a favicon and a readable amount of title, which is the whole
+/// reason to put tabs down the side: a vertical tab can show a title that a
+/// horizontal one truncates to three characters once twenty are open.
+const SIDEBAR_WIDTH: f64 = 208.0;
+
 pub const WINDOW_LABEL: &str = "main";
 
 /// How far a new window is offset from the last one, in logical pixels.
@@ -372,6 +379,27 @@ pub struct Browser {
 ///
 /// Summed rather than branched, so a third row later is one more term and not a
 /// rewrite of the arithmetic.
+/// How far in from the left the page starts.
+///
+/// 0 normally. With the tab sidebar on, the chrome occupies a full-height column
+/// down the left and the page begins beside it.
+///
+/// The chrome is one webview and one rectangle, so an L-shape cannot be drawn by
+/// growing it in two directions. What makes this work is the z-order finding
+/// from 0.5.0: the content webview sits *above* the chrome. So the chrome takes
+/// the whole window and the page is placed on top of the middle, leaving the
+/// chrome visible exactly where the page is not. The L is what is left over.
+fn chrome_inset(app: &AppHandle) -> f64 {
+    if app
+        .state::<crate::settings::SettingsState>()
+        .show_tab_sidebar()
+    {
+        SIDEBAR_WIDTH
+    } else {
+        0.0
+    }
+}
+
 fn chrome_extent(app: &AppHandle, state: &WindowState) -> f64 {
     let find_open = state.find_open.load(Ordering::Relaxed);
     // Read from settings rather than mirrored into `Browser`. One source of
@@ -381,11 +409,9 @@ fn chrome_extent(app: &AppHandle, state: &WindowState) -> f64 {
     // Still app-wide rather than per window: the bookmarks bar is a preference,
     // and a bar that was showing in one window and not the next would read as a
     // bug rather than a feature.
-    let bookmarks_bar = app
-        .state::<crate::settings::SettingsState>()
-        .show_bookmarks_bar();
-
-    extent_for(find_open, bookmarks_bar)
+    let settings = app.state::<crate::settings::SettingsState>();
+    let bookmarks_bar = settings.show_bookmarks_bar();
+    extent_for(find_open, bookmarks_bar, settings.show_tab_sidebar())
 }
 
 /// The arithmetic on its own, so it can be tested.
@@ -393,9 +419,16 @@ fn chrome_extent(app: &AppHandle, state: &WindowState) -> f64 {
 /// Split out from `chrome_extent` because that needs an `AppHandle` and a
 /// running app, while this is the part that has to agree with the CSS. The
 /// numbers it returns are asserted in the tests at the bottom of this file.
-fn extent_for(find_open: bool, bookmarks_bar: bool) -> f64 {
-    CHROME_HEIGHT
-        + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
+fn extent_for(find_open: bool, bookmarks_bar: bool, sidebar: bool) -> f64 {
+    // With the sidebar on, the tab strip is no longer in the top band: it has
+    // moved down the side. The band is the toolbar and whatever is under it, so
+    // the page gains back exactly the strip's height.
+    let base = if sidebar {
+        TOOLBAR_HEIGHT
+    } else {
+        CHROME_HEIGHT
+    };
+    base + if find_open { FIND_BAR_HEIGHT } else { 0.0 }
         + if bookmarks_bar {
             BOOKMARKS_BAR_HEIGHT
         } else {
@@ -570,6 +603,10 @@ pub struct BrowserState {
     /// Zoom of the active tab. 1.0 is 100%; the chrome hides the control at
     /// that value rather than showing "100%" permanently.
     pub zoom: f64,
+    /// Whether tabs run down the side. Published for the same reason the
+    /// bookmarks bar is: the chrome relaying itself out and the page being
+    /// resized to match come off one update rather than two that can race.
+    pub sidebar: bool,
     /// The tab shown beside the active one, or `None` when not split.
     ///
     /// Published so the strip can mark it. Without that, a split tab looks like
@@ -584,6 +621,7 @@ fn snapshot(
     bookmarks_bar: bool,
     panel_open: bool,
     split: Option<u32>,
+    sidebar: bool,
 ) -> BrowserState {
     let active = tabs.active_tab();
 
@@ -612,6 +650,7 @@ fn snapshot(
         bookmarked,
         bookmarks_bar,
         panel_open,
+        sidebar,
         zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
         // Reported as absent once the tab is gone, so a split that outlived its
         // partner cannot leave the strip marking a tab that is not there.
@@ -636,14 +675,14 @@ fn current_state(app: &AppHandle, state: &WindowState) -> BrowserState {
     let bookmarked = app
         .state::<crate::store::Store>()
         .is_bookmarked(&active_url);
-    let bookmarks_bar = app
-        .state::<crate::settings::SettingsState>()
-        .show_bookmarks_bar();
+    let settings = app.state::<crate::settings::SettingsState>();
+    let bookmarks_bar = settings.show_bookmarks_bar();
+    let sidebar = settings.show_tab_sidebar();
 
     let panel_open = state.panel_open.load(Ordering::Relaxed);
     let split = *state.split.lock().expect("split mutex poisoned");
     let tabs = state.tabs.lock().expect("tabs mutex poisoned");
-    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open, split)
+    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open, split, sidebar)
 }
 
 /// Closes the panel, because something is about to show a page.
@@ -729,7 +768,13 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
     // webview is hidden. That is what keeps history, bookmarks and settings
     // inside the one webview that holds capabilities, instead of needing a
     // privileged tab alongside arbitrary websites.
-    let chrome_height = if panel_open {
+    // How far in from the left the page starts. The chrome fills the window
+    // behind it when this is non-zero; see `chrome_inset`.
+    let inset = chrome_inset(app);
+
+    let chrome_height = if panel_open || inset > 0.0 {
+        // Full height either way, but for different reasons: the panel covers
+        // the window, and the sidebar has to reach the bottom of it.
         size.height
     } else {
         // Whichever is lower: the bars, or the bottom of an open overlay.
@@ -737,8 +782,9 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
     };
 
     // A window can be dragged smaller than the chrome mid-resize; clamping stops
-    // the content webview being handed a negative height.
+    // the content webview being handed a negative height or width.
     let content_height = (size.height - extent).max(0.0);
+    let content_width = (size.width - inset).max(0.0);
 
     if let Some(chrome) = app.get_webview(&state.chrome) {
         chrome.set_position(LogicalPosition::new(0.0, 0.0))?;
@@ -779,12 +825,15 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
     // Two panes when split, one otherwise. Split down the middle rather than at
     // a draggable ratio: a divider is its own interaction, and half is the
     // useful case. The gap is left as window background, so nothing draws it.
+    // Measured from the inset, so a split inside a sidebar layout divides the
+    // page area rather than the window: the two features compose instead of
+    // one of them silently winning.
     let (left_width, right_x, right_width) = match split_label {
         Some(_) => {
-            let half = ((size.width - SPLIT_GAP) / 2.0).max(0.0);
-            (half, half + SPLIT_GAP, half)
+            let half = ((content_width - SPLIT_GAP) / 2.0).max(0.0);
+            (half, inset + half + SPLIT_GAP, half)
         }
-        None => (size.width, 0.0, 0.0),
+        None => (content_width, 0.0, 0.0),
     };
 
     if let Some(label) = active_label {
@@ -792,7 +841,7 @@ fn relayout(app: &AppHandle, state: &WindowState) -> tauri::Result<()> {
             if panel_open {
                 let _ = view.hide();
             } else {
-                view.set_position(LogicalPosition::new(0.0, extent))?;
+                view.set_position(LogicalPosition::new(inset, extent))?;
                 view.set_size(LogicalSize::new(left_width, content_height))?;
                 let _ = view.show();
             }
@@ -839,7 +888,9 @@ fn spawn_tab_webview(
     // Matches whatever the chrome currently occupies, so a tab opened while the
     // find bar is up is not born 36px too tall and overlapping it.
     let extent = chrome_extent(app, state);
+    let inset = chrome_inset(app);
     let content_height = (size.height - extent).max(0.0);
+    let content_width = (size.width - inset).max(0.0);
 
     let parsed = url.parse().unwrap_or_else(|_| {
         // A homepage the user typed by hand can be unparseable; falling back
@@ -1066,8 +1117,12 @@ fn spawn_tab_webview(
                     publish(&title_handle, &win);
                 }
             }),
-        LogicalPosition::new(0.0, extent),
-        LogicalSize::new(size.width, content_height),
+        // Born where the layout would put it, sidebar included, so a tab opened
+        // while the sidebar is on is not briefly 208px too wide and underneath
+        // it. The relayout that follows corrects it either way; this is about
+        // the frame before that.
+        LogicalPosition::new(inset, extent),
+        LogicalSize::new(content_width, content_height),
     )?;
 
     Ok(())
@@ -2535,6 +2590,32 @@ pub async fn set_chrome_overlay(
     Ok(())
 }
 
+/// Moves the tabs down the side, or back across the top.
+///
+/// Async for the same reason `set_bookmarks_bar` is: it re-lays-out webviews.
+/// Applied to every window, because it is a preference and a window laying its
+/// tabs out differently from the one beside it would read as a bug.
+#[tauri::command]
+pub async fn set_tab_sidebar(app: AppHandle, show: bool) -> Result<(), String> {
+    app.state::<crate::settings::SettingsState>()
+        .set_show_tab_sidebar(show)?;
+
+    for state in app.state::<Browser>().all() {
+        relayout(&app, &state).map_err(|e| e.to_string())?;
+        publish(&app, &state);
+    }
+    Ok(())
+}
+
+/// Flips it. Ctrl+Shift+E, which nothing else claims.
+#[tauri::command]
+pub async fn toggle_tab_sidebar(app: AppHandle) -> Result<(), String> {
+    let showing = app
+        .state::<crate::settings::SettingsState>()
+        .show_tab_sidebar();
+    set_tab_sidebar(app, !showing).await
+}
+
 /// Flips the bookmarks bar. Ctrl+Shift+B, and nothing else needs a toggle.
 #[tauri::command]
 pub async fn toggle_bookmarks_bar(app: AppHandle) -> Result<(), String> {
@@ -2816,10 +2897,41 @@ mod tests {
     /// someone changed one of them and forgot the stylesheet.
     #[test]
     fn the_chrome_grows_by_each_open_bar() {
-        assert_eq!(extent_for(false, false), 76.0, "tab strip plus toolbar");
-        assert_eq!(extent_for(true, false), 112.0, "plus the find bar");
-        assert_eq!(extent_for(false, true), 108.0, "plus the bookmarks bar");
+        assert_eq!(
+            extent_for(false, false, false),
+            76.0,
+            "tab strip plus toolbar"
+        );
+        assert_eq!(extent_for(true, false, false), 112.0, "plus the find bar");
+        assert_eq!(
+            extent_for(false, true, false),
+            108.0,
+            "plus the bookmarks bar"
+        );
         // Both at once is the case a branch instead of a sum would get wrong.
-        assert_eq!(extent_for(true, true), 144.0, "plus both");
+        assert_eq!(extent_for(true, true, false), 144.0, "plus both");
+    }
+
+    #[test]
+    fn the_sidebar_gives_the_page_back_the_tab_strips_height() {
+        // With tabs down the side the top band is the toolbar and whatever is
+        // under it, so the page gains exactly the 36px the strip was taking.
+        assert_eq!(extent_for(false, false, true), 40.0, "toolbar alone");
+        assert_eq!(extent_for(true, false, true), 76.0, "plus the find bar");
+        assert_eq!(
+            extent_for(false, true, true),
+            72.0,
+            "plus the bookmarks bar"
+        );
+        assert_eq!(extent_for(true, true, true), 108.0, "plus both");
+
+        // The difference is the strip's height in every combination, which is
+        // the property a branch per case would eventually break.
+        for (find, marks) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                extent_for(find, marks, false) - extent_for(find, marks, true),
+                36.0
+            );
+        }
     }
 }
