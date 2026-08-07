@@ -2411,6 +2411,59 @@ the harness rather than by calling `switch_profile`, because that restarts the
 process and a restarted window is not the off-screen one the harness parked. The
 code path under test is the same: `active_dir` is read at startup either way.
 
+### "HotKey already registered" is not Brume registering it twice
+
+Launching printed three of these on stderr, and they read as a bug in new code:
+
+```text
+[shortcuts] could not register F12 for devtools:
+    HotKey already registered: HotKey { mods: Modifiers(0x0), key: F12, id: 171 }
+```
+
+The three were Ctrl+Shift+E, F12 and Ctrl+Shift+I, which are exactly the
+shortcuts 0.8.0 added, so the obvious reading was that the new bindings collided
+with existing ones. **They do not.** Checked and ruled out in this order:
+`BINDINGS` has no duplicate accelerator; no two entries produce the same
+`HotKey::id()`; and nothing in tauri, wry, muda or the shortcut plugin registers
+these keys.
+
+The answer is in `global-hotkey`. Its Windows backend maps
+`ERROR_HOTKEY_ALREADY_REGISTERED`, which is 1409 from `RegisterHotKey`, onto its
+own `AlreadyRegistered` variant. That code means **another process on the machine
+owns the combination system-wide**, not that this process asked twice. Brume was
+reporting accurately and its message was describing the wrong thing.
+
+Nothing can be done about the conflict itself: the OS gives the key to whoever
+claimed it first, and it never reaches Brume. What was worth fixing is the
+message, which now says another application owns it and that everything else
+still works.
+
+### The same conflict was reported twice per launch
+
+Two causes, and only one of them was what it looked like.
+
+`main` arms the shortcuts after `browser::build`, with a comment explaining that
+the window is created focused and its `Focused(true)` has "been and gone". Both
+of those arm, so one is redundant. `set_active` keeps an `ARMED` flag now and
+returns early when asked for the state it is already in.
+
+That alone did not fix it, which is the useful part. The two passes are not a
+double-arm: there is a genuine `Focused(false)` between them, because the window
+loses and regains focus while its webviews attach. Arming, disarming and arming
+again is correct, and each pass rediscovers the same conflict.
+
+So the fix is in the reporting rather than the registering. A conflict is printed
+once per accelerator per run. Shortcuts are released and re-registered on every
+focus change, so without that, clicking away and back reprints the lot, and one
+fact about the machine reads as something going wrong repeatedly.
+
+### The chrome's own console was clean
+
+Worth checking rather than assuming, since "the debug console" could as easily
+have meant the webview's. A capture hooked onto `error`, `unhandledrejection`,
+`console.error` and `console.warn`, then every panel view rendered and the
+bookmarks bar redrawn, produced nothing.
+
 ---
 
 ## Known hard problems, deliberately deferred

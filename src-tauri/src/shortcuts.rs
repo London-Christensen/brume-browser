@@ -35,6 +35,10 @@
 //! while dispatching to the main thread - so calling it here deadlocks exactly as
 //! it would from a synchronous command. See BUILD_NOTES.md.
 
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -145,8 +149,29 @@ pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .build()
 }
 
+/// Whether the shortcuts are currently registered.
+///
+/// Guards against registering twice, which happened on every launch: `build`
+/// creates the window already focused, so its `Focused(true)` handler arms the
+/// shortcuts, and then `main` arms them again on the next line because the
+/// comment there says that event has "been and gone". Both are true, and one of
+/// them is redundant.
+///
+/// The cost was not just noise. The second pass re-registered 34 shortcuts that
+/// were already held, and reported the three the machine had taken a second
+/// time, so a launch printed every conflict twice.
+static ARMED: AtomicBool = AtomicBool::new(false);
+
 /// Registers or releases the shortcuts as the window gains and loses focus.
+///
+/// Idempotent. With more than one window, focus moving between them fires
+/// `Focused(false)` for the one leaving and `Focused(true)` for the one
+/// arriving, in an order that is not guaranteed, so this has to be safe to call
+/// with the same value twice.
 pub fn set_active(app: &AppHandle, active: bool) {
+    if ARMED.swap(active, Ordering::Relaxed) == active {
+        return;
+    }
     let manager = app.global_shortcut();
 
     if !active {
@@ -158,10 +183,66 @@ pub fn set_active(app: &AppHandle, active: bool) {
 
     for (accel, action) in BINDINGS {
         if let Err(e) = manager.register(*accel) {
-            // Worth reporting: a shortcut that silently fails to register looks
-            // identical to one whose action is broken.
-            eprintln!("[shortcuts] could not register {accel} for {action}: {e}");
+            report(accel, action, &e);
         }
+    }
+}
+
+/// Explains a failed registration in terms of what actually happened.
+///
+/// Worth reporting at all: a shortcut that silently fails to register looks
+/// identical to one whose action is broken.
+///
+/// Worth rewording, though. `global-hotkey` maps Win32's
+/// `ERROR_HOTKEY_ALREADY_REGISTERED` onto its `AlreadyRegistered` variant, whose
+/// Display is "HotKey already registered". Printed raw that reads as Brume
+/// registering the same key twice, which is a bug in Brume. It is not: the code
+/// is 1409 from `RegisterHotKey`, and it means **another application on the
+/// machine owns that combination system-wide**. Brume cannot have it, nothing
+/// here can change that, and the key will not reach Brume at all - the OS gives
+/// it to whoever claimed it first.
+///
+/// Measured on 2026-08-07: F12, Ctrl+Shift+I and Ctrl+Shift+E all came back this
+/// way on the development machine, while the other 34 registered cleanly. The
+/// three that failed were the ones added in 0.8.0, which is what made it look
+/// like new code was at fault rather than a machine that already had those keys
+/// spoken for.
+/// Matched on the message rather than the variant, which is not ideal and is not
+/// avoidable here: the plugin flattens `global_hotkey::Error` into
+/// `GlobalHotkey(String)` before Brume ever sees it, so the only way to the
+/// typed variant would be depending on `global_hotkey` directly for one match.
+/// The variant half is typed; only the reason is text. If a future version
+/// rewords it, the worst case is the blunter message below, not a wrong one.
+fn report(accel: &'static str, action: &str, e: &tauri_plugin_global_shortcut::Error) {
+    // Once per run, per accelerator.
+    //
+    // The shortcuts are released and re-registered on every focus change, so a
+    // conflict is rediscovered every time the user clicks away and back. Even a
+    // single launch reports each one twice, because the window loses and regains
+    // focus while its webviews attach. Printing on every rediscovery turns one
+    // fact about the machine into a stream that looks like something going
+    // wrong repeatedly.
+    static REPORTED: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+    if !REPORTED
+        .lock()
+        .expect("reported shortcuts mutex poisoned")
+        .insert(accel)
+    {
+        return;
+    }
+
+    let taken = matches!(
+        e,
+        tauri_plugin_global_shortcut::Error::GlobalHotkey(m)
+            if m.contains("already registered")
+    );
+    if taken {
+        eprintln!(
+            "[shortcuts] {accel} is already owned by another application, so {action} has no \
+             keyboard shortcut on this machine. Everything else still works."
+        );
+    } else {
+        eprintln!("[shortcuts] could not register {accel} for {action}: {e}");
     }
 }
 
