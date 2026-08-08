@@ -91,7 +91,12 @@ const BINDINGS: &[(&str, &str)] = &[
     // by the numbered-tab arm, which would try to parse "sidebar" as a digit
     // and silently do nothing. That is the same trap "search_tabs" documents,
     // and it was walked into again while writing this line.
+    //
+    // Two of them, for the reason the DevTools block below records: Ctrl+Shift+E
+    // is the natural one and was already owned by another application on the
+    // machine this was written on. Ctrl+Shift+Y was measured free.
     ("CmdOrCtrl+Shift+E", "sidebar"),
+    ("CmdOrCtrl+Shift+Y", "sidebar"),
     ("CmdOrCtrl+H", "history"),
     ("CmdOrCtrl+J", "downloads"),
     ("CmdOrCtrl+Comma", "settings"),
@@ -112,10 +117,24 @@ const BINDINGS: &[(&str, &str)] = &[
     ("CmdOrCtrl+Shift+A", "search_tabs"),
     ("CmdOrCtrl+P", "print"),
     ("F11", "fullscreen"),
-    // Both, because both are muscle memory and neither is taken. F12 is the
-    // one people reach for; Ctrl+Shift+I is what the Chromium menus advertise.
+    // Three, and the third is not redundancy for its own sake.
+    //
+    // F12 and Ctrl+Shift+I are what people reach for and what the Chromium
+    // menus advertise, so they stay. But a global shortcut can simply be
+    // unavailable: another application registers it first and the OS never
+    // delivers it here. On the machine this was written on, something owns a
+    // whole block of Ctrl+Shift letters - C, E, I, J, L and U were all taken -
+    // which took out both conventional DevTools keys at once.
+    //
+    // Ctrl+Shift+K is the fallback. Firefox uses it for the web console, so it
+    // is not invented, and it was measured free rather than assumed.
+    //
+    // Deliberately not a Ctrl+Alt combination, though several were free:
+    // Ctrl+Alt is AltGr on many European layouts, so holding one globally can
+    // stop a user typing a character they need.
     ("F12", "devtools"),
     ("CmdOrCtrl+Shift+I", "devtools"),
+    ("CmdOrCtrl+Shift+K", "devtools"),
     ("CmdOrCtrl+U", "view_source"),
 ];
 
@@ -181,47 +200,75 @@ pub fn set_active(app: &AppHandle, active: bool) {
         return;
     }
 
+    // Registered first, reported afterwards. What to say about a failure depends
+    // on whether the same action got one of its other accelerators, and that is
+    // not known until the whole pass is done. Reporting inline claimed devtools
+    // had no shortcut at all while Ctrl+Shift+K was about to register fine.
+    let mut failed: Vec<(&'static str, &'static str)> = Vec::new();
+    let mut worked: Vec<(&'static str, &'static str)> = Vec::new();
+
     for (accel, action) in BINDINGS {
-        if let Err(e) = manager.register(*accel) {
-            report(accel, action, &e);
+        match manager.register(*accel) {
+            Ok(()) => worked.push((accel, action)),
+            Err(e) => {
+                if !is_taken(&e) {
+                    // Something other than a conflict. Reported as-is, since
+                    // there is no useful reframing for an unknown failure.
+                    eprintln!("[shortcuts] could not register {accel} for {action}: {e}");
+                    continue;
+                }
+                failed.push((accel, action));
+            }
         }
+    }
+
+    for (accel, action) in failed {
+        let alternative = worked
+            .iter()
+            .find(|(_, a)| a == &action)
+            .map(|(alt, _)| *alt);
+        report_taken(accel, action, alternative);
     }
 }
 
-/// Explains a failed registration in terms of what actually happened.
+/// Whether a failure is another application owning the combination.
 ///
-/// Worth reporting at all: a shortcut that silently fails to register looks
-/// identical to one whose action is broken.
+/// `global-hotkey` maps Win32's `ERROR_HOTKEY_ALREADY_REGISTERED` onto its
+/// `AlreadyRegistered` variant, whose Display is "HotKey already registered".
+/// Printed raw that reads as Brume registering the same key twice, which would
+/// be a bug here. It is not: the code is 1409 from `RegisterHotKey`, and it
+/// means another application on the machine owns that combination system-wide.
+/// Nothing here can reclaim it, and the key never reaches Brume at all.
 ///
-/// Worth rewording, though. `global-hotkey` maps Win32's
-/// `ERROR_HOTKEY_ALREADY_REGISTERED` onto its `AlreadyRegistered` variant, whose
-/// Display is "HotKey already registered". Printed raw that reads as Brume
-/// registering the same key twice, which is a bug in Brume. It is not: the code
-/// is 1409 from `RegisterHotKey`, and it means **another application on the
-/// machine owns that combination system-wide**. Brume cannot have it, nothing
-/// here can change that, and the key will not reach Brume at all - the OS gives
-/// it to whoever claimed it first.
+/// Matched on the message rather than the variant, which is not ideal and is not
+/// avoidable: the plugin flattens `global_hotkey::Error` into
+/// `GlobalHotkey(String)` before Brume sees it, so reaching the typed variant
+/// would mean depending on `global_hotkey` directly for one match. The variant
+/// half is typed; only the reason is text. If a future version rewords it, the
+/// worst case is the blunter message, not a wrong one.
+fn is_taken(e: &tauri_plugin_global_shortcut::Error) -> bool {
+    matches!(
+        e,
+        tauri_plugin_global_shortcut::Error::GlobalHotkey(m)
+            if m.contains("already registered")
+    )
+}
+
+/// Says that a combination is spoken for, and what still works instead.
 ///
 /// Measured on 2026-08-07: F12, Ctrl+Shift+I and Ctrl+Shift+E all came back this
-/// way on the development machine, while the other 34 registered cleanly. The
-/// three that failed were the ones added in 0.8.0, which is what made it look
-/// like new code was at fault rather than a machine that already had those keys
-/// spoken for.
-/// Matched on the message rather than the variant, which is not ideal and is not
-/// avoidable here: the plugin flattens `global_hotkey::Error` into
-/// `GlobalHotkey(String)` before Brume ever sees it, so the only way to the
-/// typed variant would be depending on `global_hotkey` directly for one match.
-/// The variant half is typed; only the reason is text. If a future version
-/// rewords it, the worst case is the blunter message below, not a wrong one.
-fn report(accel: &'static str, action: &str, e: &tauri_plugin_global_shortcut::Error) {
+/// way on the development machine, along with Ctrl+Shift+C, J, L and U when
+/// probed. Something there owns a block of Ctrl+Shift letters. That is why the
+/// actions those keys drive carry a second accelerator.
+fn report_taken(accel: &'static str, action: &str, alternative: Option<&'static str>) {
     // Once per run, per accelerator.
     //
     // The shortcuts are released and re-registered on every focus change, so a
     // conflict is rediscovered every time the user clicks away and back. Even a
-    // single launch reports each one twice, because the window loses and regains
-    // focus while its webviews attach. Printing on every rediscovery turns one
-    // fact about the machine into a stream that looks like something going
-    // wrong repeatedly.
+    // single launch would report each one twice, because the window loses and
+    // regains focus while its webviews attach. Printing on every rediscovery
+    // turns one fact about the machine into a stream that reads as something
+    // going wrong repeatedly.
     static REPORTED: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
     if !REPORTED
         .lock()
@@ -231,18 +278,14 @@ fn report(accel: &'static str, action: &str, e: &tauri_plugin_global_shortcut::E
         return;
     }
 
-    let taken = matches!(
-        e,
-        tauri_plugin_global_shortcut::Error::GlobalHotkey(m)
-            if m.contains("already registered")
-    );
-    if taken {
-        eprintln!(
-            "[shortcuts] {accel} is already owned by another application, so {action} has no \
-             keyboard shortcut on this machine. Everything else still works."
-        );
-    } else {
-        eprintln!("[shortcuts] could not register {accel} for {action}: {e}");
+    match alternative {
+        Some(alt) => eprintln!(
+            "[shortcuts] {accel} is owned by another application, so {action} is on {alt} here."
+        ),
+        None => eprintln!(
+            "[shortcuts] {accel} is owned by another application, so {action} has no keyboard \
+             shortcut on this machine. Everything else still works."
+        ),
     }
 }
 
@@ -456,6 +499,24 @@ mod tests {
                 action_for(&parsed),
                 Some(*action),
                 "{accel} did not resolve back to {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn actions_that_lose_their_key_to_other_software_keep_a_spare() {
+        // Not redundancy to be tidied away. A global shortcut can simply be
+        // unavailable: another application registers it first and the OS never
+        // delivers it here. Both conventional DevTools keys went that way on the
+        // machine this was written on, along with Ctrl+Shift+E for the sidebar,
+        // so each of those actions carries a second accelerator that was
+        // measured free. Removing one would leave the action unreachable by
+        // keyboard on any machine with the same software installed.
+        for action in ["devtools", "sidebar", "reload"] {
+            let count = BINDINGS.iter().filter(|(_, a)| *a == action).count();
+            assert!(
+                count >= 2,
+                "{action} should keep more than one accelerator, has {count}"
             );
         }
     }

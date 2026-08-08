@@ -2457,6 +2457,43 @@ once per accelerator per run. Shortcuts are released and re-registered on every
 focus change, so without that, clicking away and back reprints the lot, and one
 fact about the machine reads as something going wrong repeatedly.
 
+### Rebinding, by measurement rather than by guess
+
+Three actions had no working key on the machine, so each gained a second
+accelerator. Which second one was decided by probing rather than by picking
+something plausible: a temporary loop registered fifteen candidates, printed
+which succeeded, and unregistered them again.
+
+That was worth doing. The obvious fallback for DevTools is Ctrl+Shift+J, the
+other Chromium console shortcut, and **it is taken on that machine too**, as are
+Ctrl+Shift+C, L and U. Something there owns a block of Ctrl+Shift letters, so any
+guess in that range had a good chance of failing the same way.
+
+The result: DevTools keeps F12 and Ctrl+Shift+I and gains **Ctrl+Shift+K**, which
+Firefox uses for its web console. The sidebar keeps Ctrl+Shift+E and gains
+**Ctrl+Shift+Y**.
+
+Several `Ctrl+Alt` combinations were free and were **not** used. Ctrl+Alt is AltGr
+on many European layouts, so holding one globally can stop somebody typing a
+character they need. A shortcut that works here and breaks a Polish keyboard is
+not a fix.
+
+The conventional keys are kept rather than replaced. They work on any machine
+that has them free, and the point is to stop this machine being stranded, not to
+make every machine unconventional. A test asserts those actions keep more than
+one accelerator, so the duplicates are not tidied away later by someone who reads
+them as an oversight.
+
+**The message had to change again**, which is the part worth remembering. Once a
+fallback existed, "so devtools has no keyboard shortcut on this machine" was
+false: it had one, and the line said otherwise. Reporting now happens after the
+whole pass rather than inline, because whether an action still has a key is not
+known until every binding has been tried. It reads:
+
+```text
+[shortcuts] F12 is owned by another application, so devtools is on CmdOrCtrl+Shift+K here.
+```
+
 ### The chrome's own console was clean
 
 Worth checking rather than assuming, since "the debug console" could as easily
