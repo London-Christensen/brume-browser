@@ -33,10 +33,21 @@ Brume renders pages with the Microsoft Edge WebView2 runtime, which is not
 redistributed here and remains subject to its own terms.
 
 The Rust dependency tree is predominantly Apache-2.0 or MIT. It also includes
-components under the Mozilla Public License 2.0, currently cssparser,
+components under the Mozilla Public License 2.0, currently adblock, cssparser,
 cssparser-macros, dtoa-short, option-ext and selectors. MPL-2.0 is file-level
 copyleft: those files stay under MPL-2.0 and their source is available from
 crates.io. None of them are modified here.
+
+adblock is listed first because it is a deliberate choice rather than something
+that arrived underneath another crate. It is Brave's content blocking engine,
+from https://github.com/brave/adblock-rust/, and it is what Brume matches filter
+rules with.
+
+Brume does not redistribute any filter list. EasyList and the lists derived from
+it are CC BY-SA 3.0, and bundling one would mean carrying that licence and its
+share-alike terms into this repository. They are downloaded on the user's own
+machine, from the publishers, and cached there. What ships here is the engine,
+not the rules.
 
 Archivo is bundled under the SIL Open Font License 1.1. See
 brand/assets/fonts/README.md.

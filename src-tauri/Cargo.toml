@@ -72,6 +72,22 @@ windows = { version = "0.61", features = [
 # adds no compile cost and beats spawning an OS thread per tab switch.
 tokio = { version = "1", features = ["time"] }
 
+# Content blocking. Brave's own engine, which is what makes this state of the
+# art rather than a substring matcher wearing a filter list as a hat: full
+# Adblock Plus syntax, the same lists uBlock Origin and Brave consume, and an
+# optimised matcher rather than a linear scan.
+#
+# Default features are trimmed. `full-regex-handling` compiles arbitrary regex
+# filters, which are a small fraction of any list and the expensive part of the
+# engine; without it those rules are skipped rather than the list rejected.
+# `embedded-domain-resolver` is kept because the alternative is supplying one.
+#
+# MPL-2.0, which is file-level copyleft and imposes nothing on Brume's own
+# Apache-2.0 source. Recorded in NOTICE.
+adblock = { version = "0.13", default-features = false, features = [
+    "embedded-domain-resolver",
+] }
+
 [profile.release]
 # Tuned for a small binary rather than raw throughput. A browser shell spends
 # almost all of its time inside WebView2, not inside our Rust code, so trading

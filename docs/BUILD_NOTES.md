@@ -2518,6 +2518,112 @@ bookmarks bar redrawn, produced nothing.
 
 ---
 
+## 1.0.0 plan: Shield
+
+Planned. The first full release, so the name ships publicly and sets what the
+whole 1.x arc is about. Content blocking was reserved for it on 2026-08-03 and
+the request pipeline has been kept clean since.
+
+Two features are required: the content blocker, and uninstalling Brume from
+inside Brume. Three more were chosen to reinforce the theme rather than wander
+from it: HTTPS-only mode, per-site JavaScript and content toggles, and a
+dashboard that shows what was blocked.
+
+### The engine is Brave's, and writing one instead would be worse
+
+`adblock` 0.13, from `brave/adblock-rust`. It is the engine behind Brave's own
+blocker: full Adblock Plus syntax, the lists uBlock Origin and Brave already
+consume, and a matcher built for this rather than a linear scan.
+
+The alternative is hand-writing a matcher, which this project would normally
+prefer - it hand-wrote the Netscape exporter, the civil-from-days date formatter
+and the reader's extraction heuristic rather than take dependencies. It is the
+wrong call here. Those are each a few dozen lines with an obvious correct answer.
+An ABP matcher that is genuinely good is years of other people's work, and a
+worse one is not "state of the art", it is a substring search wearing a filter
+list as a hat.
+
+MPL-2.0, which is file-level copyleft and imposes nothing on Brume's own
+Apache-2.0 source. It goes in NOTICE beside Lucide, for the same reason UXWing
+was refused: this repository is public and its licensing has to be honest.
+
+Default features are trimmed. `full-regex-handling` compiles arbitrary regex
+filters, a small fraction of any list and the expensive part of the engine.
+
+**The size cost is not yet known and the first measurement was wrong.** Adding
+the dependency and rebuilding showed the binary 30KB *smaller*, which is
+impossible: nothing calls into the crate yet, so LTO strips it entirely and the
+number is codegen noise. It will be measured once real code links it, and stated
+then rather than guessed now.
+
+### Lists are downloaded, because a bundled list is stale on arrival
+
+Freshness is most of what separates a real blocker from a token one. Lists change
+daily; Brume releases every few weeks. Bundling would ship a snapshot that is
+already behind by the time anybody installs it.
+
+Downloading needs an HTTP client, which sounds like a dependency this project
+would refuse. **It is already there.** `tauri-plugin-updater` pulls in reqwest,
+hyper and rustls, so naming reqwest is the same move `webview2-com` and `windows`
+already made: it makes an existing dependency honest rather than adding one.
+
+The parsed engine is cached to disk with `Engine::serialize`, which is how Brave
+does it. Re-parsing several megabytes of filter text on every launch would undo
+the parked-tab startup work of 0.6.0 in a single feature.
+
+There is a second reason to download, and it is the stronger one. **EasyList and
+everything derived from it are CC BY-SA 3.0.** Bundling one would mean
+redistributing it, which pulls that licence and its share-alike terms into a
+repository that is otherwise Apache-2.0 with a carefully stated NOTICE. Fetching
+on the user's machine, from the publisher, redistributes nothing: what Brume
+ships is the engine, not the rules. That distinction is now in NOTICE.
+
+### The interception hook, and the thing that will make or break it
+
+`WebResourceRequested`, with a filter registered for every request. That is the
+hook BUILD_NOTES has pointed at since 0.4.0.
+
+The risk is not correctness, it is throughput. The handler runs **on the UI
+thread, for every subresource**, and a heavy page makes hundreds. A blocker that
+is right and slow makes the browser feel broken, which is worse than not having
+one. That is the number to measure early and the reason the engine was not
+hand-written.
+
+There is no "cancel" in the API: a blocked request is answered with a synthesised
+empty response rather than refused, so that is what "blocked" means here.
+
+### The other four, briefly
+
+**Cosmetic filtering** is the second half of a real blocker: hiding the empty
+frame an advert left behind. The engine has a cosmetic cache; the CSS is injected
+per document.
+
+**Popups** already route through `on_new_window`, which spawns a tab and returns
+Deny. `IsUserInitiated` is what separates a popup somebody asked for from one a
+page opened at itself.
+
+**HTTPS-only** upgrades `http://` and warns before falling back, with a per-site
+exception through the model `permissions.rs` already has.
+
+**Per-site JavaScript and content toggles** reuse `permissions.rs` and the
+padlock popover rather than inventing a surface.
+
+**The dashboard** makes the blocker legible: what was blocked here, what has been
+blocked over time, and which rule fired. Without it the feature is invisible when
+it works and indistinguishable from a broken site when it misfires.
+
+### Uninstalling from inside the application
+
+The installer already writes `uninstall.exe` and the registry entry that puts
+Brume in Settings > Installed apps, and `tools/uninstall-brume.ps1` documents the
+states that path cannot reach.
+
+The one real constraint: a process cannot delete itself while running. So the
+in-app route confirms, spawns `uninstall.exe` detached, and exits immediately,
+which is the same shape the updater's apply step already uses successfully.
+
+---
+
 ## Known hard problems, deliberately deferred
 
 These are flagged early so they do not come as a surprise later. None are attempted in this
