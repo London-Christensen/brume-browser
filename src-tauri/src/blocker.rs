@@ -232,6 +232,43 @@ impl Blocker {
         engine.check_network_request(&request).should_block()
     }
 
+    /// The CSS to hide what a blocked advert left behind, for one page.
+    ///
+    /// Network blocking stops the advert loading; this is the other half, and
+    /// without it a page is full of empty boxes where things used to be. It is
+    /// the difference between a blocker that works and one that looks broken.
+    ///
+    /// **Only URL-specific rules, deliberately.** A list's generic cosmetic
+    /// filters number in the hundreds of thousands, and applying them properly
+    /// means asking the page which classes and ids it actually contains, then
+    /// hiding the matching subset. The page cannot answer: a content webview
+    /// holds no capabilities, the same wall reader mode ran into. Injecting all
+    /// of them as CSS instead would mean a megabyte of selectors per document.
+    ///
+    /// So Brume applies the curated per-site rules and not the generic sweep.
+    /// That is a real limitation and is worth stating rather than implying the
+    /// cosmetic layer is complete.
+    pub fn cosmetic_css(&self, url: &str) -> Option<String> {
+        let guard = self.engine.read().expect("engine lock poisoned");
+        let engine = guard.as_ref()?;
+        let resources = engine.url_cosmetic_resources(url);
+        if resources.hide_selectors.is_empty() {
+            return None;
+        }
+        // One rule with every selector, rather than one rule each: a page with
+        // two thousand hidden selectors is otherwise two thousand rules for the
+        // style engine to walk.
+        let selectors: Vec<&str> = resources
+            .hide_selectors
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        Some(format!(
+            "{}{{display:none !important}}",
+            selectors.join(",")
+        ))
+    }
+
     /// Records a block, for the dashboard.
     ///
     /// Deliberately separate from `should_block`, which must stay free of locks
@@ -381,6 +418,92 @@ pub fn watch(app: &AppHandle, label: &str) {
             Ok::<_, windows_core::Error>(())
         })();
     });
+}
+
+/// Whether a window a page asked to open should simply not open.
+///
+/// Judged on where it is going, not on whether somebody clicked. See the call
+/// site in browser.rs for why intent is not available here.
+///
+/// The request type is `document`, because that is what a popup is: a top-level
+/// navigation. Passing `other` would miss every `$document` rule, which is the
+/// category lists use for exactly this.
+pub fn should_block_popup(app: &AppHandle, url: &str) -> bool {
+    let settings = app.state::<crate::settings::SettingsState>();
+    if !settings.blocking_enabled() {
+        return false;
+    }
+    let source = current_source(app);
+    if settings.blocking_allowed(&origin_of(&source)) {
+        return false;
+    }
+    let blocker = app.state::<Blocker>();
+    if !blocker.ready() {
+        return false;
+    }
+    if blocker.should_block(url, &source, "document") {
+        blocker.record(&host_of(&source));
+        return true;
+    }
+    false
+}
+
+/// Injects the cosmetic stylesheet for a page.
+///
+/// Called as the document starts loading rather than when it finishes, so the
+/// style is in place before anything paints. Injecting at the end means the
+/// advert's empty frame is visible first and then vanishes, which reads worse
+/// than not hiding it at all.
+///
+/// Fire and forget, like the reader: `eval` returns nothing, and there is
+/// nothing to bring back. It fails silently on a document that hosts no script,
+/// which is the documented `eval` trap and is correct here, since a PDF has no
+/// advert frames to tidy.
+pub fn apply_cosmetic(app: &AppHandle, label: &str, url: &str) {
+    let settings = app.state::<crate::settings::SettingsState>();
+    if !settings.blocking_enabled() || settings.blocking_allowed(&origin_of(url)) {
+        return;
+    }
+    let Some(css) = app.state::<Blocker>().cosmetic_css(url) else {
+        return;
+    };
+    let Some(webview) = app.get_webview(label) else {
+        return;
+    };
+
+    // JSON-encoded rather than interpolated. A selector is text from a filter
+    // list, and a list carrying a quote or a backslash would otherwise end the
+    // string and run as code in a page Brume is trying to protect.
+    let Ok(literal) = serde_json::to_string(&css) else {
+        return;
+    };
+    // Keyed on the element, not on a flag, and re-applied rather than skipped.
+    //
+    // The first version set `window.__brumeCosmetic` and returned early if it
+    // was already set. Measured on 2026-08-08: the flag was true on the page and
+    // the stylesheet was **gone**. Injecting at page-load-started runs before
+    // `<head>` exists, so the style goes on `documentElement`, and the parser
+    // then builds the real document over the top of it. The flag survived
+    // because it lives on `window`; the element did not, because it lived in a
+    // tree that was replaced.
+    //
+    // So this runs at both ends of the load and looks for its own element each
+    // time. Early injection is what stops the advert's frame painting; the
+    // second pass is what makes it stick.
+    let script = format!(
+        r#"(function(){{
+            var css = {literal};
+            var s = document.getElementById("__brume_cosmetic");
+            if (!s) {{
+                s = document.createElement("style");
+                s.id = "__brume_cosmetic";
+            }}
+            if (s.textContent !== css) s.textContent = css;
+            var host = document.head || document.documentElement;
+            if (host && s.parentNode !== host) host.appendChild(s);
+        }})();"#
+    );
+    let _ = webview.eval(script);
 }
 
 /// The URL of the page the request belongs to.
@@ -647,6 +770,31 @@ mod tests {
             "https://news.example/",
             "image"
         ));
+    }
+
+    #[test]
+    fn cosmetic_rules_become_one_stylesheet_for_the_site_that_owns_them() {
+        let dir = std::env::temp_dir().join("brume-blocker-cosmetic");
+        let _ = std::fs::create_dir_all(&dir);
+        let b = Blocker::new(dir);
+        b.store_list("easylist", "example.com##.advert\nexample.com##.promo\n")
+            .unwrap();
+        b.rebuild(&["easylist".to_string()]).unwrap();
+
+        let css = b
+            .cosmetic_css("https://example.com/article")
+            .expect("the site with the rules should get a stylesheet");
+        assert!(css.contains(".advert"), "got {css}");
+        assert!(css.contains(".promo"), "got {css}");
+        // One rule holding every selector, not one rule each: a page with two
+        // thousand hidden selectors would otherwise be two thousand rules for
+        // the style engine to walk on every recalculation.
+        assert_eq!(css.matches('{').count(), 1, "got {css}");
+        assert!(css.contains("display:none !important"), "got {css}");
+
+        // A different site gets nothing. These are per-site rules, and applying
+        // one site's to another is how cosmetic filtering breaks pages.
+        assert!(b.cosmetic_css("https://other.test/").is_none());
     }
 
     #[test]

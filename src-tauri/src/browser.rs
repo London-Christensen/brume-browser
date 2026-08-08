@@ -963,6 +963,21 @@ fn spawn_tab_webview(
             // to the main thread and then blocks waiting on it - the same
             // deadlock the async commands below exist to avoid.
             tauri::async_runtime::spawn(async move {
+                // Popups go through the filter engine before they get a tab.
+                //
+                // A popunder advert opens a window at an ad network, and the
+                // lists already know those hosts: blocking the request after
+                // the tab exists leaves an empty tab, which is barely better
+                // than the advert. Checking first means it never appears.
+                //
+                // This is not the same as "block anything the user did not
+                // click". `IsUserInitiated` would say that outright, but wry
+                // owns the NewWindowRequested handler and does not surface it,
+                // and adding a second handler races the one that sets Handled.
+                // So the rule here is destination, not intent.
+                if crate::blocker::should_block_popup(&handle, &target) {
+                    return;
+                }
                 // Into the window the opening tab is in, so a link opened
                 // from a second window does not land in the first.
                 let Some(state) = window_of_tab(&handle, id) else {
@@ -1074,6 +1089,17 @@ fn spawn_tab_webview(
         })
         .on_page_load(move |_webview, payload| {
             let finished = matches!(payload.event(), PageLoadEvent::Finished);
+
+            // Both ends of the load, and that is not belt and braces.
+            //
+            // The early pass is what stops the advert's frame painting at all.
+            // It is also the one the HTML parser destroys: at that point there
+            // is no `<head>`, so the style lands on `documentElement` and the
+            // real document is then built over it. The second pass puts it back.
+            // See apply_cosmetic, where this was measured.
+            if let Some(label) = tab_label(&load_handle, id) {
+                crate::blocker::apply_cosmetic(&load_handle, &label, payload.url().as_str());
+            }
 
             // What to record is decided while holding the tabs lock, but the
             // store is written after releasing it. Taking the store's lock
