@@ -1,11 +1,11 @@
 {
-    "version":  "0.8.0",
-    "notes":  "**Added**\n- DevTools, on F12 or Ctrl+Shift+I\n- View source, on Ctrl+U\n- Split view: show two tabs side by side, from the tab context menu\n- Tabs down the side instead of across the top, on Ctrl+Shift+E\n- Zoom is remembered per site, and forgotten again when you put a site back to 100%\n- Add your own search engine in Settings, alongside the built-in ones",
-    "pub_date":  "2026-08-07T16:28:05Z",
+    "version":  "0.9.0",
+    "notes":  "**Added**\n- Reader view: strips a page back to its article, from the toolbar button\n- Profiles, each with its own bookmarks, history, cookies and settings. Create and switch in Settings\n- Ctrl+Shift+K for DevTools and Ctrl+Shift+Y for the tab sidebar, for machines where the usual keys are taken by other software\n\n**Fixed**\n- A keyboard shortcut owned by another application was reported as if Brume had registered it twice. It now says which application-owned key was refused, and which key works instead\n- Shortcuts were registered twice on launch, so every conflict was reported twice",
+    "pub_date":  "2026-08-08T04:15:31Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d2VsNEMzL3lCczZwbnl2MGh4WmtxNEJ1OCtpdnp3TkZPZDE0K1pxeVV6NnQrNm1hTjFaWkg4aUxkKytkTkIyc0hOUnpTa05CYkh0QWUxWCtwQ0hLblFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTIwMDg1CWZpbGU6QnJ1bWUtU2V0dXAuZXhlCmlOTUV6bHJFOUR4Z05SaXJvZmR5QzlHQVNSQTl0UG40VW5GWG0yUjBmNytoVCtWakR3S0ZMY3VOZVdZR0ppRFdsZDNvMnFadFc0ZE9reWxDeGFqeUJBPT0K",
-                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.8.0/Brume-Setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTQzJiY0IycWY1d1p0MHdQUlB1SkRVSVN0RlRROCtXQXkrR1hxVnZQcFd4eisvdWpNbTFhd3Y3V0JGa2c4UDRrRFBRbzd3bzgrRnVPMjhwZ29RYXZKNWpWa05ZZFNORHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTYyNTMxCWZpbGU6QnJ1bWUtU2V0dXAuZXhlCnBjU1F4c1NDaFVhSEloR0pFak1PYktDWXhXY0VteWY2cUFFeDJvcHdWQTNQcjFpRDNoVzU4RjQzMEpUejh0aGFHcklIdExMSjBxMi9Za0NweGR3N0JRPT0K",
+                                             "url":  "https://github.com/London-Christensen/brume-browser/releases/download/v0.9.0/Brume-Setup.exe"
                                          }
                   }
 }
