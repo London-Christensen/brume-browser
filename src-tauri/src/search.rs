@@ -365,6 +365,11 @@ pub fn selected(settings: &crate::settings::SettingsState, dark: bool) -> Engine
 }
 
 /// Scheme and host of a template, for a custom engine's landing page.
+///
+/// Deliberately **not** `siterules::origin_of`, despite the name. That one
+/// strips `www.` because it is keying a decision about a site; this one is
+/// building a URL somebody will actually be sent to, and an engine hosted at
+/// `www.` would be sent to a hostname that may not resolve.
 fn origin_of(template: &str) -> String {
     tauri::Url::parse(template)
         .ok()

@@ -126,13 +126,12 @@ fn kind_slug(kind: COREWEBVIEW2_PERMISSION_KIND) -> &'static str {
 /// article on a site grants it to the site. Showing the full URL in the prompt
 /// would suggest otherwise.
 fn origin_of(url: &str) -> String {
-    tauri::Url::parse(url)
-        .ok()
-        .and_then(|u| {
-            u.host_str()
-                .map(|h| format!("{}://{}", u.scheme(), h.trim_start_matches("www.")))
-        })
-        .unwrap_or_else(|| url.to_string())
+    let origin = crate::siterules::origin_of(url);
+    if origin.is_empty() {
+        url.to_string()
+    } else {
+        origin
+    }
 }
 
 /// Subscribes to permission requests for one tab.

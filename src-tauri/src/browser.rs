@@ -612,6 +612,18 @@ pub struct BrowserState {
     pub zoom: f64,
     /// Whether the active tab is showing its article rather than its page.
     pub reader: bool,
+    /// Whether blocking is actually in force on the page in front of the user.
+    ///
+    /// Both halves: the feature can be off everywhere, or excused for this one
+    /// site. The shield shows one icon either way, because from the reader's
+    /// side the answer is the same.
+    pub blocking: bool,
+    /// How much has been stopped on this site since Brume opened.
+    ///
+    /// Published rather than fetched on demand so the number is already there
+    /// when the shield is drawn. Fetching it per render would mean a command
+    /// round trip on every load tick of every tab.
+    pub blocked_here: u64,
     /// Whether tabs run down the side. Published for the same reason the
     /// bookmarks bar is: the chrome relaying itself out and the page being
     /// resized to match come off one update rather than two that can race.
@@ -624,6 +636,7 @@ pub struct BrowserState {
     pub split: Option<u32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn snapshot(
     tabs: &Tabs,
     bookmarked: bool,
@@ -631,6 +644,8 @@ fn snapshot(
     panel_open: bool,
     split: Option<u32>,
     sidebar: bool,
+    blocking: bool,
+    blocked_here: u64,
 ) -> BrowserState {
     let active = tabs.active_tab();
 
@@ -660,6 +675,8 @@ fn snapshot(
         bookmarks_bar,
         panel_open,
         sidebar,
+        blocking,
+        blocked_here,
         reader: active.is_some_and(|t| t.reader),
         zoom: active.map(|t| t.nav.zoom).unwrap_or(1.0),
         // Reported as absent once the tab is gone, so a split that outlived its
@@ -689,10 +706,36 @@ fn current_state(app: &AppHandle, state: &WindowState) -> BrowserState {
     let bookmarks_bar = settings.show_bookmarks_bar();
     let sidebar = settings.show_tab_sidebar();
 
+    // Read before the tabs lock, like the bookmark lookup above and for the same
+    // reason: taking another lock while holding that one sets an order the rest
+    // of the file does not follow.
+    let origin = crate::siterules::origin_of(&active_url);
+    let blocking = settings.blocking_enabled() && !settings.blocking_allowed(&origin);
+    let blocked_here = app
+        .state::<crate::blocker::Blocker>()
+        .blocked_on(&host_only(&active_url));
+
     let panel_open = state.panel_open.load(Ordering::Relaxed);
     let split = *state.split.lock().expect("split mutex poisoned");
     let tabs = state.tabs.lock().expect("tabs mutex poisoned");
-    snapshot(&tabs, bookmarked, bookmarks_bar, panel_open, split, sidebar)
+    snapshot(
+        &tabs,
+        bookmarked,
+        bookmarks_bar,
+        panel_open,
+        split,
+        sidebar,
+        blocking,
+        blocked_here,
+    )
+}
+
+/// Host without the scheme, which is how block counts are keyed.
+fn host_only(url: &str) -> String {
+    tauri::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_default()
 }
 
 /// Closes the panel, because something is about to show a page.
@@ -2299,16 +2342,7 @@ pub fn update_zoom(app: &AppHandle, tab_id: u32, zoom: f64) {
     publish(app, &state);
 }
 
-/// Scheme and host, which is what a remembered zoom is keyed on.
-///
-/// Same shape permissions.rs uses, and for the same reason: zooming one article
-/// is asking for the site to be bigger, not that one URL.
-fn origin_of(url: &str) -> String {
-    tauri::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
-        .unwrap_or_default()
-}
+use crate::siterules::origin_of;
 
 /// Applies a site's remembered zoom after it loads.
 ///

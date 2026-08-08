@@ -26,12 +26,40 @@
 use tauri::{AppHandle, Manager};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings;
 
-/// Scheme and host, matching how every other per-site rule is keyed.
+/// Scheme and host, with `www.` removed. The key every per-site decision uses.
+///
+/// One function, because there were five and they did not agree. Four kept the
+/// host as it came; `permissions.rs` stripped `www.`, and so does the chrome's
+/// own `originOf`. The result was that a control clicked in the window wrote
+/// `https://theguardian.com` while the code reading it looked up
+/// `https://www.theguardian.com`, and the setting silently did nothing.
+///
+/// That was found on the shield: turning blocking off for a site left it on,
+/// and the count carried on rising. It only survived earlier testing because
+/// `example.com` has no `www.`, so both spellings happened to agree.
+///
+/// Stripping is the right side to land on. `www.example.com` and `example.com`
+/// are one site to the person deciding about them, and a decision that applied
+/// to only one of the two spellings would look broken either way round.
 pub fn origin_of(url: &str) -> String {
-    tauri::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
-        .unwrap_or_default()
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return String::new();
+    };
+    let Some(host) = parsed.host_str() else {
+        return String::new();
+    };
+    // The port belongs to the key when there is one.
+    //
+    // `host_str` drops it and the chrome's `URL.host` keeps it, which is the
+    // same disagreement `www.` had: a decision made on `localhost:3000` would
+    // have been stored under one spelling and looked up under another. Both
+    // sides omit a default port, since `Url::port` returns `None` for those and
+    // so does `URL.host`.
+    let host = host.trim_start_matches("www.");
+    match parsed.port() {
+        Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+        None => format!("{}://{}", parsed.scheme(), host),
+    }
 }
 
 /// The https version of an http URL, if it should be upgraded.
@@ -129,6 +157,35 @@ pub async fn set_script_blocked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_origin_key_matches_what_the_chrome_writes() {
+        // The chrome's originOf is `${protocol}//${host.replace(/^www\./,"")}`.
+        // These have to agree exactly: a control clicked in the window writes
+        // the key, and the code enforcing it does the lookup. When they
+        // disagreed, turning blocking off for a www site silently did nothing
+        // and the block count carried on rising.
+        assert_eq!(
+            origin_of("https://www.theguardian.com/international"),
+            "https://theguardian.com"
+        );
+        // Without www, both spellings already agreed, which is why this went
+        // unnoticed: example.com was the test site.
+        assert_eq!(origin_of("https://example.com/a"), "https://example.com");
+        // The scheme is part of the key, so http and https are separate
+        // decisions. That matters for the https exception, which only means
+        // anything on an http origin.
+        assert_eq!(origin_of("http://example.com/"), "http://example.com");
+        // Only a leading www., not any host that happens to contain it.
+        assert_eq!(origin_of("https://wwwx.example/"), "https://wwwx.example");
+        assert_eq!(origin_of("https://a.www.example/"), "https://a.www.example");
+        // A port is part of the host and stays.
+        assert_eq!(
+            origin_of("http://localhost:3000/x"),
+            "http://localhost:3000"
+        );
+        assert_eq!(origin_of("not a url"), "");
+    }
 
     #[test]
     fn only_http_is_upgraded_and_only_when_asked() {

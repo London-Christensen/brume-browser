@@ -298,6 +298,20 @@ impl Blocker {
         }
     }
 
+    /// How much has been stopped on one host this session.
+    pub fn blocked_on(&self, host: &str) -> u64 {
+        if host.is_empty() {
+            return 0;
+        }
+        self.stats
+            .lock()
+            .expect("stats lock poisoned")
+            .by_site
+            .get(host)
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn stats(&self) -> Stats {
         self.stats.lock().expect("stats lock poisoned").clone()
     }
@@ -524,13 +538,7 @@ fn host_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Scheme and host, matching how permissions and per-site zoom are keyed.
-fn origin_of(url: &str) -> String {
-    tauri::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
-        .unwrap_or_default()
-}
+use crate::siterules::origin_of;
 
 // ---------------------------------------------------------------------------
 // Commands

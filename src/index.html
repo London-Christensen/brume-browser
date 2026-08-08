@@ -668,6 +668,8 @@
       .ico-chevron-right { -webkit-mask-image: url("assets/brand/icons/chevron-right.svg"); mask-image: url("assets/brand/icons/chevron-right.svg"); }
       .ico-chevron-down { -webkit-mask-image: url("assets/brand/icons/chevron-down.svg"); mask-image: url("assets/brand/icons/chevron-down.svg"); }
       .ico-reader { -webkit-mask-image: url("assets/brand/icons/reader.svg"); mask-image: url("assets/brand/icons/reader.svg"); }
+      .ico-shield { -webkit-mask-image: url("assets/brand/icons/shield.svg"); mask-image: url("assets/brand/icons/shield.svg"); }
+      .ico-shield-off { -webkit-mask-image: url("assets/brand/icons/shield-off.svg"); mask-image: url("assets/brand/icons/shield-off.svg"); }
       .ico-upload { -webkit-mask-image: url("assets/brand/icons/upload.svg"); mask-image: url("assets/brand/icons/upload.svg"); }
       /* Used by the rename button since 0.5.0 and never defined, so it painted
          a solid square: `.ico` fills with currentColor and relies on the mask
@@ -685,6 +687,24 @@
          carries the words. */
       .btn[data-failed="true"] {
         opacity: 0.45;
+      }
+      /* The shield carries a count, so it is wider than the other buttons and
+         needs its number sitting beside the icon rather than under it. */
+      #shield {
+        gap: 3px;
+        padding: 0 5px;
+        width: auto;
+        min-width: 26px;
+      }
+      #shield-count:not(:empty) {
+        font-size: 10.5px;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-muted);
+      }
+      /* Off is stated plainly rather than coloured red. Blocking switched off
+         for a site is a choice somebody made, not a fault. */
+      #shield[data-on="false"] .ico {
+        color: var(--fg-muted);
       }
 
       /* --- address bar --------------------------------------------------- */
@@ -1634,6 +1654,10 @@
       <button class="btn zoom-btn" id="zoom" title="Reset zoom to 100%" aria-label="Reset zoom" hidden>
         <span id="zoom-level">100%</span>
       </button>
+      <button class="btn" id="shield" title="Content blocking" aria-label="Content blocking">
+        <span class="ico ico-shield"></span>
+        <span id="shield-count"></span>
+      </button>
       <button class="btn" id="reader" title="Reader view" aria-label="Reader view">
         <span class="ico ico-reader"></span>
       </button>
@@ -2130,6 +2154,28 @@
         loading = state.loading;
         el("progress").dataset.loading = String(state.loading);
 
+        /* The shield.
+         *
+         * A blocker with no presence in the window looks like one that is not
+         * working, and the first thing somebody does with a browser that seems
+         * to be doing nothing is turn the feature off. The count is the whole
+         * point: it is the difference between "is this on?" and "it stopped
+         * fourteen things on this page". */
+        const shield = el("shield");
+        shield.dataset.on = String(!!state.blocking);
+        shield.querySelector(".ico").className = state.blocking
+          ? "ico ico-shield"
+          : "ico ico-shield-off";
+        const blockedHere = state.blockedHere || 0;
+        lastBlockedHere = blockedHere;
+        el("shield-count").textContent =
+          state.blocking && blockedHere ? String(blockedHere) : "";
+        shield.title = state.blocking
+          ? blockedHere
+            ? `${blockedHere} blocked on this site`
+            : "Blocking is on for this site"
+          : "Blocking is off for this site";
+
         el("reader").dataset.on = String(!!state.reader);
         el("reader").title = state.reader
           ? "Show the original page"
@@ -2208,6 +2254,9 @@
 
       /** The tab currently shown beside the active one, or null. */
       let splitTabId = null;
+
+      /** How much was blocked on the site in front of us, for the shield menu. */
+      let lastBlockedHere = 0;
 
       /** Whether a tab id is the active one, from the list the strip drew. */
       function isActiveTab(id) {
@@ -4054,6 +4103,60 @@
       });
 
       listen("brume://open-find", openFind);
+
+      /* The shield menu.
+       *
+       * Everything about blocking on the site in front of you, in the place you
+       * are already looking when a page misbehaves. The full controls stay in
+       * Settings; this is the one decision people actually make in the moment,
+       * which is whether to keep blocking here. */
+      el("shield").addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const bl = (await call("blocking_state")) || null;
+        const url = urlInput.value || "";
+        const origin = originOf(url);
+        const rect = el("shield").getBoundingClientRect();
+
+        openMenu({ clientX: rect.left - 150, clientY: rect.bottom + 4 }, (add, separator) => {
+          if (!bl) {
+            add("Blocking is unavailable", false, () => {});
+            return;
+          }
+          if (!bl.enabled) {
+            add("Blocking is off everywhere", false, () => {});
+            separator();
+            add("Turn blocking on", true, async () => {
+              await call("set_blocking_enabled", { enabled: true });
+            });
+            return;
+          }
+          if (!bl.ready) {
+            add("Filter lists not downloaded yet", false, () => {});
+            separator();
+            add("Download them now", true, () => call("refresh_blocking"));
+            return;
+          }
+
+          const here = lastBlockedHere || 0;
+          add(here ? `${here} blocked on this site` : "Nothing blocked here yet", false, () => {});
+          add(`${bl.stats.session.toLocaleString()} blocked this session`, false, () => {});
+          separator();
+
+          const allowed = (bl.allowed || []).includes(origin);
+          if (origin) {
+            add(
+              allowed ? `Block on ${origin.replace(/^https?:\/\//, "")}` : `Do not block on ${origin.replace(/^https?:\/\//, "")}`,
+              true,
+              async () => {
+                await call("set_blocking_allowed", { origin, allowed: !allowed });
+                await call("reload");
+              }
+            );
+          }
+          separator();
+          add("Blocking settings", true, () => openPanel("settings"));
+        });
+      });
 
       el("reader").addEventListener("click", () => call("toggle_reader"));
 
