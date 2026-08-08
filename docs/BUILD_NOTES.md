@@ -2494,6 +2494,21 @@ known until every binding has been tried. It reads:
 [shortcuts] F12 is owned by another application, so devtools is on CmdOrCtrl+Shift+K here.
 ```
 
+**Both new keys were pressed, not merely registered.** Registration succeeding
+only proves the OS handed the combination over; it says nothing about whether the
+keystroke reaches the action. That last link needs real key events at a focused
+window, which is the one exception this project makes to never driving the
+desktop.
+
+Kept to two keystrokes, with a guard rather than a hope: the window was parked
+off-screen as usual, brought to the foreground, and `GetForegroundWindow` plus
+`GetWindowThreadProcessId` were checked against Brume's own pid before anything
+was sent. A misdelivered Ctrl+Shift+K lands in whatever the user was typing in,
+so "probably focused" is not good enough to send on.
+
+Measured 2026-08-08: Ctrl+Shift+Y took the sidebar from off to on and back off on
+a second press; Ctrl+Shift+K took the DevTools target count from 0 to 1.
+
 ### The chrome's own console was clean
 
 Worth checking rather than assuming, since "the debug console" could as easily
