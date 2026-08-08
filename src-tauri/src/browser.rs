@@ -1534,6 +1534,11 @@ fn build_window(
             // Saved before the state is forgotten, so this window's tabs are
             // still in the list being written.
             save_session(&event_handle);
+            // The running block total, which is the only part of the stats that
+            // survives a restart. See Blocker::persist_stats.
+            event_handle
+                .state::<crate::blocker::Blocker>()
+                .persist_stats();
         }
         // Destroyed rather than CloseRequested: the close can still be
         // cancelled, and forgetting a window that then stays open would leave
@@ -1640,6 +1645,9 @@ fn load_parked(app: &AppHandle, state: &WindowState, id: u32) -> tauri::Result<(
     crate::permissions::watch(app, &label);
     crate::audio::watch(app, id, &label);
     crate::contextmenu::watch(app, &label);
+    // A restored tab needs this as much as a new one: it is a real page making
+    // real requests the moment it loads.
+    crate::blocker::watch(app, &label);
     Ok(())
 }
 
@@ -1714,6 +1722,9 @@ fn open_tab_inner(
         crate::permissions::watch(app, &label);
         crate::audio::watch(app, id, &label);
         crate::contextmenu::watch(app, &label);
+        // Registered last, but it is the one that sees the most traffic: every
+        // subresource of every page passes through it.
+        crate::blocker::watch(app, &label);
     }
 
     if let Err(e) = spawned {
@@ -2393,6 +2404,13 @@ pub fn stop_loading(app: AppHandle, window: tauri::Window) -> Result<(), String>
     }
     publish(&app, &state);
     Ok(())
+}
+
+/// The active tab's URL, for callers that need the page a request belongs to.
+pub fn active_tab_url(app: &AppHandle) -> Option<String> {
+    let state = focused_state(app)?;
+    let tabs = state.tabs.lock().expect("tabs mutex poisoned");
+    tabs.active_tab().and_then(|t| t.nav.current().cloned())
 }
 
 /// Id of the active tab in one window.

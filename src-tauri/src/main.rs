@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod blocker;
 mod browser;
 mod contextmenu;
 mod downloads;
@@ -56,7 +57,15 @@ fn main() {
             app.manage(browser::Browser::default());
             // Registered before the window is built: the first tab's page-load
             // handler records a visit, and that runs as soon as it navigates.
-            app.manage(store::Store::load(app.handle(), profile_dir));
+            app.manage(store::Store::load(app.handle(), profile_dir.clone()));
+
+            // Built before the window, so the first page load already has an
+            // engine to ask. Loading the cached blob is the fast path; a first
+            // run has nothing to load and blocks nothing until the lists
+            // arrive, which is the right way round.
+            let blocking = blocker::Blocker::new(profile_dir.join("blocking"));
+            blocking.load_cached();
+            app.manage(blocking);
 
             browser::build(app.handle())?;
 
@@ -148,6 +157,11 @@ fn main() {
             profiles::rename_profile,
             profiles::delete_profile,
             profiles::switch_profile,
+            blocker::blocking_state,
+            blocker::set_blocking_enabled,
+            blocker::set_blocking_list,
+            blocker::set_blocking_allowed,
+            blocker::refresh_blocking,
             settings::zoomed_site_count,
             settings::clear_site_zoom,
             find::find_start,

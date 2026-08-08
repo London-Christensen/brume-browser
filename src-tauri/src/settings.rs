@@ -87,6 +87,32 @@ pub struct Settings {
     /// Index into `session_tabs` of the tab that was in front.
     pub session_active: usize,
 
+    /// Whether content blocking is on at all.
+    ///
+    /// Defaults to on. A blocker that ships switched off is a blocker most
+    /// people never find, and 1.0.0 is named for it.
+    #[serde(default = "yes")]
+    pub blocking_enabled: bool,
+
+    /// Ids of the filter lists in use.
+    ///
+    /// Empty means "the defaults", resolved at read time rather than written
+    /// here, so a list added in a later version reaches existing installs
+    /// instead of only new ones.
+    #[serde(default)]
+    pub blocking_lists: Vec<String>,
+
+    /// Origins where blocking is off, because the site broke.
+    ///
+    /// Per site rather than a global switch, so the answer to one broken page
+    /// is not turning the whole feature off. Same shape site_zoom uses.
+    #[serde(default)]
+    pub blocking_allowed: Vec<String>,
+
+    /// When the lists were last fetched, Unix seconds. 0 means never.
+    #[serde(default)]
+    pub blocking_updated: i64,
+
     /// Whether tabs run down the side instead of across the top.
     ///
     /// A preference rather than per window, like the bookmarks bar and for the
@@ -150,6 +176,15 @@ pub struct SessionTab {
     pub pinned: bool,
 }
 
+/// `#[serde(default)]` for a bool that should default to true.
+///
+/// Needed because serde's own default for `bool` is `false`, and a settings file
+/// written before blocking existed has no such key. Without this, every install
+/// upgrading to 1.0.0 would arrive with the headline feature switched off.
+fn yes() -> bool {
+    true
+}
+
 /// A search engine the user added.
 ///
 /// No themed variants: Brume has no way to know how a stranger's engine themes
@@ -201,6 +236,10 @@ impl Default for Settings {
             session_tabs: Vec::new(),
             session_active: 0,
             session_windows: Vec::new(),
+            blocking_enabled: true,
+            blocking_lists: Vec::new(),
+            blocking_allowed: Vec::new(),
+            blocking_updated: 0,
             show_tab_sidebar: false,
             custom_engines: Vec::new(),
             site_zoom: std::collections::HashMap::new(),
@@ -385,6 +424,65 @@ impl SettingsState {
 
     pub fn set_show_bookmarks_bar(&self, show: bool) -> Result<(), String> {
         self.update(|s| s.show_bookmarks_bar = show)
+    }
+
+    pub fn blocking_enabled(&self) -> bool {
+        self.get().blocking_enabled
+    }
+
+    pub fn set_blocking_enabled(&self, on: bool) -> Result<(), String> {
+        self.update(|s| s.blocking_enabled = on)
+    }
+
+    /// Which lists are on, falling back to the defaults when nothing is stored.
+    ///
+    /// Resolved here rather than written at first run, so a list added in a
+    /// later version reaches every install that never touched the setting
+    /// instead of only fresh ones.
+    pub fn blocking_lists(&self) -> Vec<String> {
+        let stored = self.get().blocking_lists;
+        if !stored.is_empty() {
+            return stored;
+        }
+        crate::blocker::LISTS
+            .iter()
+            .filter(|l| l.default_on)
+            .map(|l| l.id.to_string())
+            .collect()
+    }
+
+    pub fn set_blocking_lists(&self, ids: Vec<String>) -> Result<(), String> {
+        // Filtered against the known set: an id from a hand-edited file would
+        // otherwise sit in settings forever, matching nothing and explaining
+        // nothing.
+        let known: Vec<String> = ids
+            .into_iter()
+            .filter(|id| crate::blocker::list_by_id(id).is_some())
+            .collect();
+        self.update(|s| s.blocking_lists = known)
+    }
+
+    /// Whether blocking is off for this origin.
+    pub fn blocking_allowed(&self, origin: &str) -> bool {
+        self.get().blocking_allowed.iter().any(|o| o == origin)
+    }
+
+    pub fn set_blocking_allowed(&self, origin: &str, allowed: bool) -> Result<(), String> {
+        let origin = origin.to_string();
+        self.update(move |s| {
+            s.blocking_allowed.retain(|o| o != &origin);
+            if allowed {
+                s.blocking_allowed.push(origin.clone());
+            }
+        })
+    }
+
+    pub fn blocking_updated(&self) -> i64 {
+        self.get().blocking_updated
+    }
+
+    pub fn set_blocking_updated(&self, at: i64) -> Result<(), String> {
+        self.update(|s| s.blocking_updated = at)
     }
 
     pub fn show_tab_sidebar(&self) -> bool {

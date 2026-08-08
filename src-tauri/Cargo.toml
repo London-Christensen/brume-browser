@@ -88,6 +88,22 @@ adblock = { version = "0.13", default-features = false, features = [
     "embedded-domain-resolver",
 ] }
 
+# Fetching filter lists. Already in the tree underneath tauri-plugin-updater,
+# which uses it to download releases, so naming it here adds no compile cost and
+# only makes the dependency honest - the same reasoning as webview2-com above.
+#
+# Lists are fetched rather than bundled for two reasons: a bundled list is stale
+# before it ships, and EasyList is CC BY-SA 3.0, so shipping one would drag that
+# licence into an Apache-2.0 repository. See NOTICE.
+#
+# rustls rather than the platform TLS, matching what the updater already
+# resolved. Two TLS stacks in one binary would be the worst of both.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "charset",
+    "http2",
+] }
+
 [profile.release]
 # Tuned for a small binary rather than raw throughput. A browser shell spends
 # almost all of its time inside WebView2, not inside our Rust code, so trading
