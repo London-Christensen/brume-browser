@@ -32,6 +32,7 @@ mod search;
 mod settings;
 mod shortcuts;
 mod store;
+mod uninstall;
 mod updater;
 
 use tauri::Manager;
@@ -169,6 +170,8 @@ fn main() {
             find::find_previous,
             find::find_stop,
             updater::check_for_updates,
+            uninstall::uninstall_state,
+            uninstall::run_uninstaller,
         ])
         // `generate_context!` reads tauri.conf.json at compile time and bakes the
         // bundle identifier and asset manifest into the binary.

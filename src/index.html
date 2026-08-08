@@ -3384,6 +3384,124 @@
         profs.append(profAddRow, profErr, profNote);
         form.appendChild(profs);
 
+        /* --- content blocking ---
+         *
+         * First group in Settings, because 1.0.0 is named for it and because a
+         * blocker nobody can find is a blocker people assume is not working. */
+        const bl = (await call("blocking_state")) || null;
+        if (bl) {
+          const blocking = group("Content blocking");
+
+          const onRow = row(
+            "Block adverts and trackers",
+            bl.ready
+              ? `${bl.stats.total.toLocaleString()} blocked in total, ${bl.stats.session.toLocaleString()} since Brume opened.`
+              : "Filter lists have not been downloaded yet."
+          );
+          onRow.control.appendChild(
+            switchControl(bl.enabled, "Block adverts and trackers", (next) =>
+              call("set_blocking_enabled", { enabled: next })
+            )
+          );
+          blocking.appendChild(onRow.row);
+
+          // What was blocked, and where. The dashboard: without it the feature
+          // is invisible when it works and indistinguishable from a broken site
+          // when it misfires.
+          const sites = Object.entries(bl.stats.bySite || {}).sort(
+            (a, b) => b[1] - a[1]
+          );
+          if (sites.length) {
+            const busiest = row(
+              "Busiest sites this session",
+              "Counted since Brume opened, and not written to disk."
+            );
+            blocking.appendChild(busiest.row);
+            const list = document.createElement("div");
+            list.className = "perm-list";
+            for (const [host, n] of sites.slice(0, 8)) {
+              const r = document.createElement("div");
+              r.className = "perm-row";
+              const name = document.createElement("span");
+              name.className = "perm-origin";
+              name.textContent = host;
+              const count = document.createElement("span");
+              count.className = "entry-when";
+              count.textContent = `${n.toLocaleString()} blocked`;
+              r.append(name, count);
+              list.appendChild(r);
+            }
+            blocking.appendChild(list);
+          }
+
+          // The lists themselves.
+          for (const l of bl.lists) {
+            const r = row(l.name, l.about);
+            r.control.appendChild(
+              switchControl(l.on, `Use ${l.name}`, async (next) => {
+                await call("set_blocking_list", { id: l.id, on: next });
+                renderPanel();
+              })
+            );
+            blocking.appendChild(r.row);
+          }
+
+          const updated = bl.updated
+            ? `Last updated ${whenLabel(bl.updated)}.`
+            : "Never updated. Lists are downloaded from their publishers, not bundled with Brume.";
+          const refreshRow = row("Filter lists", updated);
+          const refreshBtn = document.createElement("button");
+          refreshBtn.className = "action";
+          refreshBtn.textContent = "Update now";
+          const refreshStatus = document.createElement("span");
+          refreshStatus.className = "status";
+          refreshBtn.addEventListener("click", async () => {
+            refreshBtn.disabled = true;
+            refreshStatus.textContent = "Downloading...";
+            try {
+              const n = await invoke("refresh_blocking");
+              refreshStatus.textContent = `${n.toLocaleString()} rules`;
+              setTimeout(renderPanel, 900);
+            } catch (e) {
+              refreshStatus.textContent = String(e);
+              refreshBtn.disabled = false;
+            }
+          });
+          refreshRow.control.append(refreshStatus, refreshBtn);
+          blocking.appendChild(refreshRow.row);
+
+          // Sites excused from blocking, so the answer to one broken page is
+          // not switching the whole feature off.
+          if ((bl.allowed || []).length) {
+            const exRow = row(
+              "Not blocked on",
+              "Sites you have turned blocking off for."
+            );
+            blocking.appendChild(exRow.row);
+            const list = document.createElement("div");
+            list.className = "perm-list";
+            for (const origin of bl.allowed) {
+              const r = document.createElement("div");
+              r.className = "perm-row";
+              const name = document.createElement("span");
+              name.className = "perm-origin";
+              name.textContent = origin;
+              const undo = document.createElement("button");
+              undo.className = "action";
+              undo.textContent = "Block here again";
+              undo.addEventListener("click", async () => {
+                await call("set_blocking_allowed", { origin, allowed: false });
+                renderPanel();
+              });
+              r.append(name, undo);
+              list.appendChild(r);
+            }
+            blocking.appendChild(list);
+          }
+
+          form.appendChild(blocking);
+        }
+
         // --- privacy ---
         const privacy = group("Privacy");
 
@@ -3542,6 +3660,51 @@
         updates.appendChild(manual.row);
 
         form.appendChild(updates);
+
+        /* --- removing Brume ---
+         *
+         * Last, because it is the one thing in Settings that cannot be undone,
+         * and nothing should sit below it to scroll past on the way somewhere
+         * else.
+         *
+         * Hidden entirely when Brume is not installed - a build run out of
+         * target/ has no uninstaller, and a button that either does nothing or
+         * finds somebody else's install is worse than no button. */
+        const un = (await call("uninstall_state")) || { available: false };
+        if (un.available) {
+          const removal = group("Remove Brume");
+          const r = row(
+            "Uninstall",
+            `Removes Brume ${un.version} from ${un.location}. Bookmarks, history and settings are kept unless the uninstaller offers to remove them.`
+          );
+          const btn = document.createElement("button");
+          btn.className = "action";
+          btn.textContent = "Uninstall Brume";
+          btn.addEventListener("click", async () => {
+            // Two steps rather than one. This is irreversible and the button
+            // sits in a panel people scroll through, so a single stray click
+            // must not be enough.
+            const { ask } = window.__TAURI__.dialog;
+            const sure = await ask(
+              `Brume ${un.version} will be removed from this computer.\n\nThe uninstaller will close Brume and finish on its own.`,
+              { title: "Uninstall Brume", kind: "warning", okLabel: "Uninstall", cancelLabel: "Cancel" }
+            );
+            if (!sure) return;
+            btn.disabled = true;
+            btn.textContent = "Starting the uninstaller...";
+            try {
+              await invoke("run_uninstaller");
+            } catch (e) {
+              btn.disabled = false;
+              btn.textContent = "Uninstall Brume";
+              await message(String(e), { title: "Brume", kind: "error" });
+            }
+          });
+          r.control.appendChild(btn);
+          removal.appendChild(r.row);
+          form.appendChild(removal);
+        }
+
         list.appendChild(form);
       }
 
