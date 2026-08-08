@@ -31,6 +31,7 @@ mod reader;
 mod search;
 mod settings;
 mod shortcuts;
+mod siterules;
 mod store;
 mod uninstall;
 mod updater;
@@ -170,6 +171,9 @@ fn main() {
             find::find_previous,
             find::find_stop,
             updater::check_for_updates,
+            siterules::set_https_only,
+            siterules::set_https_exception,
+            siterules::set_script_blocked,
             uninstall::uninstall_state,
             uninstall::run_uninstaller,
         ])

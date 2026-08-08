@@ -113,6 +113,28 @@ pub struct Settings {
     #[serde(default)]
     pub blocking_updated: i64,
 
+    /// Upgrade http:// to https:// and refuse to fall back.
+    ///
+    /// Off by default, which is where Firefox's HTTPS-Only Mode and Chrome's
+    /// "always use secure connections" both sit. On is the safer setting and the
+    /// wrong default: the sites it breaks are broken with an error page and no
+    /// obvious cause, and a browser that appears broken on first run gets
+    /// uninstalled rather than configured.
+    #[serde(default)]
+    pub https_only: bool,
+
+    /// Origins allowed to stay on http, because they have no https at all.
+    #[serde(default)]
+    pub https_exceptions: Vec<String>,
+
+    /// Origins where JavaScript is switched off.
+    ///
+    /// A blocklist rather than an allowlist: the web does not work with script
+    /// off, so the useful control is turning it off for one badly behaved site
+    /// rather than turning it on site by site forever.
+    #[serde(default)]
+    pub script_blocked: Vec<String>,
+
     /// Whether tabs run down the side instead of across the top.
     ///
     /// A preference rather than per window, like the bookmarks bar and for the
@@ -240,6 +262,9 @@ impl Default for Settings {
             blocking_lists: Vec::new(),
             blocking_allowed: Vec::new(),
             blocking_updated: 0,
+            https_only: false,
+            https_exceptions: Vec::new(),
+            script_blocked: Vec::new(),
             show_tab_sidebar: false,
             custom_engines: Vec::new(),
             site_zoom: std::collections::HashMap::new(),
@@ -483,6 +508,43 @@ impl SettingsState {
 
     pub fn set_blocking_updated(&self, at: i64) -> Result<(), String> {
         self.update(|s| s.blocking_updated = at)
+    }
+
+    pub fn https_only(&self) -> bool {
+        self.get().https_only
+    }
+
+    pub fn set_https_only(&self, on: bool) -> Result<(), String> {
+        self.update(|s| s.https_only = on)
+    }
+
+    /// Whether this origin is excused from the https upgrade.
+    pub fn https_excepted(&self, origin: &str) -> bool {
+        self.get().https_exceptions.iter().any(|o| o == origin)
+    }
+
+    pub fn set_https_exception(&self, origin: &str, excepted: bool) -> Result<(), String> {
+        let origin = origin.to_string();
+        self.update(move |s| {
+            s.https_exceptions.retain(|o| o != &origin);
+            if excepted {
+                s.https_exceptions.push(origin.clone());
+            }
+        })
+    }
+
+    pub fn script_blocked(&self, origin: &str) -> bool {
+        self.get().script_blocked.iter().any(|o| o == origin)
+    }
+
+    pub fn set_script_blocked(&self, origin: &str, blocked: bool) -> Result<(), String> {
+        let origin = origin.to_string();
+        self.update(move |s| {
+            s.script_blocked.retain(|o| o != &origin);
+            if blocked {
+                s.script_blocked.push(origin.clone());
+            }
+        })
     }
 
     pub fn show_tab_sidebar(&self) -> bool {

@@ -1060,6 +1060,40 @@ fn spawn_tab_webview(
                 return false;
             }
 
+            // HTTPS-only, before anything is recorded.
+            //
+            // Refusing the navigation and starting the secure one means the
+            // insecure request is never made, rather than made and then
+            // redirected. Spawned because navigating from inside a navigation
+            // handler is the reentrancy WebView2 warns about.
+            {
+                let settings = nav_handle.state::<crate::settings::SettingsState>();
+                let raw = url.to_string();
+                let excepted = settings.https_excepted(&crate::siterules::origin_of(&raw));
+                if let Some(secure) =
+                    crate::siterules::upgrade(&raw, settings.https_only(), excepted)
+                {
+                    let handle = nav_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(label) = tab_label(&handle, id) {
+                            if let Some(view) = handle.get_webview(&label) {
+                                if let Ok(parsed) = secure.parse() {
+                                    let _ = view.navigate(parsed);
+                                }
+                            }
+                        }
+                    });
+                    return false;
+                }
+            }
+
+            // Script on or off for the site being navigated to. Set here rather
+            // than on load, because a page's scripts run as it parses and a
+            // setting applied afterwards would be too late to stop them.
+            if let Some(label) = tab_label(&nav_handle, id) {
+                crate::siterules::apply_script_rule(&nav_handle, &label, url.as_str());
+            }
+
             // Fires for every navigation, including ones Brume did not
             // start: link clicks, form submissions, redirects, JavaScript.
             // Recording here rather than only in `navigate` is what keeps

@@ -1352,6 +1352,26 @@
         margin-top: 7px;
         font-size: 12.5px;
       }
+      /* A per-site rule and its state, as a row of label and switch. The
+         padlock is where someone is standing when a site misbehaves, so the
+         controls that fix one site live here rather than only in Settings. */
+      .si-rule {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 9px;
+        padding-top: 9px;
+        border-top: 1px solid var(--hairline);
+        font-size: 12.5px;
+      }
+      .si-rule .action {
+        flex: 0 0 auto;
+        min-width: 46px;
+      }
+      .si-rule .action[data-on="true"] {
+        color: var(--brume-lamplight);
+      }
       .si-secure[data-secure="true"] {
         color: var(--fg);
       }
@@ -3530,6 +3550,70 @@
         zoomRow.control.appendChild(zoomBtn);
         privacy.appendChild(zoomRow.row);
 
+        const httpsRow = row(
+          "Always use HTTPS",
+          "Upgrades insecure pages and does not fall back. A site with no HTTPS at all will fail to load; the padlock offers an exception for that site."
+        );
+        httpsRow.control.appendChild(
+          switchControl(settings.https_only, "Always use HTTPS", (next) =>
+            call("set_https_only", { enabled: next })
+          )
+        );
+        privacy.appendChild(httpsRow.row);
+
+        // Sites excused from the upgrade, so one HTTP-only site does not mean
+        // turning the whole thing off.
+        if ((settings.https_exceptions || []).length) {
+          const exList = document.createElement("div");
+          exList.className = "perm-list";
+          for (const origin of settings.https_exceptions) {
+            const r = document.createElement("div");
+            r.className = "perm-row";
+            const name = document.createElement("span");
+            name.className = "perm-origin";
+            name.textContent = `${origin} may stay on HTTP`;
+            const undo = document.createElement("button");
+            undo.className = "action";
+            undo.textContent = "Require HTTPS";
+            undo.addEventListener("click", async () => {
+              await call("set_https_exception", { origin, excepted: false });
+              renderPanel();
+            });
+            r.append(name, undo);
+            exList.appendChild(r);
+          }
+          privacy.appendChild(exList);
+        }
+
+        // Sites with script switched off. Listed here because a site that does
+        // not work is easier to explain when you can see what was done to it.
+        if ((settings.script_blocked || []).length) {
+          const jsRow = row(
+            "JavaScript is off for",
+            "These sites load without running any script."
+          );
+          privacy.appendChild(jsRow.row);
+          const jsList = document.createElement("div");
+          jsList.className = "perm-list";
+          for (const origin of settings.script_blocked) {
+            const r = document.createElement("div");
+            r.className = "perm-row";
+            const name = document.createElement("span");
+            name.className = "perm-origin";
+            name.textContent = origin;
+            const undo = document.createElement("button");
+            undo.className = "action";
+            undo.textContent = "Allow script";
+            undo.addEventListener("click", async () => {
+              await call("set_script_blocked", { origin, blocked: false });
+              renderPanel();
+            });
+            r.append(name, undo);
+            jsList.appendChild(r);
+          }
+          privacy.appendChild(jsList);
+        }
+
         const siteData = row(
           "Clear site data",
           "Cookies, cache and local storage for every site. History and bookmarks are cleared from their own tabs."
@@ -4086,6 +4170,57 @@
           : "Not encrypted. Anyone on the network can read this.";
         secure.append(icon, words);
         box.append(who, secure);
+
+        /* Per-site controls, where per-site decisions belong.
+         *
+         * Settings can list them, but the moment somebody needs one is while
+         * looking at the site that provoked it: a page broken by blocking, or
+         * one that will not load because it has no HTTPS. Making them walk to
+         * Settings to find out which site they were on is how a feature ends up
+         * switched off globally instead of for one site. */
+        const bl = (await call("blocking_state")) || null;
+        const st = (await call("get_settings")) || {};
+
+        const siteRow = (label, on, onChange) => {
+          const r = document.createElement("div");
+          r.className = "si-rule";
+          const name = document.createElement("span");
+          name.textContent = label;
+          const btn = document.createElement("button");
+          btn.className = "action";
+          btn.textContent = on ? "On" : "Off";
+          btn.dataset.on = String(on);
+          btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            await onChange(!on);
+            closeSiteInfo();
+          });
+          r.append(name, btn);
+          return r;
+        };
+
+        if (bl && bl.enabled) {
+          const blockedHere = !(bl.allowed || []).includes(origin);
+          box.appendChild(
+            siteRow("Block adverts and trackers", blockedHere, (next) =>
+              call("set_blocking_allowed", { origin, allowed: !next })
+            )
+          );
+        }
+        box.appendChild(
+          siteRow("Run JavaScript", !(st.script_blocked || []).includes(origin), (next) =>
+            call("set_script_blocked", { origin, blocked: !next })
+          )
+        );
+        if (st.https_only && origin.startsWith("http://")) {
+          // Only worth offering on a site that is actually on HTTP: everywhere
+          // else the answer is already yes and the control would be noise.
+          box.appendChild(
+            siteRow("Require HTTPS here", !(st.https_exceptions || []).includes(origin), (next) =>
+              call("set_https_exception", { origin, excepted: !next })
+            )
+          );
+        }
 
         const heading = document.createElement("div");
         heading.className = "si-heading";
